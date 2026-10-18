@@ -26,4 +26,12 @@ think about solid aggregation as crystal grow
 
 these draft is not a rule, you can improve or change if something may be better. if something not clear or big choices - ask user
 
+### in dam scenario
+
+buoy stays partially submerged in blue. amount of blue inside it corresponds to buoy’s volume. This is approximate: it simulates [r, g, 255] having greater buoyant force than [r, g, 123].
+
+I think it would be better to do this on CPU side or in a separate shader that reads result, rather than building it into physics solver. Alternatively, there could be a webgpu function that returns portion of buffer at buoy’s coordinates. For simplicity, buoy is a rectangle wh 16*64.
+
+I expect buoy float, sinking into liquid and being lift back out by blue. It should have inertia so it doesn’t jump around every frame. Also, buoyant force could be updated every N frames rather than every frame, if that’s more efficient.
+
 
