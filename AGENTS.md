@@ -32,6 +32,17 @@
 
 ## concepts
 
+source brief: draft.txt. architecture, model and decisions: 0.0.0-plan.md (read first).
+the scheme spec that both the cpu reference and the wgsl implement is 0.0.0-plan.md section 5.
+
+- one substance. rgb = three conserved color tracers, not three materials.
+- aggregate phases: no free surface, no surface tension. vacuum < gas < liquid = solid by density.
+- conserved quantities: substance mass m, dye dr/dg/db, internal energy E. temperature and
+	phase are derived from E (latent heat becomes a plateau in T(E)).
+- conservation method: a face volume flux computed once per step, read by both neighbouring
+	cells with opposite signs. never interpolate a conserved quantity.
+- liquid/solid incompressible, gas weakly compressible through a divergence source S in the
+	pressure projection. one solver, no separate gas pipeline.
 
 ## files
 
