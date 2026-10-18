@@ -419,6 +419,124 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	textureStore(thermDst, vec2<i32>(x, y), out);
 }
 `;
+	// ---------- Zalesak FCT for RGB dye densities ----------
+	shaders.limiterPrepare=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var fluxTex: texture_2d<f32>;
+@group(0) @binding(2) var massSrc: texture_2d<f32>;
+@group(0) @binding(3) var massLow: texture_2d<f32>;
+@group(0) @binding(4) var limiterA: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(5) var limiterB: texture_storage_2d<rg32float,write>;
+
+fn antiFlux(F: f32, qL: vec3<f32>, qR: vec3<f32>) -> vec3<f32> {
+	let a = abs(F);
+	return 0.5 * a * (1.0 - a) * (qR - qL);
+}
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
+	let at = vec2<i32>(x, y);
+	let q = textureLoad(massLow, at, 0).rgb;
+	var qMin = q;
+	var qMax = q;
+	for (var oy = -1; oy <= 1; oy = oy + 1) {
+		for (var ox = -1; ox <= 1; ox = ox + 1) {
+			let qN = textureLoad(massLow, at + vec2<i32>(ox, oy), 0).rgb;
+			qMin = min(qMin, qN);
+			qMax = max(qMax, qN);
+		}
+	}
+	let fw = textureLoad(fluxTex, at, 0).r;
+	let fe = textureLoad(fluxTex, at + vec2<i32>(1, 0), 0).r;
+	let fs = textureLoad(fluxTex, at, 0).g;
+	let fN = textureLoad(fluxTex, at + vec2<i32>(0, 1), 0).g;
+	let qC = textureLoad(massSrc, at, 0).rgb;
+	let dW = antiFlux(fw, textureLoad(massSrc, at + vec2<i32>(-1, 0), 0).rgb, qC);
+	let dE = antiFlux(fe, qC, textureLoad(massSrc, at + vec2<i32>(1, 0), 0).rgb);
+	let dS = antiFlux(fs, textureLoad(massSrc, at + vec2<i32>(0, -1), 0).rgb, qC);
+	let dN = antiFlux(fN, qC, textureLoad(massSrc, at + vec2<i32>(0, 1), 0).rgb);
+	let zero = vec3<f32>(0.0);
+	let pPlus = max(dW, zero) + max(-dE, zero) + max(dS, zero) + max(-dN, zero);
+	let pMinus = max(-dW, zero) + max(dE, zero) + max(-dS, zero) + max(dN, zero);
+	let e = vec3<f32>(1e-30);
+	var rPlus = select(vec3<f32>(1.0), min(vec3<f32>(1.0), max(qMax - q, zero) / max(pPlus, e)), pPlus > e);
+	var rMinus = select(vec3<f32>(1.0), min(vec3<f32>(1.0), max(q - qMin, zero) / max(pMinus, e)), pMinus > e);
+	rPlus = select(rPlus * 0.99999, rPlus, rPlus >= vec3<f32>(1.0));
+	rMinus = select(rMinus * 0.99999, rMinus, rMinus >= vec3<f32>(1.0));
+	textureStore(limiterA, at, vec4<f32>(rPlus.r, rMinus.r, rPlus.g, rMinus.g));
+	textureStore(limiterB, at, vec4<f32>(rPlus.b, rMinus.b, 0.0, 0.0));
+}
+`;
+	shaders.limiterApply=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var fluxTex: texture_2d<f32>;
+@group(0) @binding(2) var massSrc: texture_2d<f32>;
+@group(0) @binding(3) var massLow: texture_2d<f32>;
+@group(0) @binding(4) var limiterA: texture_2d<f32>;
+@group(0) @binding(5) var limiterB: texture_2d<f32>;
+@group(0) @binding(6) var massDst: texture_storage_2d<rgba32float,write>;
+
+fn antiFlux(F: f32, qL: vec3<f32>, qR: vec3<f32>) -> vec3<f32> {
+	let a = abs(F);
+	return 0.5 * a * (1.0 - a) * (qR - qL);
+}
+fn rPlusAt(at: vec2<i32>) -> vec3<f32> {
+	let a = textureLoad(limiterA, at, 0);
+	let b = textureLoad(limiterB, at, 0);
+	return vec3<f32>(a.r, a.b, b.r);
+}
+fn rMinusAt(at: vec2<i32>) -> vec3<f32> {
+	let a = textureLoad(limiterA, at, 0);
+	let b = textureLoad(limiterB, at, 0);
+	return vec3<f32>(a.g, a.a, b.g);
+}
+fn limitAnti(d: vec3<f32>, plusL: vec3<f32>, minusL: vec3<f32>, plusR: vec3<f32>, minusR: vec3<f32>) -> vec3<f32> {
+	let alphaPositive = min(minusL, plusR);
+	let alphaNegative = min(plusL, minusR);
+	return d * select(alphaNegative, alphaPositive, d > vec3<f32>(0.0));
+}
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
+	let at = vec2<i32>(x, y);
+	let low = textureLoad(massLow, at, 0);
+	let qC = textureLoad(massSrc, at, 0).rgb;
+	let qW = textureLoad(massSrc, at + vec2<i32>(-1, 0), 0).rgb;
+	let qE = textureLoad(massSrc, at + vec2<i32>(1, 0), 0).rgb;
+	let qS = textureLoad(massSrc, at + vec2<i32>(0, -1), 0).rgb;
+	let qN = textureLoad(massSrc, at + vec2<i32>(0, 1), 0).rgb;
+	let fw = textureLoad(fluxTex, at, 0).r;
+	let fe = textureLoad(fluxTex, at + vec2<i32>(1, 0), 0).r;
+	let fs = textureLoad(fluxTex, at, 0).g;
+	let fN = textureLoad(fluxTex, at + vec2<i32>(0, 1), 0).g;
+	let plusC = rPlusAt(at);
+	let minusC = rMinusAt(at);
+	let westAt = at + vec2<i32>(-1, 0);
+	let eastAt = at + vec2<i32>(1, 0);
+	let southAt = at + vec2<i32>(0, -1);
+	let northAt = at + vec2<i32>(0, 1);
+	let dW = antiFlux(fw, qW, qC);
+	let dE = antiFlux(fe, qC, qE);
+	let dS = antiFlux(fs, qS, qC);
+	let dN = antiFlux(fN, qC, qN);
+	let west = limitAnti(dW, rPlusAt(westAt), rMinusAt(westAt), plusC, minusC);
+	let east = limitAnti(dE, plusC, minusC, rPlusAt(eastAt), rMinusAt(eastAt));
+	let south = limitAnti(dS, rPlusAt(southAt), rMinusAt(southAt), plusC, minusC);
+	let north = limitAnti(dN, plusC, minusC, rPlusAt(northAt), rMinusAt(northAt));
+	let dye = low.rgb + west - east + south - north;
+	textureStore(massDst, at, vec4<f32>(dye, low.a));
+}
+`;
 	// ---------- exact additive painting (ledger sums the same floats) ----------
 	shaders.paintMass=`
 @group(0) @binding(0) var<uniform> params: Params;

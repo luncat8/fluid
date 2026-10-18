@@ -115,8 +115,11 @@
 				const n=Math.min(1024,cfg.N+64);
 				if(solver)solver.resize(n);
 				cfg._dirty=true;
-			}else if(k==="c"){
-				state.paintColor=(state.paintColor+1)%DYE_COLORS.length;
+				}else if(k==="f"){
+					cfg.fctLimiter=cfg.fctLimiter?0:1;
+					cfg._dirty=true;
+				}else if(k==="c"){
+					state.paintColor=(state.paintColor+1)%DYE_COLORS.length;
 			}else if(k==="b"){
 				cfg.paintMode=(cfg.paintMode+1)%3;
 			}else if(k==="n"){

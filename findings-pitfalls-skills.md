@@ -182,9 +182,14 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 - pitfall: file:// clamps performance timers, so fps/frame-ms numbers from a local
   page are coarse. use run_index.py (http server) when timing matters; timing a
   submit call measures encode, not gpu execution, so the hud shows rAF fps only.
-  at N=256 fps was ~180 on the reporter GPU (so default moved to 1024 to see perf).
-  or disjoint sweeps. The earlier isolated-pair clamp claim does not by itself establish
-  monotonicity of a simultaneous four-neighbour update or latent-plateau treatment.
+  A prior N=256 report was ~180 fps on the reporter GPU; it is not comparable to the
+  user's later N=1024 report (~11 fps, K=60, up to 8 substeps). The default is now
+  512 per the user's request. No current-browser benchmark was run in this turn.
+  By code count, K=60 means 120 full-grid red/black projection dispatches per
+  substep, or 960 per simulated frame at 8 substeps; this is a dispatch estimate,
+  not a GPU timing. The pressure solve is the obvious next performance target.
+  The earlier isolated-pair clamp claim does not by itself establish monotonicity
+  of a simultaneous four-neighbour update or latent-plateau treatment.
 - [verified 2026-10-18] Y inversion: physics Y is up (0 bottom, N top), storage Y is
   down (0 top). with the old renderVert uv (0,1),(2,1),(0,-1) NDC bottom sampled
   texture bottom (high physics at screen bottom) -> inverted draw, inverted gravity,
@@ -192,9 +197,38 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   texture top (low physics at screen bottom), NDC top -> uv 1 -> texture bottom
   (high at top). painting and gravity now match screen; no change to input mapping
   (v=1-(y/h) already maps screen top to high physics).
-- pitfall: FCT anti-diffusive flux must compose with the k_out <= 1 outflow limiter
-  (0.0.0 section 5.1/5.2). Zalesak R_plus/R_minus bounds do not prevent a diverging
-  cell with k_out(low)=1 from being pushed to k_out(total)=1+k_out(dlim) > 1 by the
-  correction, which breaks monotone donor-cell and creates negatives. enforce by
-  scaling outgoing dlim so total outflow per cell stays <= 1 (re-apply the 5.1 limiter
-  to F_total=F_low+dlim; still a single shared face flux, conservation untouched).
+- [superseded design note, 2026-10-18] An earlier FCT draft proposed composing the
+  anti-diffusive scalar correction with the k_out <= 1 volume-flux budget. That is
+  dimensionally invalid: dye anti-flux is a tracer-density flux, not a volume flux.
+  The shipped design limits only RGB dye with Zalesak cell bounds; mass and energy
+  remain donor-cell. Do not add the dye correction to F or k_out.
+
+## 2026-10-18 FCT and performance follow-up
+
+- [verified CPU] Dye-only Zalesak FCT uses `d(F)=0.5*abs(F)*(1-abs(F))*(qR-qL)`
+  and two-sided receiver/sender ratios from the 3x3 bounds of the low-order result.
+  A 1e-5 ratio safety margin avoids f32 boundary undershoots; no post-hoc clipping.
+- [verified CPU] `node experiments/sharpness.js`: N=256, 240 steps, F=0.5 gives
+  upwind front width 26 cells and FCT width 8 (3.25x sharper), FCT front range
+  0..0.8, zero local-bound violations, relative dye-sum difference 6.307e-9, and
+  matching fluid mass totals. A deterministic random 2D field also has zero bound
+  violations, min dye 1.409e-7, and FCT correction drift 3.127e-10.
+- [verified CPU] Full conformance passes with FCT enabled, including 10,000 closed
+  transport steps: worst five-invariant drift=5.96e-7 (mass), below 1e-6; 1200-frame
+  stirred drift worst_rel=4.66e-7; no negative cells; wall/emitter/draw/dam tests pass.
+  Extra f32 write for corrected dyes raises the measured drift floor, so FCT's
+  acceptance ceiling is 1e-6 relative (not exact-zero or 1e-7).
+- [verified validation only] WGSL parses; compute/render pipelines, bind groups, and
+  an eight-substep FCT command buffer (K=0) validate and submit through Dawn's null
+  backend. One isolated FCT-off step also submits. A separate repeated mixed-submit
+  probe aborted natively (`std::system_error: Invalid argument`), so treat this as
+  pipeline/encoding validation only, not numerical parity. The null backend does not
+  execute on the user's browser GPU.
+- FCT GPU storage adds 40 bytes/cell (third mass slot + limiterA/B): about +10.6 MB
+  at N=512 and +42.1 MB at N=1024, before stats/staging. New total texture/staging
+  budget is ~42 MB at N=512 / ~168 MB at N=1024.
+- [not measured] Browser CPU/GPU parity and frame-time overhead at 512/1024 remain
+  pending. The current code has ~960 full-grid pressure dispatches per simulated
+  frame at K=60 and 8 substeps; focus future timing on pressure iteration count,
+  substep behavior, and a multigrid path rather than claiming FCT or the default
+  change improved FPS without measurement.

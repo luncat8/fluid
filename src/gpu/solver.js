@@ -11,24 +11,33 @@
 		let pipes=passes.createPipelines(device,format);
 		let groups=passes.makeBindGroups(device,pipes,pool);
 		const paramsArray=Fluid.core.config.makeParamsArray();
-		// (m, v) ping-pong parity; press parity is invariant (red+black returns to tex[0])
-		const state={m:0,v:0,pw:0,ph:0};
-		const flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
+		// Mass has three slots for dye FCT; therm and velocity remain ping-pong.
+		// Pressure parity is invariant (red+black returns to tex[0]).
+		const state={m:0,t:0,v:0,pw:0,ph:0};
+		let flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
 		let ledger=null;
 		const readbackArray=new Float32Array(32);
 		let readbackInFlight=false;
 		let pendingRead=false;
+		let pendingFrame=0;
+		let pendingGeneration=0;
+		let statsGeneration=0;
+		const pendingExpected={m:0,dr:0,dg:0,db:0,E:0};
 		let frameCount=0;
 		let timeAcc=0;
 		let statsCache=null;
+		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,ledger:null};
 		function writeParams(){
 			Fluid.core.config.writeParams(paramsArray,cfg);
 			device.queue.writeBuffer(pool.params,0,paramsArray);
 		}
 		function reset(){
+			statsGeneration++;
+			pendingRead=false;
 			const sc=coreSolver.buildScenario(cfg);
 			fields.writeTextureRect(device,pool.mass.tex[0],cfg.texW,cfg.texH,"rgba32float",sc.massA);
 			fields.writeTextureRect(device,pool.mass.tex[1],cfg.texW,cfg.texH,"rgba32float",sc.massA);
+			fields.writeTextureRect(device,pool.mass.tex[2],cfg.texW,cfg.texH,"rgba32float",sc.massA);
 			fields.writeTextureRect(device,pool.therm.tex[0],cfg.texW,cfg.texH,"rgba32float",sc.thermA);
 			fields.writeTextureRect(device,pool.therm.tex[1],cfg.texW,cfg.texH,"rgba32float",sc.thermA);
 			fields.clearTexture(device,pool.vel.tex[0],cfg.texW,cfg.texH,"rg32float");
@@ -39,14 +48,17 @@
 			fields.clearTexture(device,pool.flux,cfg.texW,cfg.texH,"rg32float");
 			fields.clearTexture(device,pool.divsrc,cfg.texW,cfg.texH,"r32float");
 			flagsMirror.set(sc.flagsA);
-			state.m=0;state.v=0;
+			state.m=0;state.t=0;state.v=0;
 			const init=stats.totalsFromFields(sc.massA,sc.thermA,cfg.texW,cfg.texH);
 			ledger=stats.createLedger(init);
 			cfg.rhoMean=init.sumM/(cfg.N*cfg.N);
 			frameCount=0;
 			timeAcc=0;
+			const expected=stats.writeExpectedTotals({m:0,dr:0,dg:0,db:0,E:0},ledger);
 			statsCache={
+				frame:0,
 				totals:{m:init.sumM,dr:init.sumDr,dg:init.sumDg,db:init.sumDb,E:init.sumE},
+				expected,
 				mins:{m:init.minM,dr:init.minDr,dg:init.minDg,db:init.minDb,E:init.minE},
 				maxM:init.maxM,cntNeg:init.cntNeg,cntOver:init.cntOver,
 				motion:{maxVel:0,pMin:0,pMax:0,maxDiv:0}
@@ -96,7 +108,7 @@
 			const encoder=device.createCommandEncoder({label:"frame"});
 			const cpass=encoder.beginComputePass({label:"sim"});
 			for(let s=0;s<substeps;s++){
-				passes.encodeStep(cpass,pool,pipes,groups,state,cfg.pressureIters);
+				passes.encodeStep(cpass,pool,pipes,groups,state,cfg.pressureIters,cfg.fctLimiter>0);
 			}
 			if(needStats){
 				passes.encodeStats(cpass,pool,pipes,groups,state);
@@ -105,6 +117,9 @@
 			cpass.end();
 			if(needStats&&!readbackInFlight){
 				encoder.copyBufferToBuffer(pool.stats,0,pool.statsRead,0,128);
+				stats.writeExpectedTotals(pendingExpected,ledger);
+				pendingFrame=frameCount+1;
+				pendingGeneration=statsGeneration;
 				pendingRead=true;
 			}
 			const view=context.getCurrentTexture().createView();
@@ -136,40 +151,58 @@
 			if(!pendingRead||readbackInFlight)return;
 			readbackInFlight=true;
 			pendingRead=false;
+			const readPool=pool;
+			const readGeneration=pendingGeneration;
+			const readFrame=pendingFrame;
+			const expM=pendingExpected.m,expDr=pendingExpected.dr,expDg=pendingExpected.dg;
+			const expDb=pendingExpected.db,expE=pendingExpected.E;
 			try{
-				await pool.statsRead.mapAsync(GPUMapMode.READ);
-				const buf=pool.statsRead.getMappedRange();
-				readbackArray.set(new Float32Array(buf));
-				pool.statsRead.unmap();
-				statsCache={
-					totals:{m:readbackArray[0],dr:readbackArray[1],dg:readbackArray[2],db:readbackArray[3],E:readbackArray[4]},
-					mins:{m:readbackArray[5],dr:readbackArray[6],dg:readbackArray[7],db:readbackArray[8],E:readbackArray[9]},
-					maxM:readbackArray[10],cntNeg:readbackArray[11],cntOver:readbackArray[12],
-					motion:{maxVel:readbackArray[13],pMin:readbackArray[14],pMax:readbackArray[15],maxDiv:readbackArray[16]}
-				};
+				await readPool.statsRead.mapAsync(GPUMapMode.READ);
+				const buf=readPool.statsRead.getMappedRange();
+				if(readGeneration===statsGeneration){
+					readbackArray.set(new Float32Array(buf));
+					statsCache.frame=readFrame;
+					statsCache.totals.m=readbackArray[0];
+					statsCache.totals.dr=readbackArray[1];
+					statsCache.totals.dg=readbackArray[2];
+					statsCache.totals.db=readbackArray[3];
+					statsCache.totals.E=readbackArray[4];
+					statsCache.expected.m=expM;
+					statsCache.expected.dr=expDr;
+					statsCache.expected.dg=expDg;
+					statsCache.expected.db=expDb;
+					statsCache.expected.E=expE;
+					statsCache.mins.m=readbackArray[5];
+					statsCache.mins.dr=readbackArray[6];
+					statsCache.mins.dg=readbackArray[7];
+					statsCache.mins.db=readbackArray[8];
+					statsCache.mins.E=readbackArray[9];
+					statsCache.maxM=readbackArray[10];
+					statsCache.cntNeg=readbackArray[11];
+					statsCache.cntOver=readbackArray[12];
+					statsCache.motion.maxVel=readbackArray[13];
+					statsCache.motion.pMin=readbackArray[14];
+					statsCache.motion.pMax=readbackArray[15];
+					statsCache.motion.maxDiv=readbackArray[16];
+				}
+				readPool.statsRead.unmap();
 			}catch(e){
 				console.error("stats readback failed",e);
 			}
 			readbackInFlight=false;
 		}
 		function getStats(){
-			return {
-				frame:frameCount,
-				totals:statsCache.totals,
-				expected:{
-					m:stats.expectedTotal(ledger,"m"),
-					dr:stats.expectedTotal(ledger,"dr"),
-					dg:stats.expectedTotal(ledger,"dg"),
-					db:stats.expectedTotal(ledger,"db"),
-					E:stats.expectedTotal(ledger,"E")
-				},
-				mins:statsCache.mins,
-				maxM:statsCache.maxM,
-				cntNeg:statsCache.cntNeg,
-				cntOver:statsCache.cntOver,
-				motion:statsCache.motion,
-				ledger
-			};
+			statsView.frame=frameCount;
+			statsView.statsFrame=statsCache.frame;
+			statsView.totals=statsCache.totals;
+			statsView.expected=statsCache.expected;
+			statsView.mins=statsCache.mins;
+			statsView.maxM=statsCache.maxM;
+			statsView.cntNeg=statsCache.cntNeg;
+			statsView.cntOver=statsCache.cntOver;
+			statsView.motion=statsCache.motion;
+			statsView.ledger=ledger;
+			return statsView;
 		}
 		function resize(newN){
 			fields.destroyPool(pool);

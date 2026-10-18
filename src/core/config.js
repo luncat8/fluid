@@ -13,9 +13,9 @@
 		emitters:96
 	};
 	const defaults={
-		N:1024,
-		texW:1026,
-		texH:1026,
+		N:512,
+		texW:514,
+		texH:514,
 		dt:1/60,
 		frameDt:1/60,
 		substeps:1,
@@ -85,7 +85,7 @@
 		"0":"color","1":"temperature","2":"pressure","3":"velocity","4":"divergence","5":"flags",
 		" ":"pause",".":"step","r":"reset","h":"help","s":"dumpStats","d":"dumpField","g":"gravity",
 		"+":"iterUp","-":"iterDown","=":"iterUp","_":"iterDown","[":"sizeDown","]":"sizeUp",
-		"c":"cycleColor","b":"cyclePaint","n":"nextScenario"
+		"c":"cycleColor","b":"cyclePaint","n":"nextScenario","f":"toggleFct"
 	};
 	function makeParamsArray(){
 		return new Float32Array(128);

@@ -1,0 +1,6 @@
+sharpness: dye front, N=256 steps=240 flux=0.5
+upwind_width=26 fct_width=8 improvement=3.25x
+fct_front_range=0.000e+0..0.800000 total_dye=42188.857860 total_mass=65536.000680 local_bound_violations=0
+fct_vs_upwind_dye_drift=6.307e-9
+random_2d: min=1.409e-7 local_bound_violations=0 correction_drift=3.127e-10
+PASS

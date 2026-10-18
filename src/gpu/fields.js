@@ -25,6 +25,8 @@
 			press:{tex:[],cur:0},
 			flags:null,
 			flux:null,
+			limiterA:null,
+			limiterB:null,
 			divsrc:null,
 			sfield:null,
 			patchMass:null,
@@ -42,12 +44,15 @@
 		pool.vel.tex[1]=makeTexture(device,"vel1","rg32float",texW,texH);
 		pool.mass.tex[0]=makeTexture(device,"mass0","rgba32float",texW,texH);
 		pool.mass.tex[1]=makeTexture(device,"mass1","rgba32float",texW,texH);
+		pool.mass.tex[2]=makeTexture(device,"mass2","rgba32float",texW,texH);
 		pool.therm.tex[0]=makeTexture(device,"therm0","rgba32float",texW,texH);
 		pool.therm.tex[1]=makeTexture(device,"therm1","rgba32float",texW,texH);
 		pool.press.tex[0]=makeTexture(device,"press0","r32float",texW,texH);
 		pool.press.tex[1]=makeTexture(device,"press1","r32float",texW,texH);
 		pool.flags=makeTexture(device,"flags","rgba8uint",texW,texH);
 		pool.flux=makeTexture(device,"flux","rg32float",texW,texH);
+		pool.limiterA=makeTexture(device,"limiterA","rgba32float",texW,texH);
+		pool.limiterB=makeTexture(device,"limiterB","rg32float",texW,texH);
 		pool.divsrc=makeTexture(device,"divsrc","r32float",texW,texH);
 		pool.sfield=makeTexture(device,"sfield","r32float",texW,texH);
 		pool.patchMass=makeTexture(device,"patchMass","rgba32float",PATCH,PATCH);
@@ -70,9 +75,9 @@
 		return pool;
 	}
 	function destroyPool(pool){
-		const tex=[pool.vel.tex[0],pool.vel.tex[1],pool.mass.tex[0],pool.mass.tex[1],
+		const tex=[pool.vel.tex[0],pool.vel.tex[1],pool.mass.tex[0],pool.mass.tex[1],pool.mass.tex[2],
 			pool.therm.tex[0],pool.therm.tex[1],pool.press.tex[0],pool.press.tex[1],
-			pool.flags,pool.flux,pool.divsrc,pool.sfield,pool.patchMass,pool.patchE,pool.display];
+			pool.flags,pool.flux,pool.limiterA,pool.limiterB,pool.divsrc,pool.sfield,pool.patchMass,pool.patchE,pool.display];
 		for(const t of tex){if(t&&t.destroy)try{t.destroy();}catch(e){}}
 		for(const b of [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.dims]){
 			if(b&&b.destroy)try{b.destroy();}catch(e){}

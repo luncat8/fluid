@@ -123,6 +123,9 @@
 		const flux=new Float32Array(texW*texH*2);
 		const divsrc=new Float32Array(texW*texH);
 		const flags=new Uint8Array(texW*texH*4);
+		// Preallocated dye-FCT scratch: per-cell (R+,R-) for RGB and final mass result.
+		const fctLimiters=new Float32Array(texW*texH*6);
+		const massFctTmp=new Float32Array(texW*texH*4);
 		const acc=Fluid.core.stats;
 		let ledger=null;
 		function isWall(x,y){
@@ -369,6 +372,78 @@
 				}
 			}
 		}
+		function scalarValue(mbuf,index,field){
+			return mbuf[index*4+field];
+		}
+		// Lax-Wendroff minus donor-cell flux; only dye densities use this scalar correction.
+		function antiFlux(mSrc,faceFlux,left,right,field){
+			const a=Math.abs(faceFlux);
+			return 0.5*a*(1-a)*(scalarValue(mSrc,right,field)-scalarValue(mSrc,left,field));
+		}
+		function limiterIndex(index,field){
+			return index*6+field*2;
+		}
+		// Zalesak plus/minus allowances use the local 3x3 extrema of the low-order state.
+		function limiterPrepare(mSrc,mLow){
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const i=x+y*texW,i2=i*2;
+					const fw=flux[i2],fe=flux[i2+2],fs=flux[i2+1],fn=flux[i2+texW*2+1];
+					for(let field=0;field<3;field++){
+						const q=scalarValue(mLow,i,field);
+						let qMin=q,qMax=q;
+						for(let oy=-1;oy<=1;oy++){
+							for(let ox=-1;ox<=1;ox++){
+								const qn=scalarValue(mLow,i+ox+oy*texW,field);
+								if(qn<qMin)qMin=qn;
+								if(qn>qMax)qMax=qn;
+							}
+						}
+						const dW=antiFlux(mSrc,fw,i-1,i,field);
+						const dE=antiFlux(mSrc,fe,i,i+1,field);
+						const dS=antiFlux(mSrc,fs,i-texW,i,field);
+						const dN=antiFlux(mSrc,fn,i,i+texW,field);
+						const pPlus=Math.max(dW,0)+Math.max(-dE,0)+Math.max(dS,0)+Math.max(-dN,0);
+						const pMinus=Math.max(-dW,0)+Math.max(dE,0)+Math.max(-dS,0)+Math.max(dN,0);
+						const base=limiterIndex(i,field);
+						let rPlus=pPlus>0?Math.min(1,Math.max(0,qMax-q)/pPlus):1;
+						let rMinus=pMinus>0?Math.min(1,Math.max(0,q-qMin)/pMinus):1;
+						if(rPlus<1)rPlus*=0.99999;
+						if(rMinus<1)rMinus*=0.99999;
+						fctLimiters[base]=rPlus;
+						fctLimiters[base+1]=rMinus;
+					}
+				}
+			}
+		}
+		function limitedAnti(mSrc,faceFlux,left,right,field){
+			const d=antiFlux(mSrc,faceFlux,left,right,field);
+			if(d===0)return 0;
+			const leftR=limiterIndex(left,field),rightR=limiterIndex(right,field);
+			const ratio=d>0?Math.min(fctLimiters[leftR+1],fctLimiters[rightR]):Math.min(fctLimiters[leftR],fctLimiters[rightR+1]);
+			return ratio*d;
+		}
+		function limiterApply(mSrc,mLow){
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const i=x+y*texW,i2=i*2,i4=i*4;
+					const fw=flux[i2],fe=flux[i2+2],fs=flux[i2+1],fn=flux[i2+texW*2+1];
+					massFctTmp[i4]=mLow[i4];
+					massFctTmp[i4+1]=mLow[i4+1];
+					massFctTmp[i4+2]=mLow[i4+2];
+					massFctTmp[i4+3]=mLow[i4+3];
+					for(let field=0;field<3;field++){
+						const west=limitedAnti(mSrc,fw,i-1,i,field);
+						const east=limitedAnti(mSrc,fe,i,i+1,field);
+						const south=limitedAnti(mSrc,fs,i-texW,i,field);
+						const north=limitedAnti(mSrc,fn,i,i+texW,field);
+						massFctTmp[i4+field]=mLow[i4+field]+west-east+south-north;
+					}
+				}
+			}
+			grid.nxtBuf(mass).set(massFctTmp);
+			grid.swap(mass);
+		}
 		function advectScalar(){
 			const mS=grid.curBuf(mass),mD=grid.nxtBuf(mass);
 			const tS=grid.curBuf(therm),tD=grid.nxtBuf(therm);
@@ -382,14 +457,18 @@
 						const qm=mS[i4+c],qt=tS[i4+c];
 						const qmW=mS[i4-4+c],qmE=mS[i4+4+c],qmS=mS[i4-texW*4+c],qmN=mS[i4+texW*4+c];
 						const qtW=tS[i4-4+c],qtE=tS[i4+4+c],qtS=tS[i4-texW*4+c],qtN=tS[i4+texW*4+c];
-					const dm=fw*(fw>0?qmW:qm)-fe*(fe>0?qm:qmE)+fs*(fs>0?qmS:qm)-fn*(fn>0?qm:qmN);
-					mD[i4+c]=qm+dm;
-						let dtn=fw*(fw>0?qtW:qt)-fe*(fe>0?qt:qtE)+fs*(fs>0?qtS:qt)-fn*(fn>0?qt:qtN);
+						const dm=fw*(fw>0?qmW:qm)-fe*(fe>0?qm:qmE)+fs*(fs>0?qmS:qm)-fn*(fn>0?qm:qmN);
+						mD[i4+c]=qm+dm;
+						const dtn=fw*(fw>0?qtW:qt)-fe*(fe>0?qt:qtE)+fs*(fs>0?qtS:qt)-fn*(fn>0?qt:qtN);
 						tD[i4+c]=qt+dtn;
 					}
 				}
 			}
 			grid.swap(mass);grid.swap(therm);
+			if(!cfg.fctLimiter)return;
+			const mLow=grid.curBuf(mass),mSrc=grid.nxtBuf(mass);
+			limiterPrepare(mSrc,mLow);
+			limiterApply(mSrc,mLow);
 		}
 		function step(dt){
 			forces(dt);

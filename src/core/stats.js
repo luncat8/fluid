@@ -101,12 +101,20 @@
 		if(kind==="E")return ledger.initialE+ledger.injectedE-ledger.removedE-ledger.boundaryE;
 		return 0;
 	}
+	function writeExpectedTotals(out,ledger){
+		out.m=expectedTotal(ledger,"m");
+		out.dr=expectedTotal(ledger,"dr");
+		out.dg=expectedTotal(ledger,"dg");
+		out.db=expectedTotal(ledger,"db");
+		out.E=expectedTotal(ledger,"E");
+		return out;
+	}
 	function formatDrift(v){
 		let a=Math.abs(v);
 		if(a<1e-6)return "ok";
 		if(a<1e-3)return "warn";
 		return "bad";
 	}
-	Fluid.core.stats={STATS_LEN,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,STATS_FIELDS,totalsFromFields,motionTotals,packStatsArray,driftRel,createLedger,expectedTotal,formatDrift};
+	Fluid.core.stats={STATS_LEN,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,STATS_FIELDS,totalsFromFields,motionTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.stats;
 })(globalThis);

@@ -2,11 +2,9 @@
 	"use strict";
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.gpu=Fluid.gpu||{};
-	// ping-pong parity model: m = mass/therm parity (they always swap together in
-	// advect_scalar / paint), v = vel parity (forces, advectVel and applyGrad each
-	// swap it once, so 3 swaps = odd and v flips each substep), press parity is
-	// invariant: one red-black sweep reads press[0] -> press[1] -> press[0]. all
-	// bind groups for all (m,v) combos are built once here; the frame loop never allocates.
+	// m uses three slots when dye FCT is enabled; t and v remain ping-pong fields.
+	// Pressure parity is invariant because every red-black sweep returns to press[0].
+	// Bind groups for every state combination are built once during setup/resize.
 	function createPipelines(device,canvasFormat){
 		const sh=Fluid.gpu.shaders;
 		const PS=sh.paramsStruct;
@@ -19,8 +17,6 @@
 			if(constants)desc.compute.constants=constants;
 			return device.createComputePipeline(desc);
 		}
-		// project red/black share one explicit bind group layout so one set of
-		// groups drives both pipelines
 		const projLayout=device.createBindGroupLayout({
 			label:"project",
 			entries:[
@@ -52,6 +48,8 @@
 			flux:comp("flux",PS+sh.computeFlux),
 			advectMass:comp("advectMass",PS+sh.advectMass),
 			advectTherm:comp("advectTherm",PS+sh.advectTherm),
+			limiterPrepare:comp("limiterPrepare",PS+sh.limiterPrepare),
+			limiterApply:comp("limiterApply",PS+sh.limiterApply),
 			paintMass:comp("paintMass",PS+sh.paintMass),
 			paintTherm:comp("paintTherm",PS+sh.paintTherm),
 			statsA:comp("statsA",PS+sh.statsReduceA),
@@ -75,13 +73,20 @@
 		return tex.createView();
 	}
 	function makeBindGroups(device,pipes,pool){
-		const v0=pool.vel.tex[0],v1=pool.vel.tex[1];
 		const p0=pool.press.tex[0],p1=pool.press.tex[1];
 		const flagsView=viewRes(pool.flags);
-		const groups={forces:[],advectVel:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
-			paintMass:[],paintTherm:[],projRed:[],projBlack:[],statsA:[],toDisplay:[],statsB:null,render:null};
-		for(let m=0;m<2;m++){
-			const mm=pool.mass.tex[m],tt=pool.therm.tex[m],mn=pool.mass.tex[1-m],tn=pool.therm.tex[1-m];
+		const fluxView=viewRes(pool.flux);
+		const limiterAView=viewRes(pool.limiterA);
+		const limiterBView=viewRes(pool.limiterB);
+		const groups={
+			forces:[],advectVel:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
+			limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
+			statsA:[],toDisplay:[],statsB:null,render:null
+		};
+		for(let m=0;m<3;m++){
+			const nextM=(m+1)%3,finalM=(m+2)%3;
+			const mm=pool.mass.tex[m],ml=pool.mass.tex[nextM];
+			const mo=pool.mass.tex[finalM];
 			groups.projRed[m]=bg(device,"projRed"+m,pipes.projLayout,[
 				{binding:0,resource:{buffer:pool.params}},
 				{binding:1,resource:viewRes(p0)},
@@ -100,99 +105,119 @@
 			]);
 			groups.advectMass[m]=bg(device,"advectMass"+m,pipes.advectMass.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
-				{binding:1,resource:viewRes(pool.flux)},
+				{binding:1,resource:fluxView},
 				{binding:2,resource:viewRes(mm)},
-				{binding:3,resource:viewRes(mn)}
+				{binding:3,resource:viewRes(ml)}
 			]);
-			groups.advectTherm[m]=bg(device,"advectTherm"+m,pipes.advectTherm.getBindGroupLayout(0),[
+			groups.limiterPrepare[m]=bg(device,"limiterPrepare"+m,pipes.limiterPrepare.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
-				{binding:1,resource:viewRes(pool.flux)},
-				{binding:2,resource:viewRes(tt)},
-				{binding:3,resource:viewRes(tn)}
+				{binding:1,resource:fluxView},
+				{binding:2,resource:viewRes(mm)},
+				{binding:3,resource:viewRes(ml)},
+				{binding:4,resource:limiterAView},
+				{binding:5,resource:limiterBView}
+			]);
+			groups.limiterApply[m]=bg(device,"limiterApply"+m,pipes.limiterApply.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:fluxView},
+				{binding:2,resource:viewRes(mm)},
+				{binding:3,resource:viewRes(ml)},
+				{binding:4,resource:limiterAView},
+				{binding:5,resource:limiterBView},
+				{binding:6,resource:viewRes(mo)}
 			]);
 			groups.paintMass[m]=bg(device,"paintMass"+m,pipes.paintMass.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
 				{binding:1,resource:viewRes(mm)},
-				{binding:2,resource:viewRes(mn)},
+				{binding:2,resource:viewRes(ml)},
 				{binding:3,resource:viewRes(pool.patchMass)}
 			]);
-			groups.paintTherm[m]=bg(device,"paintTherm"+m,pipes.paintTherm.getBindGroupLayout(0),[
+			groups.rhs[m]=[];
+			groups.applyGrad[m]=[];
+			groups.statsA[m]=[];
+			groups.toDisplay[m]=[];
+			for(let t=0;t<2;t++){
+				const tt=pool.therm.tex[t];
+				groups.statsA[m][t]=[];
+				groups.toDisplay[m][t]=[];
+				for(let v=0;v<2;v++){
+					const vv=pool.vel.tex[v],vn=pool.vel.tex[1-v];
+					groups.forces[m]=groups.forces[m]||[];
+					groups.forces[m][t]=groups.forces[m][t]||[];
+					groups.forces[m][t][v]=bg(device,"forces"+m+t+v,pipes.forces.getBindGroupLayout(0),[
+						{binding:0,resource:{buffer:pool.params}},
+						{binding:1,resource:viewRes(vv)},
+						{binding:2,resource:viewRes(vn)},
+						{binding:3,resource:viewRes(mm)},
+						{binding:4,resource:viewRes(tt)},
+						{binding:5,resource:flagsView}
+					]);
+					if(t===0){
+						groups.rhs[m][v]=bg(device,"rhs"+m+v,pipes.rhs.getBindGroupLayout(0),[
+							{binding:0,resource:{buffer:pool.params}},
+							{binding:1,resource:viewRes(pool.divsrc)},
+							{binding:2,resource:viewRes(vv)},
+							{binding:3,resource:viewRes(mm)},
+							{binding:4,resource:flagsView}
+						]);
+						groups.applyGrad[m][v]=bg(device,"applyGrad"+m+v,pipes.applyGrad.getBindGroupLayout(0),[
+							{binding:0,resource:{buffer:pool.params}},
+							{binding:1,resource:viewRes(vv)},
+							{binding:2,resource:viewRes(vn)},
+							{binding:3,resource:viewRes(p0)},
+							{binding:4,resource:viewRes(mm)},
+							{binding:5,resource:flagsView}
+						]);
+					}
+					groups.statsA[m][t][v]=bg(device,"statsA"+m+t+v,pipes.statsA.getBindGroupLayout(0),[
+						{binding:0,resource:{buffer:pool.params}},
+						{binding:1,resource:viewRes(mm)},
+						{binding:2,resource:viewRes(tt)},
+						{binding:3,resource:viewRes(vv)},
+						{binding:4,resource:viewRes(p0)},
+						{binding:5,resource:{buffer:pool.statsPart}}
+					]);
+					groups.toDisplay[m][t][v]=bg(device,"toDisplay"+m+t+v,pipes.toDisplay.getBindGroupLayout(0),[
+						{binding:0,resource:{buffer:pool.params}},
+						{binding:1,resource:viewRes(mm)},
+						{binding:2,resource:viewRes(tt)},
+						{binding:3,resource:viewRes(pool.display)},
+						{binding:4,resource:viewRes(vv)},
+						{binding:5,resource:viewRes(p0)},
+						{binding:6,resource:flagsView}
+					]);
+				}
+			}
+		}
+		for(let t=0;t<2;t++){
+			const tt=pool.therm.tex[t],tn=pool.therm.tex[1-t];
+			groups.advectTherm[t]=bg(device,"advectTherm"+t,pipes.advectTherm.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:fluxView},
+				{binding:2,resource:viewRes(tt)},
+				{binding:3,resource:viewRes(tn)}
+			]);
+			groups.paintTherm[t]=bg(device,"paintTherm"+t,pipes.paintTherm.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
 				{binding:1,resource:viewRes(tt)},
 				{binding:2,resource:viewRes(tn)},
 				{binding:3,resource:viewRes(pool.patchE)}
 			]);
-			for(let v=0;v<2;v++){
-				const vv=pool.vel.tex[v],vn=pool.vel.tex[1-v];
-				groups.forces[m]=groups.forces[m]||[];
-				groups.forces[m][v]=bg(device,"forces"+m+v,pipes.forces.getBindGroupLayout(0),[
-					{binding:0,resource:{buffer:pool.params}},
-					{binding:1,resource:viewRes(vv)},
-					{binding:2,resource:viewRes(vn)},
-					{binding:3,resource:viewRes(mm)},
-					{binding:4,resource:viewRes(tt)},
-					{binding:5,resource:flagsView}
-				]);
-				groups.rhs[m]=groups.rhs[m]||[];
-				groups.rhs[m][v]=bg(device,"rhs"+m+v,pipes.rhs.getBindGroupLayout(0),[
-					{binding:0,resource:{buffer:pool.params}},
-					{binding:1,resource:viewRes(pool.divsrc)},
-					{binding:2,resource:viewRes(vv)},
-					{binding:3,resource:viewRes(mm)},
-					{binding:4,resource:flagsView}
-				]);
-				groups.applyGrad[m]=groups.applyGrad[m]||[];
-				groups.applyGrad[m][v]=bg(device,"applyGrad"+m+v,pipes.applyGrad.getBindGroupLayout(0),[
-					{binding:0,resource:{buffer:pool.params}},
-					{binding:1,resource:viewRes(vv)},
-					{binding:2,resource:viewRes(vn)},
-					{binding:3,resource:viewRes(p0)},
-					{binding:4,resource:viewRes(mm)},
-					{binding:5,resource:flagsView}
-				]);
-				groups.statsA[m]=groups.statsA[m]||[];
-				groups.statsA[m][v]=bg(device,"statsA"+m+v,pipes.statsA.getBindGroupLayout(0),[
-					{binding:0,resource:{buffer:pool.params}},
-					{binding:1,resource:viewRes(mm)},
-					{binding:2,resource:viewRes(tt)},
-					{binding:3,resource:viewRes(vv)},
-					{binding:4,resource:viewRes(p0)},
-					{binding:5,resource:{buffer:pool.statsPart}}
-				]);
-				groups.toDisplay[m]=groups.toDisplay[m]||[];
-				groups.toDisplay[m][v]=bg(device,"toDisplay"+m+v,pipes.toDisplay.getBindGroupLayout(0),[
-					{binding:0,resource:{buffer:pool.params}},
-					{binding:1,resource:viewRes(mm)},
-					{binding:2,resource:viewRes(tt)},
-					{binding:3,resource:viewRes(pool.display)},
-					{binding:4,resource:viewRes(vv)},
-					{binding:5,resource:viewRes(p0)},
-					{binding:6,resource:flagsView}
-				]);
-			}
 		}
-		groups.advectVel[0]=bg(device,"advectVel0",pipes.advectVel.getBindGroupLayout(0),[
-			{binding:0,resource:{buffer:pool.params}},
-			{binding:1,resource:viewRes(v0)},
-			{binding:2,resource:viewRes(v1)}
-		]);
-		groups.advectVel[1]=bg(device,"advectVel1",pipes.advectVel.getBindGroupLayout(0),[
-			{binding:0,resource:{buffer:pool.params}},
-			{binding:1,resource:viewRes(v1)},
-			{binding:2,resource:viewRes(v0)}
-		]);
-		groups.flux[0]=bg(device,"flux0",pipes.flux.getBindGroupLayout(0),[
-			{binding:0,resource:{buffer:pool.params}},
-			{binding:1,resource:viewRes(v0)},
-			{binding:2,resource:flagsView},
-			{binding:3,resource:viewRes(pool.flux)}
-		]);
-		groups.flux[1]=bg(device,"flux1",pipes.flux.getBindGroupLayout(0),[
-			{binding:0,resource:{buffer:pool.params}},
-			{binding:1,resource:viewRes(v1)},
-			{binding:2,resource:flagsView},
-			{binding:3,resource:viewRes(pool.flux)}
-		]);
+		for(let v=0;v<2;v++){
+			const vv=pool.vel.tex[v],vn=pool.vel.tex[1-v];
+			groups.advectVel[v]=bg(device,"advectVel"+v,pipes.advectVel.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(vv)},
+				{binding:2,resource:viewRes(vn)}
+			]);
+			groups.flux[v]=bg(device,"flux"+v,pipes.flux.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(vv)},
+				{binding:2,resource:flagsView},
+				{binding:3,resource:fluxView}
+			]);
+		}
 		groups.statsB=bg(device,"statsB",pipes.statsB.getBindGroupLayout(0),[
 			{binding:0,resource:{buffer:pool.statsPart}},
 			{binding:1,resource:{buffer:pool.stats}},
@@ -204,12 +229,12 @@
 		]);
 		return groups;
 	}
-	// one substep of the 0.0.0 section 8 graph. m and v flip on return (3 vel swaps = odd).
-	function encodeStep(cpass,pool,pipes,groups,state,iters){
+	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
-		let m=state.m, v=state.v;
+		const m=state.m,t=state.t;
+		let v=state.v;
 		cpass.setPipeline(pipes.forces);
-		cpass.setBindGroup(0,groups.forces[m][v]);
+		cpass.setBindGroup(0,groups.forces[m][t][v]);
 		cpass.dispatchWorkgroups(wx,wy);
 		v=1-v;
 		cpass.setPipeline(pipes.advectVel);
@@ -238,14 +263,26 @@
 		cpass.setBindGroup(0,groups.advectMass[m]);
 		cpass.dispatchWorkgroups(wx,wy);
 		cpass.setPipeline(pipes.advectTherm);
-		cpass.setBindGroup(0,groups.advectTherm[m]);
+		cpass.setBindGroup(0,groups.advectTherm[t]);
 		cpass.dispatchWorkgroups(wx,wy);
-		state.m=1-m;
+		let nextM=(m+1)%3;
+		if(fctOn){
+			cpass.setPipeline(pipes.limiterPrepare);
+			cpass.setBindGroup(0,groups.limiterPrepare[m]);
+			cpass.dispatchWorkgroups(wx,wy);
+			cpass.setPipeline(pipes.limiterApply);
+			cpass.setBindGroup(0,groups.limiterApply[m]);
+			cpass.dispatchWorkgroups(wx,wy);
+			state.m=(m+2)%3;
+		}else{
+			state.m=nextM;
+		}
+		state.t=1-t;
 		state.v=v;
 	}
 	function encodeStats(cpass,pool,pipes,groups,state){
 		cpass.setPipeline(pipes.statsA);
-		cpass.setBindGroup(0,groups.statsA[state.m][state.v]);
+		cpass.setBindGroup(0,groups.statsA[state.m][state.t][state.v]);
 		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
 		cpass.setPipeline(pipes.statsB);
 		cpass.setBindGroup(0,groups.statsB);
@@ -253,7 +290,7 @@
 	}
 	function encodeDisplay(cpass,pool,pipes,groups,state){
 		cpass.setPipeline(pipes.toDisplay);
-		cpass.setBindGroup(0,groups.toDisplay[state.m][state.v]);
+		cpass.setBindGroup(0,groups.toDisplay[state.m][state.t][state.v]);
 		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
 	}
 	function encodePaint(cpass,pool,pipes,groups,state){
@@ -262,9 +299,10 @@
 		cpass.setBindGroup(0,groups.paintMass[state.m]);
 		cpass.dispatchWorkgroups(wx,wy);
 		cpass.setPipeline(pipes.paintTherm);
-		cpass.setBindGroup(0,groups.paintTherm[state.m]);
+		cpass.setBindGroup(0,groups.paintTherm[state.t]);
 		cpass.dispatchWorkgroups(wx,wy);
-		state.m=1-state.m;
+		state.m=(state.m+1)%3;
+		state.t=1-state.t;
 	}
 	function encodeRender(rpass,pipes,groups){
 		rpass.setPipeline(pipes.renderPipe);

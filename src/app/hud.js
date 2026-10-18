@@ -47,7 +47,7 @@
 				lines.push(kinds[i]+": total="+totals[i]+" exp="+expects[i]+" drift="+drift+" ["+driftClass(drift)+"]");
 			}
 			lines.push("maxM="+s.maxM+" neg="+s.cntNeg+" over="+s.cntOver+" maxDiv="+s.motion.maxDiv+" p["+s.motion.pMin+".."+s.motion.pMax+"] maxVel="+s.motion.maxVel);
-			lines.push("frame#"+s.frame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+" fps~"+Math.round(fpsEma));
+			lines.push("statsFrame#"+s.statsFrame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+" fps~"+Math.round(fpsEma));
 			return lines.join("\n");
 		}
 		async function copyToClipboard(){
@@ -114,8 +114,8 @@
 				const modeName=Fluid.core.config.viewModeNames[cfg.viewMode]||String(cfg.viewMode);
 				const paintName=Fluid.core.config.paintModeNames[cfg.paintMode]||String(cfg.paintMode);
 				const txt="mode="+modeName+"  scenario="+cfg.scenario+"  paint="+paintName+
-					"  gravity="+(cfg.gravityY!==0?"on":"off")+"  "+(cfg._paused?"PAUSED":"running")+
-					"\nkeys: 0-5 view · space pause · . step · r reset · n scenario · b paint(dye/wall/erase) · c color · g gravity · +/- K · [ ] size · s dump · h help";
+					"  FCT="+(cfg.fctLimiter?"on":"off")+"  gravity="+(cfg.gravityY!==0?"on":"off")+"  "+(cfg._paused?"PAUSED":"running")+
+					"\nkeys: 0-5 view · space pause · . step · r reset · n scenario · b paint · c color · f FCT · g gravity · +/- K · [ ] size · s dump · h help";
 				if(txt!==lastState){
 					stateEl.textContent=txt;
 					lastState=txt;

@@ -1,10 +1,20 @@
+PASS stats snapshot: expected totals stay paired with their readback  old=10/2/50 live=15/3/75
+PASS stats snapshot: next readback captures new ledger values
 PASS reduction m sequential-f32 error is the old hud warn  seq_err=-1.06e-1 kahan_err=-3.46e-4 total=2.1440e+4
 PASS reduction m kahan-f32 error below 1e-7 relative  rel=1.62e-8
 PASS reduction E sequential-f32 error is the old hud warn  seq_err=2.68e+2 kahan_err=-1.91e-1 total=2.6384e+7
 PASS reduction E kahan-f32 error below 1e-7 relative  rel=7.25e-9
+PASS FCT dye front: at least 3x narrower after 240 steps  upwind=26 FCT=8 ratio=3.25
+PASS FCT dye front: stays within low-order local bounds  min=0.00e+0 max=0.800000 violations=0
+PASS FCT dye front: fluid mass is unchanged versus upwind-only  upwind=65536.0007 FCT=65536.0007
+PASS FCT dye front: tracer sum is conserved to 1e-6 versus upwind-only  upwind=42188.8576 FCT=42188.8579 rel=6.31e-9
+PASS FCT random 2D field: nonnegative and locally bounded  min=1.41e-7 local_bound_violations=0
+PASS FCT random 2D field: correction is conservative below 1e-6  correction_drift=3.13e-10
+PASS FCT closed transport: all five invariants below 1e-6 after 10000 steps  worst_rel=5.96e-7 m=-5.96e-7 dr=-5.30e-7
+PASS FCT closed transport: no negative cells or NaNs after 10000 steps  cntNeg=0 minDr=0.00e+0 maxM=32.000
 PASS still box: max|vel| below 1e-2 after 500 frames (stratified, hydrostatic)  maxVel=0.00e+0 maxDiv=0.00e+0
 PASS still box: zero mass/energy drift  drift_m=0.00e+0 drift_E=0.00e+0
-PASS stirred box: all five invariants conserved below 1e-7 relative over 1200 frames  worst_rel=2.59e-8
+PASS stirred box: all five invariants conserved below 1e-6 relative over 1200 frames  worst_rel=4.66e-7
 PASS stirred box: no negative cell ever  negCells=0 minM=0.2959481477737427
 PASS stirred box: no NaN
 PASS stirred box: flux bound respected (|F| <= 1)  maxFlux=0.8086
@@ -15,12 +25,12 @@ PASS dam break: no overpacking (m <= rho_liq*1.001)  cntOver=0 maxM=0.9983
 PASS dam break: mass and energy conserved below 1e-7  drift_m=-3.94e-9 drift_E=1.42e-8
 PASS dam break: block actually moved (maxVel > 0 at some point or dye spread)
 PASS wall integrity: no red dye crossed a one cell wall  dyeRight=0.000e+0 dyeLeft=49.411
-PASS wall integrity: closed box conserved below 1e-7  drift_m=1.57e-8
-PASS emitter accounting: drift below 1e-7 relative with 50 injected patches  worst_rel=3.45e-8 injected_m=1832.578494
+PASS wall integrity: closed box conserved below 1e-6  drift_m=1.57e-8 drift_dr=1.75e-7
+PASS emitter accounting: drift below 1e-7 relative with 50 injected patches  worst_rel=5.03e-8 injected_m=1832.578494
 PASS draw stroke: survived paint+stir without NaN  sumM=5738.214
-PASS draw stroke: no negative cells (donor-cell monotone, not clipped)  negCells=0 minM=2.922e-1
+PASS draw stroke: no negative conserved cells (FCT bounds, no clipping)  negCells=0 minM=2.922e-1
 PASS draw stroke: no runaway overpack  maxM=5.483
-PASS draw stroke: invariants conserved below 1e-6 with injected dye  drift_m=-1.50e-8 drift_dr=7.28e-9
+PASS draw stroke: invariants conserved below 1e-6 with injected dye  drift_m=-1.50e-8 drift_dr=1.00e-7
 PASS draw stroke: limiter exercised (raw k_out exceeded 1)  rawOutMax=1.311
 PASS draw stroke: stored flux k_out <= 1 per cell (monotone transport)  storedOutMax=1.000
 ALL CONFORMANCE TESTS PASSED
