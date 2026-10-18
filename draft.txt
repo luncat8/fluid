@@ -1,0 +1,29 @@
+
+## webGPU fluid engine
+
+fast, stable, good for interactive games
+
+solid-liquid-gas state by temperature.  
+
+support multiple values.
+we need 3 'elements' of material that fit as r,g,b. if compressible - then mix properly. need strict keep mass (value) conservation, avoid rounding or other loss.
+speed, pressure (if need)
+temperature for convection purpose and solid-liquid-gas state .
+
+keep energy and mass.
+
+milestones:
+1. fluid flow, visualization show color properly not/mix
+2. heat map (heat bottom for test) cause heat fluid and start convection
+3. solid-liquid-gas, pressure change. view mode por pressure, overlay for solid.
+
+
+## open questions
+
+simulate compressible or not (for simplicity we can simulate both water and gas same - it is ok for game now, but if not very difficult - better to have both). 
+
+## these draft is not a rule, you can improve or change if something may be better. if something not clear or big choices - ask user
+
+
+
+
