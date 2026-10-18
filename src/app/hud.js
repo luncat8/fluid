@@ -115,7 +115,7 @@
 				const paintName=Fluid.core.config.paintModeNames[cfg.paintMode]||String(cfg.paintMode);
 				const txt="mode="+modeName+"  scenario="+cfg.scenario+"  paint="+paintName+
 					"  FCT="+(cfg.fctLimiter?"on":"off")+"  gravity="+(cfg.gravityY!==0?"on":"off")+"  "+(cfg._paused?"PAUSED":"running")+
-					"\nkeys: 0-5 view · space pause · . step · r reset · n scenario · b paint · c color · f FCT · g gravity · +/- K · [ ] size · s dump · h help";
+					"\nkeys: 0-7 view · space pause · . step · r reset · n scenario · b paint · c color · f FCT · g gravity · +/- K · [ ] size · s dump · h help";
 				if(txt!==lastState){
 					stateEl.textContent=txt;
 					lastState=txt;

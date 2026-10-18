@@ -232,3 +232,22 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   frame at K=60 and 8 substeps; focus future timing on pressure iteration count,
   substep behavior, and a multigrid path rather than claiming FCT or the default
   change improved FPS without measurement.
+
+## 2026-10-18 performance analysis (user report: 1024x1024 fluctuation)
+
+- [verified by code review] No atomics used anywhere. Stats reduction: workgroup
+  shared memory → partials buffer → single-thread Kahan final reduce.
+  All dispatches within one compute pass are implicitly ordered.
+- The 1024x1024 frame time fluctuation is caused by:
+  1. Variable substeps (1-8) depending on maxVel: 8 substeps = 8× all passes
+  2. Pressure solver: K=60 → 120 red/black dispatches per substep → up to 960
+     per frame at 8 substeps. Each dispatch touches 1026×1026 texture.
+  3. FCT adds 2 extra full-grid dispatches per substep (limiterPrepare + limiterApply)
+  4. statsReduceB is single-threaded: at N=1024, 129×129=16641 workgroups, each
+     writing 32 floats = ~2MB of partials to loop over sequentially. Runs every
+     statsEvery=30 frames.
+- The dominant cost at 1024 is the pressure iteration count × substeps. At K=60
+  and 8 substeps that's 960 full-grid dispatches. Reducing K or the substep cap
+  is the most effective lever.
+- The statsReduceB single-thread bottleneck at 1024 is notable but only fires
+  every 30 frames, so it causes a spike, not steady fluctuation.

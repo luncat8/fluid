@@ -5,6 +5,7 @@
 	let solver=null;
 	let hud=null;
 	let inputState=null;
+	let controls=null;
 	let cfg=null;
 	let rafId=0;
 	let lastTime=0;
@@ -28,6 +29,7 @@
 		solver=Fluid.gpu.solver.create(initRes.device,canvas,initRes.context,initRes.format,cfg);
 		hud=Fluid.app.hud.create(solver,cfg);
 		inputState=Fluid.app.input.create(canvas,cfg,solver);
+		controls=Fluid.app.controls.create(cfg,solver);
 		canvas.width=cfg.N;
 		canvas.height=cfg.N;
 		lastTime=performance.now();
@@ -73,6 +75,7 @@
 			cfg._dirty=false;
 		}
 		if(hud)hud.update(now);
+		if(controls)controls.update(now);
 		solver.pollStats();
 		rafId=requestAnimationFrame(frame);
 	}

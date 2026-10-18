@@ -24,3 +24,24 @@ pre { overflow: auto; padding: 16px; background: #080d12; font-size: 12px; max-h
 #error-panel { white-space: pre-wrap; border-left: 3px solid #ef9587; padding: 16px; background: #352123; }
 small { color: #9dafbe; }
 @media (max-width: 700px) { .workspace { grid-template-columns: 1fr; } }
+
+/* controls panel */
+#controls-panel { white-space: normal; }
+.ctrl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.ctrl-row label { color: #9dafbe; font-size: 12px; min-width: 40px; }
+.ctrl-row select {
+	font: inherit; font-size: 12px; padding: 4px 8px;
+	background: #182630; color: #d5e3ed; border: 1px solid #3a5569;
+}
+.ctrl-row select:focus { outline: 1px solid #7fd8d0; }
+#controls-panel button { padding: 5px 10px; margin: 2px 4px 2px 0; font-size: 12px; }
+.ctrl-btn.active { background: #2a4a5a; border-color: #7fd8d0; }
+.ctrl-check { font-size: 12px; color: #9dafbe; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.ctrl-check input[type="checkbox"] { accent-color: #7fd8d0; }
+.ctrl-label { color: #9dafbe; font-size: 12px; min-width: 40px; }
+.ctrl-row input[type="range"] {
+	flex: 1; min-width: 80px; accent-color: #7fd8d0;
+	height: 18px; cursor: pointer;
+}
+.ctrl-row output { color: #7fd8d0; font-size: 12px; min-width: 32px; text-align: right; }
+.ctrl-color { min-width: 28px; text-align: center; border-bottom: 3px solid transparent !important; }

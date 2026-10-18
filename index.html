@@ -16,6 +16,7 @@
 	<script defer src="src/gpu/solver.js"></script>
 	<script defer src="src/gpu/view.js"></script>
 	<script defer src="src/app/input.js"></script>
+	<script defer src="src/app/controls.js"></script>
 	<script defer src="src/app/hud.js"></script>
 	<script defer src="src/app/main.js"></script>
 </head>
@@ -26,12 +27,52 @@
 	<div class="workspace">
 		<canvas id="c" width="512" height="512" tabindex="0" aria-label="Simulation canvas"></canvas>
 		<section id="hud" aria-label="Diagnostics">
+			<div id="controls-panel" class="hud-block" aria-label="Simulation controls">
+				<div class="ctrl-row">
+					<label for="ctrl-view">View</label>
+					<select id="ctrl-view"></select>
+					<label for="ctrl-scenario">Scenario</label>
+					<select id="ctrl-scenario"></select>
+				</div>
+				<div class="ctrl-row">
+					<button id="ctrl-pause" type="button">Pause</button>
+					<button id="ctrl-step" type="button">Step</button>
+					<button id="ctrl-reset" type="button">Reset</button>
+				</div>
+				<div class="ctrl-row">
+					<label class="ctrl-check"><input type="checkbox" id="ctrl-fct"> FCT</label>
+					<label class="ctrl-check"><input type="checkbox" id="ctrl-gravity"> Gravity</label>
+				</div>
+				<div class="ctrl-row">
+					<span class="ctrl-label">Paint</span>
+					<button class="ctrl-btn" data-paint="0">Dye</button>
+					<button class="ctrl-btn" data-paint="1">Wall</button>
+					<button class="ctrl-btn" data-paint="2">Erase</button>
+				</div>
+				<div class="ctrl-row">
+					<span class="ctrl-label">Dye</span>
+					<button class="ctrl-btn ctrl-color" data-dye-color="0">R</button>
+					<button class="ctrl-btn ctrl-color" data-dye-color="1">G</button>
+					<button class="ctrl-btn ctrl-color" data-dye-color="2">B</button>
+					<button class="ctrl-btn ctrl-color" data-dye-color="3">Y</button>
+				</div>
+				<div class="ctrl-row">
+					<label for="ctrl-iters">Pressure iters</label>
+					<input type="range" id="ctrl-iters" min="1" max="200" step="1">
+					<output id="ctrl-iters-val"></output>
+				</div>
+				<div class="ctrl-row">
+					<label for="ctrl-grid">Grid N</label>
+					<input type="range" id="ctrl-grid" min="64" max="1024" step="64">
+					<output id="ctrl-grid-val"></output>
+				</div>
+			</div>
 			<div id="perf" class="hud-block"></div>
 			<div id="conservation" class="hud-block"></div>
 			<div id="state" class="hud-block"></div>
 			<div id="error-panel" role="alert" hidden></div>
 			<div id="help-overlay" hidden>
-				<p><strong>Keys</strong>: 0-5 view modes · space pause · . step · r reset · n scenario · b paint dye/wall/erase · c dye color · f toggle FCT · g gravity · +/- pressure iters · [ ] grid size · s dump stats · h help</p>
+				<p><strong>Keys</strong>: 0-7 view modes · space pause · . step · r reset · n scenario · b paint dye/wall/erase · c dye color · f toggle FCT · g gravity · +/- pressure iters · [ ] grid size · s dump stats · h help</p>
 				<p>Drag to stir and paint. Dye painting is ledger-accounted: drift stays green. Walls block flow and are visible in view 5.</p>
 				<p>Drift thresholds: green &lt; 1e-6, yellow &lt; 1e-3, red above. min values are the monotonicity watchdog.</p>
 			</div>

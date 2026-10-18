@@ -31,13 +31,14 @@
 			state.pending.wall=cfg.paintMode!==0;
 			state.pending.erase=cfg.paintMode===2;
 		}
+		cfg.paintColor=cfg.paintColor||0;
 		function flushPaint(){
 			const p=state.pending;
 			if(!p||!solver)return;
 			if(p.wall){
 				solver.paintWall(p.u,p.v,p.erase);
 			}else{
-				const c=DYE_COLORS[state.paintColor%DYE_COLORS.length];
+				const c=DYE_COLORS[(cfg.paintColor||0)%DYE_COLORS.length];
 				solver.paintDye(p.u,p.v,c);
 			}
 			state.pending=null;
@@ -84,7 +85,7 @@
 		window.addEventListener("keydown",e=>{
 			const k=e.key.toLowerCase();
 			state.keys[k]=true;
-			if(k>="0"&&k<="5"&&k.length===1){
+			if(k>="0"&&k<="7"&&k.length===1){
 				cfg.viewMode=parseInt(k,10);
 				cfg._dirty=true;
 			}else if(k===" "){
@@ -118,8 +119,8 @@
 				}else if(k==="f"){
 					cfg.fctLimiter=cfg.fctLimiter?0:1;
 					cfg._dirty=true;
-				}else if(k==="c"){
-					state.paintColor=(state.paintColor+1)%DYE_COLORS.length;
+			}else if(k==="c"){
+				cfg.paintColor=((cfg.paintColor||0)+1)%DYE_COLORS.length;
 			}else if(k==="b"){
 				cfg.paintMode=(cfg.paintMode+1)%3;
 			}else if(k==="n"){
