@@ -22,8 +22,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	if (x < 1 || x >= texW - 1 || y < 1 || y >= texH - 1) {
 		return;
 	}
-	let self = textureLoad(massSrc, vec2<i32>(x, y));
-	var out = self;
+	let center = textureLoad(massSrc, vec2<i32>(x, y));
+	var out = center;
 	let dt = params.values[4];
 	let conductivity = params.values[35];
 	if (conductivity <= 0.0) {
@@ -44,12 +44,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		let nb = textureLoad(massSrc, vec2<i32>(nx, ny));
 		// per channel exchange with C=1 => limit 0.25*delta per face
 		for (var c: i32 = 0; c < 4; c++) {
-			let sVal: f32;
-			let nVal: f32;
-			if (c == 0) { sVal = self.r; nVal = nb.r; }
-			else if (c == 1) { sVal = self.g; nVal = nb.g; }
-			else if (c == 2) { sVal = self.b; nVal = nb.b; }
-			else { sVal = self.a; nVal = nb.a; }
+			var sVal: f32;
+			var nVal: f32;
+			if (c == 0) { sVal = center.r; nVal = nb.r; }
+			else if (c == 1) { sVal = center.g; nVal = nb.g; }
+			else if (c == 2) { sVal = center.b; nVal = nb.b; }
+			else { sVal = center.a; nVal = nb.a; }
 			let delta = nVal - sVal;
 			var d = coeff * delta;
 			let limit = 0.25 * delta;
