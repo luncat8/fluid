@@ -1,0 +1,76 @@
+{
+	"protocol": "file:",
+	"isSecureContext": true,
+	"gpuAvailable": true,
+	"status": "passed",
+	"adapter": {
+		"vendor": "nvidia",
+		"architecture": "ampere",
+		"device": "",
+		"description": "",
+		"isFallbackAdapter": false
+	},
+	"adapterFeatures": [
+		"bgra8unorm-storage",
+		"clip-distances",
+		"core-features-and-limits",
+		"depth-clip-control",
+		"depth32float-stencil8",
+		"dual-source-blending",
+		"float32-blendable",
+		"float32-filterable",
+		"indirect-first-instance",
+		"primitive-index",
+		"rg11b10ufloat-renderable",
+		"shader-f16",
+		"subgroups",
+		"texture-component-swizzle",
+		"texture-compression-bc",
+		"texture-compression-bc-sliced-3d",
+		"texture-formats-tier1",
+		"texture-formats-tier2",
+		"timestamp-query"
+	],
+	"deviceFeatures": [
+		"core-features-and-limits"
+	],
+	"limits": {
+		"maxTextureDimension2D": 8192,
+		"maxStorageTexturesPerShaderStage": 4,
+		"maxSampledTexturesPerShaderStage": 16,
+		"maxComputeInvocationsPerWorkgroup": 256,
+		"maxComputeWorkgroupStorageSize": 16384,
+		"maxComputeWorkgroupsPerDimension": 65535,
+		"maxUniformBufferBindingSize": 65536,
+		"maxStorageBufferBindingSize": 134217728,
+		"maxBufferSize": 268435456
+	},
+	"formats": [
+		{
+			"format": "rg32float",
+			"ok": true,
+			"error": null
+		},
+		{
+			"format": "rgba32float",
+			"ok": true,
+			"error": null
+		},
+		{
+			"format": "rgba8uint",
+			"ok": true,
+			"error": null
+		},
+		{
+			"format": "r32float",
+			"ok": true,
+			"error": null
+		},
+		{
+			"format": "rgba16float",
+			"ok": true,
+			"error": null
+		}
+	],
+	"errors": []
+}

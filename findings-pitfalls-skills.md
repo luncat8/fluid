@@ -118,6 +118,7 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 - [verified] Node probe control-flow tests pass; see experiments/logs/2026-10-18-probe-test.log.
   These use mocks and establish no browser capability. Sandbox Chromium could not launch
   (missing libnspr4.so); target-browser file:// evidence remains pending.
+- [verified 2026-10-18] User target-browser file:// probe passed on Nvidia Ampere (core features only, all five formats ok, limits maxTextureDimension2D 8192, maxStorageTexturesPerShaderStage 4). Log at experiments/logs/2026-10-18-probe-user.log. file:// is a secure context in that browser; runtime path is core WebGPU with no optional features.
 - skill: createTexture can report validation asynchronously. Use pushErrorScope and await
   popErrorScope for each tested format; a returned texture handle alone is not a pass.
 - pitfall: latent heat is already included in conserved enthalpy E. Adding m*L_f when

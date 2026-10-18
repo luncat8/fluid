@@ -9,12 +9,17 @@ h1 { font-size: 28px; margin-bottom: 4px; }
 a { color: #7fd8d0; }
 .subtitle { color: #9dafbe; }
 .workspace { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(260px, 1fr); gap: 24px; }
-canvas { width: 100%; aspect-ratio: 1; background: #080d12; border: 1px solid #354450; }
+canvas { width: 100%; aspect-ratio: 1; background: #080d12; border: 1px solid #354450; image-rendering: pixelated; }
 #hud, section { min-width: 0; }
 #status { color: #7fd8d0; }
+.hud-block { white-space: pre-wrap; padding: 10px 12px; background: #0e1a23; border: 1px solid #243a4a; margin-bottom: 10px; font-size: 12px; line-height: 1.5; }
+#perf { color: #8bd8cb; }
+#conservation { color: #d5e3ed; }
+#state { color: #a8bdd0; }
+#help-overlay { margin-top: 10px; padding: 10px 12px; background: #1a2a36; border: 1px solid #3a5569; font-size: 12px; }
 button { font: inherit; padding: 8px 14px; margin: 8px 8px 8px 0; color: inherit; background: #23333f; border: 1px solid #526977; cursor: pointer; }
 button:disabled { opacity: .5; cursor: wait; }
-pre { overflow: auto; padding: 16px; background: #080d12; font-size: 12px; max-height: 65vh; }
+pre { overflow: auto; padding: 16px; background: #080d12; font-size: 12px; max-height: 40vh; }
 #error-panel { white-space: pre-wrap; border-left: 3px solid #ef9587; padding: 16px; background: #352123; }
 small { color: #9dafbe; }
 @media (max-width: 700px) { .workspace { grid-template-columns: 1fr; } }
