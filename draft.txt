@@ -1,12 +1,13 @@
 
-## webGPU fluid engine
+## 2D webGPU fluid engine
 
 fast, stable, good for interactive games
 
 solid-liquid-gas state by temperature.  
 
 support multiple values.
-we need 3 'elements' of material that fit as r,g,b. if compressible - then mix properly. need strict keep mass (value) conservation, avoid rounding or other loss.
+we need 3 'elements' of material that fit as r,g,b. if compressible - then mix properly. need strict keep mass (value) conservation, avoid rounding or other loss. rgb is just color of substance to make it flow visible and visually debug mix r+g = Y visually. all water and gases same
+
 speed, pressure (if need)
 temperature for convection purpose and solid-liquid-gas state .
 
@@ -18,12 +19,11 @@ milestones:
 3. solid-liquid-gas, pressure change. view mode por pressure, overlay for solid.
 
 
-## open questions
+we probably do not need liquid-gas free surface modelling and surface tension. but simple - aggregate solid (like crystal growth), move water and gas similar way but water just not pressurized (or little pressurized depends on solver choice) and more heavy. this i hope hive us emergent behavior without scientific modelling of surface
+That simplifies the model a lot (single substance, RGB = conserved color tracers, aggregate phases, no free-surface/surface-tension work).
 
-simulate compressible or not (for simplicity we can simulate both water and gas same - it is ok for game now, but if not very difficult - better to have both). 
+think about solid aggregation as crystal grow
 
-## these draft is not a rule, you can improve or change if something may be better. if something not clear or big choices - ask user
-
-
+these draft is not a rule, you can improve or change if something may be better. if something not clear or big choices - ask user
 
 

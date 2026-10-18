@@ -112,3 +112,16 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 	acknowledged exception and is throttled to 5 hz.
 - note: .gitignore.txt in the repo root is not an active gitignore file (git reads
 	.gitignore). if node_modules ever appears, rename it first. [to verify with the owner]
+
+## 2026-10-18 probe and solid-growth review
+
+- [verified] Node probe control-flow tests pass; see experiments/logs/2026-10-18-probe-test.log.
+  These use mocks and establish no browser capability. Sandbox Chromium could not launch
+  (missing libnspr4.so); target-browser file:// evidence remains pending.
+- skill: createTexture can report validation asynchronously. Use pushErrorScope and await
+  popErrorScope for each tested format; a returned texture handle alone is not a pass.
+- pitfall: latent heat is already included in conserved enthalpy E. Adding m*L_f when
+  the freeze mask flips counts it twice. Growth removes energy through conduction.
+- [to verify] phase conduction needs enthalpy-aware pair bounds and a multi-face budget
+  or disjoint sweeps. The earlier isolated-pair clamp claim does not by itself establish
+  monotonicity of a simultaneous four-neighbour update or latent-plateau treatment.

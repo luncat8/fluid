@@ -1,0 +1,8 @@
+PASS success, all five formats, resource cleanup, core-only request, uncaptured error, device loss
+PASS nullAdapter
+PASS adapterRejects
+PASS deviceRejects
+PASS validationError
+PASS createThrows
+PASS missing GPU fallback, intentional device destruction
+Mocks only: target-browser file:// capability is NOT verified.

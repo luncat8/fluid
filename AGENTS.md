@@ -3,7 +3,8 @@
 
 ## style
 
-- use a single tab indentation. LF end
+- use a single tab indentation. LF end.
+const $ = id => document.getElementById(id);
 
 - avoid deep nesting of braces { } and long if-else.
 - flatten with early returns, helper functions, or flat data tables.
@@ -11,8 +12,7 @@
 - avoid duplication of code.
 
 - avoid allocations in the hot path (per-frame loop, sim, render).
-- no new {}, [], object literals, closures, or string concat
-- inside the frame loop.
+- no new {}, [], object literals, closures, or string concat in the frame loop.
 - reuse preallocated buffers / typed arrays / scratch objects.
 - allocate once at setup, mutate in place per frame.
 - these are not strict rules, use best.
@@ -20,7 +20,7 @@
 - plan*.md is NOT the implementation log. if need - update/improve plan, but keep final plan as artifact for possible fork or reimplementation without referring of what was and what done, without referring chat, etc.
 - plan number i.e. 0.1 - is not version sequence. it is ok to continue old numbers by subject and implement in any useful order.
 
-- only essential concise comments in code that really helpful i.e. explain why and decision. prefer descriptive naming.
+- only essential concise comments (in code and in worklogs) that really helpful i.e. explain why and decision. prefer descriptive naming.
 
 - no legacy support, no old versions, no outdated browsers, no leftovers and no over protecting from unreal edge cases. we need clean architecture.
 
@@ -58,11 +58,17 @@ experiments/logs/ - keep useful;
 git push returns "Invalid username or token" is ok, no need to investigate or report - i will apply manually
 
 ## Workflow
-- **Worklog**: record development steps and its validation in `archive/*-worklog.md`, end job with a next step suggestion.
-example:
-0.1.x-draft.md
+
+- **Worklog**: 
+
+start work with review previous task: it was done by another agent and you can find really better way to improve it or find some issues. dont need to run tests again because already done in previous stage.
+then continue with next: review next step plan, if found good ideas - improve plan, implement.
+record development steps and its validation in `archive/*-worklog.md`, end job with a next step suggestion.
+
+example of file structure:
+0.1.x-draft.md - human write thoughts about goals and design
 archive/0.1.0-plan.md
 archive/0.1.0-worklog.md
 0.1.1-plan.md
-0.1.3-draft.md - you may also write user prompts as draft files to store reference of global task
-0.1.2-plan.md
+gui.1-plan.md
+
