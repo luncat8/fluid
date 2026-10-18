@@ -1,27 +1,37 @@
 # Fluid
 
-A planned conservative 2D WebGPU fluid engine. Currently implemented: page skeleton
-and capability probe only; the canvas does not yet simulate fluid.
+A conservative 2D WebGPU fluid engine for interactive games. One substance, three
+conserved color tracers, conserved internal energy; aggregate phases later.
+Currently implemented: full velocity solver (forces, semi-lagrangian advection,
+variable-density red-black Gauss-Seidel projection), donor-cell transport of
+mass/dye/energy through a single stored face flux, ledger-accounted dye and wall
+painting, conservation meters, six view modes, and a CPU reference solver with a
+conformance suite.
 
-## Probe first
+## Run
 
-1. Open `experiments/probe.html` directly from disk in the intended browser (`file://`).
-2. Wait for the result and choose **Save probe log**.
-3. Put the downloaded log in `experiments/logs/` with the browser/machine identified.
-   Review the log before sharing: it includes browser and GPU information.
-4. If WebGPU is unavailable on `file://`, run `python3 -m http.server 8000` from
-   this directory and open `http://localhost:8000/experiments/probe.html`.
-   Save that result separately; HTTP/HTTPS success does not verify `file://`.
+- Directly: open `index.html` from disk (`file://`) in a WebGPU browser.
+- Or: `python3 run_index.py` (options: `port`, `--host`, `--no-open`) and open
+  `http://127.0.0.1:8000/index.html`.
 
-No build, dependencies, modules, network assets or local fetches are used by the page.
-The probe validates device creation and the five required texture formats, not shader
-execution or simulation performance. Do not continue the GPU harness until the target
-browser result establishes the runtime path.
+Keys: `0-5` view modes · `space` pause · `.` step · `r` reset · `n` scenario
+(blobs / dam / still) · `b` paint dye/wall/erase · `c` dye color · drag to stir
+and paint · `g` gravity · `+/-` pressure iterations · `[ ]` grid size · `s` dump
+stats · `h` help.
+
+The HUD shows drift of all five conserved invariants against the source ledger
+(green < 1e-6, yellow < 1e-3, red above), min-value watchdogs, negative/overpack
+cell counts, max velocity and divergence.
 
 ## Validation
 
-`node experiments/probe-test.js` tests probe control flow with mocked WebGPU objects.
-It is **not** evidence of browser/GPU support.
+`node experiments/conformance.js` runs the CPU reference (the numeric oracle for
+the scheme in `0.0.0-plan.md` section 5) through: stats-reduction error, still
+box, stirred closed box, dam break, wall integrity, and emitter accounting.
+Keep output in `experiments/logs/<date>-conformance.log`.
 
-Start with `0.0.0-plan.md` for architecture; `0.5.0-plan.md` covers phase changes and
-thermal solid growth. Development records are in `archive/*-worklog.md`.
+No build, no dependencies, no modules, no network. All WGSL is inline as JS
+template strings; `file://` works.
+
+Start with `0.0.0-plan.md` for the architecture and the scheme spec. Development
+records are in `archive/*-worklog.md`.

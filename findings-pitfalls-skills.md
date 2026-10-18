@@ -115,14 +115,65 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 
 ## 2026-10-18 probe and solid-growth review
 
-- [verified] Node probe control-flow tests pass; see experiments/logs/2026-10-18-probe-test.log.
-  These use mocks and establish no browser capability. Sandbox Chromium could not launch
-  (missing libnspr4.so); target-browser file:// evidence remains pending.
-- [verified 2026-10-18] User target-browser file:// probe passed on Nvidia Ampere (core features only, all five formats ok, limits maxTextureDimension2D 8192, maxStorageTexturesPerShaderStage 4). Log at experiments/logs/2026-10-18-probe-user.log. file:// is a secure context in that browser; runtime path is core WebGPU with no optional features.
+- [verified] Node probe control-flow tests passed (mocks only, no browser capability).
+  Probe page, test and logs were retired 2026-10-18: capability facts below are the
+  record; the code was noise in the repo.
+- [verified 2026-10-18] User target-browser file:// probe passed on Nvidia Ampere
+  (core features only, all five formats ok, limits maxTextureDimension2D 8192,
+  maxStorageTexturesPerShaderStage 4). file:// is a secure context in that browser;
+  runtime path is core WebGPU with no optional features.
 - skill: createTexture can report validation asynchronously. Use pushErrorScope and await
   popErrorScope for each tested format; a returned texture handle alone is not a pass.
 - pitfall: latent heat is already included in conserved enthalpy E. Adding m*L_f when
   the freeze mask flips counts it twice. Growth removes energy through conduction.
 - [to verify] phase conduction needs enthalpy-aware pair bounds and a multi-face budget
+
+## 2026-10-18 numerics findings (0.2.0 / 0.3.0 implementation)
+
+- [verified] plain jacobi cannot solve the closed-box (all-neumann) pressure system:
+  the checkerboard mode is an exact eigenvalue -1 of the jacobi iteration on any
+  bipartite 5-point stencil with dropped boundary faces. it oscillates forever
+  (residual stalls at its amplitude: measured 25.77 of |b|~400 after 600 iterations,
+  any K). red-black gauss-seidel kills it in one sweep (omega=1; over-relaxation
+  diverges on the singular system: measured div-after-grad 400/800 at omega 1.7/1.9
+  vs 0.38 at omega 1.0, 40 sweeps). default pressureIters=60.
+- [verified] the 0.0.0 section 5.6 gravity form a = g*(rho_ref - rho)/rho_ref is
+  unstable with an inexact projection: the uniform part re-enters through the walls
+  every step, the residual divergence slowly evacuates/overpacks corner mass, and
+  buoyancy amplifies it (still box exploded to 1e5 max|vel| at any K). subtracting
+  the domain-mean density instead (a = g*(rho_mean - rho)/rho_ref) implements the
+  plan's own "only differences matter" claim exactly: uniform boxes are then exactly
+  still (measured max|vel| = 0 after 500 frames) and the feedback is gone.
+- [verified] donor-cell transport with f32 storage has a conservation floor: the
+  per-cell store rounds to f32, so the global total is a random walk at ~eps32 scale
+  (measured 3.7e-8 relative over 1200 stirred frames, 8.5e-9 over a dam break).
+  "exactly 0.0" is not achievable with f32 fields; acceptance thresholds are 1e-7.
+- [verified] the flux clamp (+-1 per substep) silently breaks divergence-freeness
+  when CFL is exceeded: without substepping the dam break overpacks and runs away
+  (maxM 1.2 -> NaN in ~40 steps). substeps from maxVel (cfl target 0.8, cap 8) keep
+  fluxes under the clamp; the clamp stays as the safety net only.
+- [verified] a 20:1 density ratio (liquid 1.0 in 0.05 ambient) is numerically stiff:
+  near-vacuum cells amplify residual pressure error by 1/rho (20x) and the interface
+  churns. scenario ambient is 0.3 (~3:1) until 0.5.0 gives gas its own rho* and S.
+- [verified] liquid needs the expansion source S from day one, not only gas in 0.5.0:
+  without it nothing resists compaction, the projection residual overpacks the pile
+  and gravity runs it away. minimal form used now: S = clamp((m - rho_liq)/(m*tau),
+  0, S_max) for m > rho_liq only. dam break at 64^2, K=60, substepped: maxDiv 0.5,
+  zero overpack, no negatives.
+- [verified] the false hud [warn] on m/E drift was the level-2 sequential f32 sum of
+  the stats reduction, not field loss: sequential error +0.035 on m=5055 and +25 on
+  E=6.2e6 (the exact numbers seen in the hud), kahan compensation drops it to 1e-8
+  relative. all reductions that must match an f64 ledger sum use kahan.
+- skill: gpu bind groups for every (mass-parity, vel-parity) combination are
+  prebuilt at setup/resize (~30 groups); the frame loop only selects them. press
+  parity is invariant: one red-black sweep goes press[0] -> press[1] -> press[0].
+- skill: interactive painting uploads a small patch texture and runs an additive
+  kernel; the ledger sums the same f32 patch values the gpu adds, so injection
+  accounting is exact by construction (measured 2.8e-8 relative over 50 patches).
+- [verified] no bgra swizzle is needed anywhere: webgpu fragment output is logical
+  rgba and the bgra8unorm canvas target maps it; the 0.3.0 plan note was over-cautious.
+- pitfall: file:// clamps performance timers, so fps/frame-ms numbers from a local
+  page are coarse. use run_index.py (http server) when timing matters; timing a
+  submit call measures encode, not gpu execution, so the hud shows rAF fps only.
   or disjoint sweeps. The earlier isolated-pair clamp claim does not by itself establish
   monotonicity of a simultaneous four-neighbour update or latent-plateau treatment.

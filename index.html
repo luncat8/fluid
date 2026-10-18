@@ -8,6 +8,7 @@
 	<script defer src="src/core/config.js"></script>
 	<script defer src="src/core/grid.js"></script>
 	<script defer src="src/core/stats.js"></script>
+	<script defer src="src/core/solver.js"></script>
 	<script defer src="src/gpu/device.js"></script>
 	<script defer src="src/gpu/shaders.js"></script>
 	<script defer src="src/gpu/fields.js"></script>
@@ -20,8 +21,8 @@
 </head>
 <body>
 	<h1>Fluid / WebGPU lab</h1>
-	<p class="subtitle">One substance. Conserved color and energy. Infrastructure first.</p>
-	<p><a href="experiments/probe.html">Standalone capability probe</a> · <span id="status" role="status">Booting...</span></p>
+	<p class="subtitle">One substance. Conserved color and energy. Flow, transport, conservation meters.</p>
+	<p><span id="status" role="status">Booting...</span></p>
 	<div class="workspace">
 		<canvas id="c" width="256" height="256" tabindex="0" aria-label="Simulation canvas"></canvas>
 		<section id="hud" aria-label="Diagnostics">
@@ -29,13 +30,13 @@
 			<div id="conservation" class="hud-block"></div>
 			<div id="state" class="hud-block"></div>
 			<div id="error-panel" role="alert" hidden></div>
-			<pre id="probe-output" aria-label="Capability report"></pre>
 			<div id="help-overlay" hidden>
-				<p><strong>Keys</strong>: 0-5 view modes · space pause · . step · r reset · h help · +/- jacobi · [ ] size · g gravity · s dump · c color</p>
-				<p>Drag on canvas to paint dye (color cycles with c). File:// must work - no fetch, no modules.</p>
+				<p><strong>Keys</strong>: 0-5 view modes · space pause · . step · r reset · n scenario · b paint dye/wall/erase · c dye color · g gravity · +/- pressure iters · [ ] grid size · s dump stats · h help</p>
+				<p>Drag to stir and paint. Dye painting is ledger-accounted: drift stays green. Walls block flow and are visible in view 5.</p>
+				<p>Drift thresholds: green &lt; 1e-6, yellow &lt; 1e-3, red above. min values are the monotonicity watchdog.</p>
 			</div>
 		</section>
 	</div>
-	<p><small>GPU probe is logged below; conservation meters show drift_rel colored green below 1e-6, yellow below 1e-3, red above. View mode 0 = color, 1 = temperature.</small></p>
+	<p><small>Runs from file:// or via <code>python3 run_index.py</code>. No build, no modules, no network.</small></p>
 </body>
 </html>

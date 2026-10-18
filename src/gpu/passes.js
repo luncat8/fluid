@@ -2,122 +2,271 @@
 	"use strict";
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.gpu=Fluid.gpu||{};
-	function createPipelines(device,pool,canvasFormat){
-		const cfg=Fluid.core.config;
+	// ping-pong parity model: m = mass/therm parity (they always swap together in
+	// advect_scalar / paint), v = vel parity (forces and apply_grad swap it twice
+	// per substep, so it is constant), press parity is invariant: one red-black
+	// sweep reads press[0] -> press[1] -> press[0]. all bind groups for all
+	// (m,v) combos are built once here; the frame loop never allocates.
+	function createPipelines(device,canvasFormat){
 		const sh=Fluid.gpu.shaders;
-		function comp(label,code){
-			return device.createComputePipeline({
+		const PS=sh.paramsStruct;
+		function comp(label,code,constants){
+			const desc={
 				label,
 				layout:"auto",
-				compute:{module:device.createShaderModule({label: label+"-mod",code}),entryPoint:"main"}
+				compute:{module:device.createShaderModule({label:label+"-mod",code}),entryPoint:"main"}
+			};
+			if(constants)desc.compute.constants=constants;
+			return device.createComputePipeline(desc);
+		}
+		// project red/black share one explicit bind group layout so one set of
+		// groups drives both pipelines
+		const projLayout=device.createBindGroupLayout({
+			label:"project",
+			entries:[
+				{binding:0,visibility:GPUShaderStage.COMPUTE,buffer:{type:"uniform"}},
+				{binding:1,visibility:GPUShaderStage.COMPUTE,storageTexture:{access:"read-only",format:"r32float"}},
+				{binding:2,visibility:GPUShaderStage.COMPUTE,storageTexture:{access:"write-only",format:"r32float"}},
+				{binding:3,visibility:GPUShaderStage.COMPUTE,texture:{sampleType:"unfilterable-float"}},
+				{binding:4,visibility:GPUShaderStage.COMPUTE,texture:{sampleType:"unfilterable-float"}},
+				{binding:5,visibility:GPUShaderStage.COMPUTE,texture:{sampleType:"uint"}}
+			]
+		});
+		const projMod=device.createShaderModule({label:"project-mod",code:PS+sh.projectStep});
+		function projPipe(label,color){
+			return device.createComputePipeline({
+				label,
+				layout:device.createPipelineLayout({bindGroupLayouts:[projLayout]}),
+				compute:{module:projMod,entryPoint:"main",constants:{COLOR:color}}
 			});
 		}
-		const exchangePipe=comp("exchange", sh.paramsStruct + sh.exchange);
-		const copyRgbaPipe=comp("copyRgba", sh.paramsStruct + sh.copyRGBA);
-		const toDisplayPipe=comp("toDisplay", sh.toDisplay);
-		const statsAPipe=comp("statsA", sh.statsReduceA);
-		const statsBPipe=comp("statsB", sh.statsReduceB);
 		const vertMod=device.createShaderModule({label:"renderVert",code:sh.renderVert});
 		const fragMod=device.createShaderModule({label:"renderFrag",code:sh.renderFrag});
-		const renderPipe=device.createRenderPipeline({
-			label:"render",
-			layout:"auto",
-			vertex:{module:vertMod,entryPoint:"main"},
-			fragment:{module:fragMod,entryPoint:"main",targets:[{format:canvasFormat}]},
-			primitive:{topology:"triangle-list"}
-		});
-		const sampler=device.createSampler({label:"linear",magFilter:"linear",minFilter:"linear"});
-		return {exchangePipe,copyRgbaPipe,toDisplayPipe,statsAPipe,statsBPipe,renderPipe,sampler};
+		return {
+			forces:comp("forces",PS+sh.forces),
+			advectVel:comp("advectVel",PS+sh.advectVel),
+			rhs:comp("rhs",PS+sh.poissonRhs),
+			projRed:projPipe("projRed",0),
+			projBlack:projPipe("projBlack",1),
+			applyGrad:comp("applyGrad",PS+sh.applyGrad),
+			flux:comp("flux",PS+sh.computeFlux),
+			advectMass:comp("advectMass",PS+sh.advectMass),
+			advectTherm:comp("advectTherm",PS+sh.advectTherm),
+			paintMass:comp("paintMass",PS+sh.paintMass),
+			paintTherm:comp("paintTherm",PS+sh.paintTherm),
+			statsA:comp("statsA",PS+sh.statsReduceA),
+			statsB:comp("statsB",PS+sh.statsReduceB),
+			toDisplay:comp("toDisplay",PS+sh.toDisplay),
+			renderPipe:device.createRenderPipeline({
+				label:"render",
+				layout:"auto",
+				vertex:{module:vertMod,entryPoint:"main"},
+				fragment:{module:fragMod,entryPoint:"main",targets:[{format:canvasFormat}]},
+				primitive:{topology:"triangle-list"}
+			}),
+			sampler:device.createSampler({label:"linear",magFilter:"linear",minFilter:"linear"}),
+			projLayout
+		};
+	}
+	function bg(device,label,layout,entries){
+		return device.createBindGroup({label,layout,entries});
+	}
+	function viewRes(tex){
+		return tex.createView();
 	}
 	function makeBindGroups(device,pipes,pool){
-		// create groups for current pool state; caller must rebuild on resize or swap
-		const groups={};
-		groups.exchange=device.createBindGroup({
-			label:"exchange",
-			layout:pipes.exchangePipe.getBindGroupLayout(0),
-			entries:[
+		const v0=pool.vel.tex[0],v1=pool.vel.tex[1];
+		const p0=pool.press.tex[0],p1=pool.press.tex[1];
+		const flagsView=viewRes(pool.flags);
+		const groups={forces:[],advectVel:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
+			paintMass:[],paintTherm:[],projRed:[],projBlack:[],statsA:[],toDisplay:[],statsB:null,render:null};
+		for(let m=0;m<2;m++){
+			const mm=pool.mass.tex[m],tt=pool.therm.tex[m],mn=pool.mass.tex[1-m],tn=pool.therm.tex[1-m];
+			groups.projRed[m]=bg(device,"projRed"+m,pipes.projLayout,[
 				{binding:0,resource:{buffer:pool.params}},
-				{binding:1,resource:pool.mass.tex[pool.mass.cur].createView()},
-				{binding:2,resource:pool.mass.tex[1-pool.mass.cur].createView()}
-			]
-		});
-		groups.copyMass=device.createBindGroup({
-			label:"copyMass",
-			layout:pipes.copyRgbaPipe.getBindGroupLayout(0),
-			entries:[
+				{binding:1,resource:viewRes(p0)},
+				{binding:2,resource:viewRes(p1)},
+				{binding:3,resource:viewRes(pool.divsrc)},
+				{binding:4,resource:viewRes(mm)},
+				{binding:5,resource:flagsView}
+			]);
+			groups.projBlack[m]=bg(device,"projBlack"+m,pipes.projLayout,[
 				{binding:0,resource:{buffer:pool.params}},
-				{binding:1,resource:pool.mass.tex[pool.mass.cur].createView()},
-				{binding:2,resource:pool.mass.tex[1-pool.mass.cur].createView()}
-			]
-		});
-		groups.toDisplay=device.createBindGroup({
-			label:"toDisplay",
-			layout:pipes.toDisplayPipe.getBindGroupLayout(0),
-			entries:[
+				{binding:1,resource:viewRes(p1)},
+				{binding:2,resource:viewRes(p0)},
+				{binding:3,resource:viewRes(pool.divsrc)},
+				{binding:4,resource:viewRes(mm)},
+				{binding:5,resource:flagsView}
+			]);
+			groups.advectMass[m]=bg(device,"advectMass"+m,pipes.advectMass.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
-				{binding:1,resource:pool.mass.tex[1-pool.mass.cur].createView()},
-				{binding:2,resource:pool.therm.tex[pool.therm.cur].createView()},
-				{binding:3,resource:pool.display.createView()}
-			]
-		});
-		groups.statsA=device.createBindGroup({
-			label:"statsA",
-			layout:pipes.statsAPipe.getBindGroupLayout(0),
-			entries:[
+				{binding:1,resource:viewRes(pool.flux)},
+				{binding:2,resource:viewRes(mm)},
+				{binding:3,resource:viewRes(mn)}
+			]);
+			groups.advectTherm[m]=bg(device,"advectTherm"+m,pipes.advectTherm.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
-				{binding:1,resource:pool.mass.tex[1-pool.mass.cur].createView()},
-				{binding:2,resource:pool.therm.tex[pool.therm.cur].createView()},
-				{binding:3,resource:{buffer:pool.statsPart}}
-			]
-		});
-		groups.statsB=device.createBindGroup({
-			label:"statsB",
-			layout:pipes.statsBPipe.getBindGroupLayout(0),
-			entries:[
-				{binding:0,resource:{buffer:pool.statsPart}},
-				{binding:1,resource:{buffer:pool.stats}},
-				{binding:2,resource:{buffer:pool.dims}}
-			]
-		});
-		groups.render=device.createBindGroup({
-			label:"render",
-			layout:pipes.renderPipe.getBindGroupLayout(0),
-			entries:[
-				{binding:0,resource:pipes.sampler},
-				{binding:1,resource:pool.display.createView()}
-			]
-		});
+				{binding:1,resource:viewRes(pool.flux)},
+				{binding:2,resource:viewRes(tt)},
+				{binding:3,resource:viewRes(tn)}
+			]);
+			groups.paintMass[m]=bg(device,"paintMass"+m,pipes.paintMass.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(mm)},
+				{binding:2,resource:viewRes(mn)},
+				{binding:3,resource:viewRes(pool.patchMass)}
+			]);
+			groups.paintTherm[m]=bg(device,"paintTherm"+m,pipes.paintTherm.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(tt)},
+				{binding:2,resource:viewRes(tn)},
+				{binding:3,resource:viewRes(pool.patchE)}
+			]);
+			for(let v=0;v<2;v++){
+				const vv=pool.vel.tex[v],vn=pool.vel.tex[1-v];
+				groups.forces[m]=groups.forces[m]||[];
+				groups.forces[m][v]=bg(device,"forces"+m+v,pipes.forces.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:viewRes(vv)},
+					{binding:2,resource:viewRes(vn)},
+					{binding:3,resource:viewRes(mm)},
+					{binding:4,resource:viewRes(tt)},
+					{binding:5,resource:flagsView}
+				]);
+				groups.rhs[m]=groups.rhs[m]||[];
+				groups.rhs[m][v]=bg(device,"rhs"+m+v,pipes.rhs.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:viewRes(pool.divsrc)},
+					{binding:2,resource:viewRes(vv)},
+					{binding:3,resource:viewRes(mm)},
+					{binding:4,resource:flagsView}
+				]);
+				groups.applyGrad[m]=groups.applyGrad[m]||[];
+				groups.applyGrad[m][v]=bg(device,"applyGrad"+m+v,pipes.applyGrad.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:viewRes(vv)},
+					{binding:2,resource:viewRes(vn)},
+					{binding:3,resource:viewRes(p0)},
+					{binding:4,resource:viewRes(mm)},
+					{binding:5,resource:flagsView}
+				]);
+				groups.statsA[m]=groups.statsA[m]||[];
+				groups.statsA[m][v]=bg(device,"statsA"+m+v,pipes.statsA.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:viewRes(mm)},
+					{binding:2,resource:viewRes(tt)},
+					{binding:3,resource:viewRes(vv)},
+					{binding:4,resource:viewRes(p0)},
+					{binding:5,resource:{buffer:pool.statsPart}}
+				]);
+				groups.toDisplay[m]=groups.toDisplay[m]||[];
+				groups.toDisplay[m][v]=bg(device,"toDisplay"+m+v,pipes.toDisplay.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:viewRes(mm)},
+					{binding:2,resource:viewRes(tt)},
+					{binding:3,resource:viewRes(pool.display)},
+					{binding:4,resource:viewRes(vv)},
+					{binding:5,resource:viewRes(p0)},
+					{binding:6,resource:flagsView}
+				]);
+			}
+		}
+		groups.advectVel[0]=bg(device,"advectVel0",pipes.advectVel.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.params}},
+			{binding:1,resource:viewRes(v0)},
+			{binding:2,resource:viewRes(v1)}
+		]);
+		groups.advectVel[1]=bg(device,"advectVel1",pipes.advectVel.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.params}},
+			{binding:1,resource:viewRes(v1)},
+			{binding:2,resource:viewRes(v0)}
+		]);
+		groups.flux[0]=bg(device,"flux0",pipes.flux.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.params}},
+			{binding:1,resource:viewRes(v0)},
+			{binding:2,resource:flagsView},
+			{binding:3,resource:viewRes(pool.flux)}
+		]);
+		groups.flux[1]=bg(device,"flux1",pipes.flux.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.params}},
+			{binding:1,resource:viewRes(v1)},
+			{binding:2,resource:flagsView},
+			{binding:3,resource:viewRes(pool.flux)}
+		]);
+		groups.statsB=bg(device,"statsB",pipes.statsB.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.statsPart}},
+			{binding:1,resource:{buffer:pool.stats}},
+			{binding:2,resource:{buffer:pool.dims}}
+		]);
+		groups.render=bg(device,"render",pipes.renderPipe.getBindGroupLayout(0),[
+			{binding:0,resource:pipes.sampler},
+			{binding:1,resource:viewRes(pool.display)}
+		]);
 		return groups;
 	}
-	function encodeCompute(encoder,device,pool,pipes,groups,cfg){
-		const cpass=encoder.beginComputePass({label:"sim"});
-		// exchange pass: main diffusion
-		cpass.setPipeline(pipes.exchangePipe);
-		cpass.setBindGroup(0,groups.exchange);
-		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
-		// toDisplay
-		cpass.setPipeline(pipes.toDisplayPipe);
-		cpass.setBindGroup(0,groups.toDisplay);
-		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
-		// stats every statsEvery frames handled outside; we optionally compute each frame for simplicity and throttle HUD
-		// For now compute stats each encode but caller controls flag
-		// We will compute stats if needStats flag in cfg
-		if(cfg._needStats){
-			cpass.setPipeline(pipes.statsAPipe);
-			cpass.setBindGroup(0,groups.statsA);
-			cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
-			cpass.setPipeline(pipes.statsBPipe);
-			cpass.setBindGroup(0,groups.statsB);
-			cpass.dispatchWorkgroups(1);
+	// one substep of the 0.0.0 section 8 graph. m flips on return.
+	function encodeStep(cpass,pool,pipes,groups,state,iters){
+		const wx=pool.workgroupX,wy=pool.workgroupY;
+		const m=state.m,v=state.v;
+		cpass.setPipeline(pipes.forces);
+		cpass.setBindGroup(0,groups.forces[m][v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		cpass.setPipeline(pipes.advectVel);
+		cpass.setBindGroup(0,groups.advectVel[v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		cpass.setPipeline(pipes.rhs);
+		cpass.setBindGroup(0,groups.rhs[m][v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		for(let k=0;k<iters;k++){
+			cpass.setPipeline(pipes.projRed);
+			cpass.setBindGroup(0,groups.projRed[m]);
+			cpass.dispatchWorkgroups(wx,wy);
+			cpass.setPipeline(pipes.projBlack);
+			cpass.setBindGroup(0,groups.projBlack[m]);
+			cpass.dispatchWorkgroups(wx,wy);
 		}
-		cpass.end();
-		// copy back stats for readback if needed: copy stats -> statsRead staging handled after compute
+		cpass.setPipeline(pipes.applyGrad);
+		cpass.setBindGroup(0,groups.applyGrad[m][v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		cpass.setPipeline(pipes.flux);
+		cpass.setBindGroup(0,groups.flux[v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		cpass.setPipeline(pipes.advectMass);
+		cpass.setBindGroup(0,groups.advectMass[m]);
+		cpass.dispatchWorkgroups(wx,wy);
+		cpass.setPipeline(pipes.advectTherm);
+		cpass.setBindGroup(0,groups.advectTherm[m]);
+		cpass.dispatchWorkgroups(wx,wy);
+		state.m=1-m;
 	}
-	function encodeRender(renderPass,pool,pipes,groups){
-		renderPass.setPipeline(pipes.renderPipe);
-		renderPass.setBindGroup(0,groups.render);
-		renderPass.draw(3);
+	function encodeStats(cpass,pool,pipes,groups,state){
+		cpass.setPipeline(pipes.statsA);
+		cpass.setBindGroup(0,groups.statsA[state.m][state.v]);
+		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
+		cpass.setPipeline(pipes.statsB);
+		cpass.setBindGroup(0,groups.statsB);
+		cpass.dispatchWorkgroups(1);
 	}
-	Fluid.gpu.passes={createPipelines,makeBindGroups,encodeCompute,encodeRender};
+	function encodeDisplay(cpass,pool,pipes,groups,state){
+		cpass.setPipeline(pipes.toDisplay);
+		cpass.setBindGroup(0,groups.toDisplay[state.m][state.v]);
+		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
+	}
+	function encodePaint(cpass,pool,pipes,groups,state){
+		const wx=Math.ceil(Math.max(state.pw,1)/8),wy=Math.ceil(Math.max(state.ph,1)/8);
+		cpass.setPipeline(pipes.paintMass);
+		cpass.setBindGroup(0,groups.paintMass[state.m]);
+		cpass.dispatchWorkgroups(wx,wy);
+		cpass.setPipeline(pipes.paintTherm);
+		cpass.setBindGroup(0,groups.paintTherm[state.m]);
+		cpass.dispatchWorkgroups(wx,wy);
+		state.m=1-state.m;
+	}
+	function encodeRender(rpass,pipes,groups){
+		rpass.setPipeline(pipes.renderPipe);
+		rpass.setBindGroup(0,groups.render);
+		rpass.draw(3);
+	}
+	Fluid.gpu.passes={createPipelines,makeBindGroups,encodeStep,encodeStats,encodeDisplay,encodePaint,encodeRender};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.passes;
 })(globalThis);
