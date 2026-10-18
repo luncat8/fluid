@@ -7,8 +7,13 @@
 		const consEl=document.getElementById("conservation");
 		const stateEl=document.getElementById("state");
 		const statusEl=document.getElementById("status");
+		const copyBtn=document.getElementById("copyBtn");
+		const copyFeedback=document.getElementById("copyFeedback");
 		let lastText=0;
 		let fpsEma=60;
+		let substepsShown=1;
+		// cache last rendered strings to avoid DOM thrash
+		let lastPerf="", lastCons="", lastState="", lastStatus="";
 		function driftClass(v){
 			const a=Math.abs(v);
 			if(a<1e-6)return "ok";
@@ -29,14 +34,62 @@
 		function setSubsteps(ns){
 			substepsShown=ns;
 		}
+		// build a copyable diagnostics snapshot (used by button and 's' key)
+		function buildSnapshot(){
+			if(!solver) return "no solver";
+			const s=solver.getStats();
+			const kinds=["m","dr","dg","db","E"];
+			const totals=[s.totals.m,s.totals.dr,s.totals.dg,s.totals.db,s.totals.E];
+			const expects=[s.expected.m,s.expected.dr,s.expected.dg,s.expected.db,s.expected.E];
+			const lines=[];
+			for(let i=0;i<5;i++){
+				const drift=Fluid.core.stats.driftRel(totals[i],expects[i]);
+				lines.push(kinds[i]+": total="+totals[i]+" exp="+expects[i]+" drift="+drift+" ["+driftClass(drift)+"]");
+			}
+			lines.push("maxM="+s.maxM+" neg="+s.cntNeg+" over="+s.cntOver+" maxDiv="+s.motion.maxDiv+" p["+s.motion.pMin+".."+s.motion.pMax+"] maxVel="+s.motion.maxVel);
+			lines.push("frame#"+s.frame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+" fps~"+Math.round(fpsEma));
+			return lines.join("\n");
+		}
+		async function copyToClipboard(){
+			const text=buildSnapshot();
+			let ok=false;
+			try{
+				if(navigator.clipboard && navigator.clipboard.writeText){
+					await navigator.clipboard.writeText(text);
+					ok=true;
+				} else {
+					const ta=document.createElement("textarea");
+					ta.value=text;
+					ta.style.position="fixed"; ta.style.opacity="0";
+					document.body.appendChild(ta);
+					ta.select();
+					ok=document.execCommand("copy");
+					ta.remove();
+				}
+			}catch(e){ ok=false; }
+			if(copyFeedback){
+				copyFeedback.textContent= ok ? "copied" : "copy failed";
+				setTimeout(()=>{ if(copyFeedback) copyFeedback.textContent=""; }, 1500);
+			}
+			// also log for debugging
+			console.log(text);
+		}
+		if(copyBtn){
+			copyBtn.addEventListener("click", copyToClipboard);
+		}
+
 		function update(now){
-			if(now-lastText<200)return;
+			if(now-lastText<200) return;
 			lastText=now;
-			if(!solver)return;
+			if(!solver) return;
 			const s=solver.getStats();
 			if(perfEl){
-				perfEl.textContent="fps "+Math.round(fpsEma)+"  N="+cfg.N+"  dt="+cfg.dt.toFixed(4)+
+				const txt="fps "+Math.round(fpsEma)+"  N="+cfg.N+"  dt="+cfg.dt.toFixed(4)+
 					"  K="+cfg.pressureIters+"  maxVel="+fmt(s.motion.maxVel)+"  frame#"+s.frame;
+				if(txt!==lastPerf){
+					perfEl.textContent=txt;
+					lastPerf=txt;
+				}
 			}
 			if(consEl){
 				const kinds=["m","dr","dg","db","E"];
@@ -51,21 +104,33 @@
 				}
 				lines.push("maxM="+fmt(s.maxM)+" neg="+s.cntNeg+" over="+s.cntOver+
 					" maxDiv="+fmt(s.motion.maxDiv)+" p["+fmt(s.motion.pMin)+".."+fmt(s.motion.pMax)+"]");
-				consEl.textContent=lines.join("\n");
+				const txt=lines.join("\n");
+				if(txt!==lastCons){
+					consEl.textContent=txt;
+					lastCons=txt;
+				}
 			}
 			if(stateEl){
 				const modeName=Fluid.core.config.viewModeNames[cfg.viewMode]||String(cfg.viewMode);
 				const paintName=Fluid.core.config.paintModeNames[cfg.paintMode]||String(cfg.paintMode);
-				stateEl.textContent="mode="+modeName+"  scenario="+cfg.scenario+"  paint="+paintName+
+				const txt="mode="+modeName+"  scenario="+cfg.scenario+"  paint="+paintName+
 					"  gravity="+(cfg.gravityY!==0?"on":"off")+"  "+(cfg._paused?"PAUSED":"running")+
 					"\nkeys: 0-5 view · space pause · . step · r reset · n scenario · b paint(dye/wall/erase) · c color · g gravity · +/- K · [ ] size · s dump · h help";
+				if(txt!==lastState){
+					stateEl.textContent=txt;
+					lastState=txt;
+				}
 			}
 			if(statusEl){
 				const driftM=Fluid.core.stats.driftRel(s.totals.m,s.expected.m);
-				statusEl.textContent=(cfg._paused?"paused":"running")+" · drift m "+driftM.toExponential(1)+" ["+driftClass(driftM)+"]";
+				const txt=(cfg._paused?"paused":"running")+" · drift m "+driftM.toExponential(1)+" ["+driftClass(driftM)+"]";
+				if(txt!==lastStatus){
+					statusEl.textContent=txt;
+					lastStatus=txt;
+				}
 			}
 		}
-		return {update,tickFrame,setSubsteps};
+		return {update,tickFrame,setSubsteps,copyToClipboard};
 	}
 	Fluid.app.hud={create:createHud};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.app.hud;

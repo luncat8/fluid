@@ -3,10 +3,10 @@
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.gpu=Fluid.gpu||{};
 	// ping-pong parity model: m = mass/therm parity (they always swap together in
-	// advect_scalar / paint), v = vel parity (forces and apply_grad swap it twice
-	// per substep, so it is constant), press parity is invariant: one red-black
-	// sweep reads press[0] -> press[1] -> press[0]. all bind groups for all
-	// (m,v) combos are built once here; the frame loop never allocates.
+	// advect_scalar / paint), v = vel parity (forces, advectVel and applyGrad each
+	// swap it once, so 3 swaps = odd and v flips each substep), press parity is
+	// invariant: one red-black sweep reads press[0] -> press[1] -> press[0]. all
+	// bind groups for all (m,v) combos are built once here; the frame loop never allocates.
 	function createPipelines(device,canvasFormat){
 		const sh=Fluid.gpu.shaders;
 		const PS=sh.paramsStruct;
@@ -204,16 +204,18 @@
 		]);
 		return groups;
 	}
-	// one substep of the 0.0.0 section 8 graph. m flips on return.
+	// one substep of the 0.0.0 section 8 graph. m and v flip on return (3 vel swaps = odd).
 	function encodeStep(cpass,pool,pipes,groups,state,iters){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
-		const m=state.m,v=state.v;
+		let m=state.m, v=state.v;
 		cpass.setPipeline(pipes.forces);
 		cpass.setBindGroup(0,groups.forces[m][v]);
 		cpass.dispatchWorkgroups(wx,wy);
+		v=1-v;
 		cpass.setPipeline(pipes.advectVel);
 		cpass.setBindGroup(0,groups.advectVel[v]);
 		cpass.dispatchWorkgroups(wx,wy);
+		v=1-v;
 		cpass.setPipeline(pipes.rhs);
 		cpass.setBindGroup(0,groups.rhs[m][v]);
 		cpass.dispatchWorkgroups(wx,wy);
@@ -228,6 +230,7 @@
 		cpass.setPipeline(pipes.applyGrad);
 		cpass.setBindGroup(0,groups.applyGrad[m][v]);
 		cpass.dispatchWorkgroups(wx,wy);
+		v=1-v;
 		cpass.setPipeline(pipes.flux);
 		cpass.setBindGroup(0,groups.flux[v]);
 		cpass.dispatchWorkgroups(wx,wy);
@@ -238,6 +241,7 @@
 		cpass.setBindGroup(0,groups.advectTherm[m]);
 		cpass.dispatchWorkgroups(wx,wy);
 		state.m=1-m;
+		state.v=v;
 	}
 	function encodeStats(cpass,pool,pipes,groups,state){
 		cpass.setPipeline(pipes.statsA);
@@ -253,7 +257,7 @@
 		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
 	}
 	function encodePaint(cpass,pool,pipes,groups,state){
-		const wx=Math.ceil(Math.max(state.pw,1)/8),wy=Math.ceil(Math.max(state.ph,1)/8);
+		const wx=pool.workgroupX,wy=pool.workgroupY;
 		cpass.setPipeline(pipes.paintMass);
 		cpass.setBindGroup(0,groups.paintMass[state.m]);
 		cpass.dispatchWorkgroups(wx,wy);

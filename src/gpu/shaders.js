@@ -711,7 +711,12 @@ fn main(@builtin(vertex_index) vi: u32) -> VSOut {
 @group(0) @binding(1) var displayTex: texture_2d<f32>;
 @fragment
 fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-	return textureSample(displayTex, samp, uv);
+	// displayTex is (N+2)x(N+2) with a 1-texel ghost ring; inset UV so canvas maps to interior 1..N
+	let dims = textureDimensions(displayTex);
+	let n = vec2<f32>(f32(dims.x) - 2, f32(dims.y) - 2);
+	let tex = vec2<f32>(f32(dims.x), f32(dims.y));
+	let uv2 = (uv * n + vec2<f32>(1.0, 1.0)) / tex;
+	return textureSample(displayTex, samp, uv2);
 }
 `;
 	Fluid.gpu.shaders=shaders;

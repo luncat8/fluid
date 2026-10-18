@@ -12,6 +12,7 @@ a { color: #7fd8d0; }
 canvas { width: 100%; aspect-ratio: 1; background: #080d12; border: 1px solid #354450; image-rendering: pixelated; }
 #hud, section { min-width: 0; }
 #status { color: #7fd8d0; }
+#copyFeedback { color: #7fd8d0; font-size: 13px; margin-left: 6px; }
 .hud-block { white-space: pre-wrap; padding: 10px 12px; background: #0e1a23; border: 1px solid #243a4a; margin-bottom: 10px; font-size: 12px; line-height: 1.5; }
 #perf { color: #8bd8cb; }
 #conservation { color: #d5e3ed; }
