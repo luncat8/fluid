@@ -182,5 +182,19 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 - pitfall: file:// clamps performance timers, so fps/frame-ms numbers from a local
   page are coarse. use run_index.py (http server) when timing matters; timing a
   submit call measures encode, not gpu execution, so the hud shows rAF fps only.
+  at N=256 fps was ~180 on the reporter GPU (so default moved to 1024 to see perf).
   or disjoint sweeps. The earlier isolated-pair clamp claim does not by itself establish
   monotonicity of a simultaneous four-neighbour update or latent-plateau treatment.
+- [verified 2026-10-18] Y inversion: physics Y is up (0 bottom, N top), storage Y is
+  down (0 top). with the old renderVert uv (0,1),(2,1),(0,-1) NDC bottom sampled
+  texture bottom (high physics at screen bottom) -> inverted draw, inverted gravity,
+  and inverted drag. fixed renderVert to (0,0),(2,0),(0,2) so NDC bottom -> uv 0 ->
+  texture top (low physics at screen bottom), NDC top -> uv 1 -> texture bottom
+  (high at top). painting and gravity now match screen; no change to input mapping
+  (v=1-(y/h) already maps screen top to high physics).
+- pitfall: FCT anti-diffusive flux must compose with the k_out <= 1 outflow limiter
+  (0.0.0 section 5.1/5.2). Zalesak R_plus/R_minus bounds do not prevent a diverging
+  cell with k_out(low)=1 from being pushed to k_out(total)=1+k_out(dlim) > 1 by the
+  correction, which breaks monotone donor-cell and creates negatives. enforce by
+  scaling outgoing dlim so total outflow per cell stays <= 1 (re-apply the 5.1 limiter
+  to F_total=F_low+dlim; still a single shared face flux, conservation untouched).

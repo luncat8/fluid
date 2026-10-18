@@ -715,15 +715,20 @@ struct VSOut {
 };
 @vertex
 fn main(@builtin(vertex_index) vi: u32) -> VSOut {
+	// NDC Y is up (-1 bottom), framebuffer Y is down (0 top), texture sampled Y is down (0 top).
+	// Physics Y is up (0 bottom, N top) stored with low Y at low texel Y (0 top of storage = bottom physics).
+	// To make physics bottom appear at screen bottom (framebuffer bottom), sample low physics (texture top)
+	// from NDC bottom. So NDC bottom (-1) -> uv 0 (texture top), NDC top (+1 interpolated) -> uv 1 (texture bottom).
+	// The previous uv (0,1),(2,1),(0,-1) did the opposite (physics top at screen bottom) -> inverted draw.
 	var pos = array<vec2<f32>,3>(
 		vec2<f32>(-1.0, -1.0),
 		vec2<f32>(3.0, -1.0),
 		vec2<f32>(-1.0, 3.0)
 	);
 	var uv = array<vec2<f32>,3>(
-		vec2<f32>(0.0, 1.0),
-		vec2<f32>(2.0, 1.0),
-		vec2<f32>(0.0, -1.0)
+		vec2<f32>(0.0, 0.0),
+		vec2<f32>(2.0, 0.0),
+		vec2<f32>(0.0, 2.0)
 	);
 	var out: VSOut;
 	out.pos = vec4<f32>(pos[vi], 0.0, 1.0);

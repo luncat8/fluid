@@ -13,9 +13,9 @@
 		emitters:96
 	};
 	const defaults={
-		N:256,
-		texW:258,
-		texH:258,
+		N:1024,
+		texW:1026,
+		texH:1026,
 		dt:1/60,
 		frameDt:1/60,
 		substeps:1,
