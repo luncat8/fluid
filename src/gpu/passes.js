@@ -54,6 +54,7 @@
 			paintTherm:comp("paintTherm",PS+sh.paintTherm),
 			statsA:comp("statsA",PS+sh.statsReduceA),
 			statsB:comp("statsB",PS+sh.statsReduceB),
+			buoySample:comp("buoySample",PS+sh.buoySample),
 			toDisplay:comp("toDisplay",PS+sh.toDisplay),
 			renderPipe:device.createRenderPipeline({
 				label:"render",
@@ -81,7 +82,7 @@
 		const groups={
 			forces:[],advectVel:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
 			limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
-			statsA:[],toDisplay:[],statsB:null,render:null
+			statsA:[],toDisplay:[],statsB:null,buoySample:[],render:null
 		};
 		for(let m=0;m<3;m++){
 			const nextM=(m+1)%3,finalM=(m+2)%3;
@@ -134,6 +135,7 @@
 			]);
 			groups.rhs[m]=[];
 			groups.applyGrad[m]=[];
+			groups.buoySample[m]=[];
 			groups.statsA[m]=[];
 			groups.toDisplay[m]=[];
 			for(let t=0;t<2;t++){
@@ -167,6 +169,13 @@
 							{binding:3,resource:viewRes(p0)},
 							{binding:4,resource:viewRes(mm)},
 							{binding:5,resource:flagsView}
+						]);
+						// the sample reads the (mass, vel) pair the sim left behind
+						groups.buoySample[m][v]=bg(device,"buoySample"+m+v,pipes.buoySample.getBindGroupLayout(0),[
+							{binding:0,resource:{buffer:pool.params}},
+							{binding:1,resource:viewRes(mm)},
+							{binding:2,resource:viewRes(vv)},
+							{binding:3,resource:{buffer:pool.buoy}}
 						]);
 					}
 					groups.statsA[m][t][v]=bg(device,"statsA"+m+t+v,pipes.statsA.getBindGroupLayout(0),[
@@ -288,6 +297,13 @@
 		cpass.setBindGroup(0,groups.statsB);
 		cpass.dispatchWorkgroups(1);
 	}
+	// one workgroup over the body footprint. the gpu solver dispatches it once per
+	// refresh frame, after the substep loop, never inside it
+	function encodeBuoySample(cpass,pool,pipes,groups,state){
+		cpass.setPipeline(pipes.buoySample);
+		cpass.setBindGroup(0,groups.buoySample[state.m][state.v]);
+		cpass.dispatchWorkgroups(1);
+	}
 	function encodeDisplay(cpass,pool,pipes,groups,state){
 		cpass.setPipeline(pipes.toDisplay);
 		cpass.setBindGroup(0,groups.toDisplay[state.m][state.t][state.v]);
@@ -309,6 +325,6 @@
 		rpass.setBindGroup(0,groups.render);
 		rpass.draw(3);
 	}
-	Fluid.gpu.passes={createPipelines,makeBindGroups,encodeStep,encodeStats,encodeDisplay,encodePaint,encodeRender};
+	Fluid.gpu.passes={createPipelines,makeBindGroups,encodeStep,encodeStats,encodeBuoySample,encodeDisplay,encodePaint,encodeRender};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.passes;
 })(globalThis);

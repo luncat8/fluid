@@ -110,6 +110,12 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 - no allocations in the frame loop: bind groups, pipelines, textures, uniform staging and
 	scratch typed arrays are created at setup or on resize. the hud text rebuild is the one
 	acknowledged exception and is throttled to 5 hz.
+- patch scripts must read before they write. `open(p,'w').write(open(p).read().replace(...))`
+	evaluates the write-open first, which truncates the file, so the read returns an empty string and
+	the source is gone: happened on 2026-10-18 to src/gpu/passes.js and src/gpu/fields.js and was
+	recovered with `git checkout --` plus a re-patch. assert each anchor exists before writing, and
+	prefer a line-indexed splice over a multi-line literal match when you have not confirmed the
+	exact tab depth of the anchor.
 - note: .gitignore.txt in the repo root is not an active gitignore file (git reads
 	.gitignore). if node_modules ever appears, rename it first. [to verify with the owner]
 
@@ -251,3 +257,42 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   is the most effective lever.
 - The statsReduceB single-thread bottleneck at 1024 is notable but only fires
   every 30 frames, so it causes a spike, not steady fluctuation.
+
+## 2026-10-18 diagnostic body (1.0.0) and the optional substep policy
+
+- skill: a read-only diagnostic body costs one small kernel, not a solver change. one
+	workgroup (64 lanes, workgroup reduction, no atomics) sums the cell block under the
+	rectangle into a 24-byte storage buffer; the frame loop copies it into the existing
+	MAP_READ pattern, and the integration is a dozen lines of cpu at the frame rate. the
+	conserved fields, the ledger and the drift meters are untouched, and the conformance
+	suite pins that: the field after 400 frames is bit-identical with and without the body.
+- skill: sampling every N frames needs a held force plus body inertia, nothing else. the
+	sample is one frame plus N frames stale; measured (experiments/buoy.js, dam at 64^2,
+	600 frames) the rest float line moves by a few percent of submersion between N=1 and
+	N=8 (62.6%/64.1%/63.8%/67.8%) and the body starts to lag at N=16 and N=32 (end
+	|vy| 7.9 and 10.5 cells/s instead of 0.1). default N=4 sits at the flat end of the curve.
+- verified: the float line is `meanBlueInFootprint = buoyRho`, so it is set by the dye level
+	and the hull density only, both tunables. measured at N=64: blue x0.25/0.5/1 -> submerged
+	95%/82%/64%; hull rho 0.1/0.25/0.4 -> 32%/64%/83%. with more dye per cell than buoyRho the
+	lift saturates and the body can ride the smeared dye and spray instead of the surface
+	(blue x2 ends at 85% and cy=19.6, above the water). that is the documented approximation;
+	buoyRho is the knob, not a bug to chase.
+- [verified] the substep policy is a *quality* knob, not a stability one. with substepsAuto off
+	(one step per frame, dt=1/60, K=60, dam at 64^2, 400 frames) the run stays finite, keeps
+	zero negative cells and maxM 1.070, versus 0.998 with the auto policy; max|div u| is 1.70
+	against 0.51. monotone transport comes from the per-cell outflow limiter in compute_flux
+	(see the 0.2.0/0.3.0 notes), so ns=1 is a legitimate measurement configuration.
+- pitfall: `new Float32Array(typedArray, byteOffset, length)` ignores the offset and length and
+	copies the *whole* source (the typed-array branch of the constructor takes one argument).
+	only an ArrayBuffer or a SharedArrayBuffer source honours them. a readback helper written as
+	`new Float32Array(range, 0, n)` therefore reads fine against a real device (getMappedRange
+	returns an ArrayBuffer) and throws or overflows against a mock that hands back a Float32Array.
+	return the ArrayBuffer from a mock getMappedRange so this class of bug shows up in node.
+- skill: for gpu plumbing without a browser, a recording mock device is enough to catch the
+	bug classes that actually bite: missing pool buffers, wrong usage flags, bind groups with
+	the wrong entry count, a dispatch that fires on the wrong frame, a copy with a bad size, and
+	params that never reach the uniform buffer. see experiments/gpu-mock.js; it also lints that
+	every `params.values[i]` index in every wgsl source is a declared slot in
+	Fluid.core.config.paramsOff, which is otherwise invisible until a shader silently reads zero.
+	it executes no shader, so it is not a numeric oracle - conformance.js and the cpu reference
+	stay that.

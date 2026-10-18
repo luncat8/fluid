@@ -36,6 +36,8 @@
 			stats:null,
 			statsPart:null,
 			statsRead:null,
+			buoy:null,
+			buoyRead:null,
 			dims:null,
 			numWorkgroups:0,
 			workgroupX:0,workgroupY:0
@@ -69,6 +71,10 @@
 		pool.statsPart=device.createBuffer({label:"statsPart",size:statsPartSize,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
 		pool.stats=device.createBuffer({label:"stats",size:128,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
 		pool.statsRead=device.createBuffer({label:"statsRead",size:128,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+		// buoy_sample output + its readback twin: six floats (see src/core/buoy.js),
+		// 128 bytes like the stats pair so both readbacks share one shape
+		pool.buoy=device.createBuffer({label:"buoy",size:128,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
+		pool.buoyRead=device.createBuffer({label:"buoyRead",size:128,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		pool.dims=device.createBuffer({label:"dims",size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
 		const dimsArr=new Uint32Array([pool.numWorkgroups*32,0,0,0]);
 		device.queue.writeBuffer(pool.dims,0,dimsArr);
@@ -79,7 +85,7 @@
 			pool.therm.tex[0],pool.therm.tex[1],pool.press.tex[0],pool.press.tex[1],
 			pool.flags,pool.flux,pool.limiterA,pool.limiterB,pool.divsrc,pool.sfield,pool.patchMass,pool.patchE,pool.display];
 		for(const t of tex){if(t&&t.destroy)try{t.destroy();}catch(e){}}
-		for(const b of [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.dims]){
+		for(const b of [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.dims]){
 			if(b&&b.destroy)try{b.destroy();}catch(e){}
 		}
 	}

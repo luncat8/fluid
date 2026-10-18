@@ -10,6 +10,7 @@
 		pressureIters:32,fctLimiter:33,viscosity:34,conductivity:35,SMax:36,tauPhase:37,vClamp:38,
 		cSol:48,cLiq:49,cGas:50,Lf:51,Lv:52,TMelt:53,TBoil:54,rhoLiq:55,rhoGas0:56,rhoVac:57,mEps:58,
 		viewMode:80,TMin:81,TMax:82,PMin:83,PMax:84,VMax:85,overlay:86,colorGain:87,
+		buoyX0:88,buoyY0:89,buoyW:90,buoyH:91,buoySub:92,buoyShow:93,
 		emitters:96
 	};
 	const defaults={
@@ -62,7 +63,26 @@
 		statsEvery:30,
 		cflTarget:0.8,
 		substepMax:8,
+		// the auto-cfl substep policy is optional. off = one step per frame at
+		// dt=frameDt, which is what the measurements and tests are compared
+		// against; the per-cell outflow limiter in compute_flux keeps that monotone.
+		substepsAuto:false,
 		vMax:8,
+		buoyEnabled:1,
+		buoyRefW:16,
+		buoyRefH:64,
+		buoyU:0.3,
+		buoyV:0.75,
+		buoyRho:0.25,
+		buoyGain:1,
+		buoyDrag:0.12,
+		buoySampleEvery:4,
+		buoyW:0,
+		buoyH:0,
+		buoyX0:0,
+		buoyY0:0,
+		buoySub:0,
+		buoyShow:0,
 		paintAmount:0.35,
 		paintR:10,
 		scenario:"blobs",
@@ -83,9 +103,11 @@
 	const paintModeNames=["dye","wall","erase"];
 	const keyMap={
 		"0":"color","1":"temperature","2":"pressure","3":"velocity","4":"divergence","5":"flags",
+		"6":"thermal","7":"phase",
 		" ":"pause",".":"step","r":"reset","h":"help","s":"dumpStats","d":"dumpField","g":"gravity",
 		"+":"iterUp","-":"iterDown","=":"iterUp","_":"iterDown","[":"sizeDown","]":"sizeUp",
-		"c":"cycleColor","b":"cyclePaint","n":"nextScenario","f":"toggleFct"
+		"c":"cycleColor","b":"cyclePaint","n":"nextScenario","f":"toggleFct",
+		"u":"toggleSubsteps","y":"toggleBuoy"
 	};
 	function makeParamsArray(){
 		return new Float32Array(128);
@@ -140,6 +162,12 @@
 		a[paramsOff.VMax]=cfg.VMax;
 		a[paramsOff.overlay]=cfg.overlay;
 		a[paramsOff.colorGain]=cfg.colorGain;
+		a[paramsOff.buoyX0]=cfg.buoyX0||0;
+		a[paramsOff.buoyY0]=cfg.buoyY0||0;
+		a[paramsOff.buoyW]=cfg.buoyW||0;
+		a[paramsOff.buoyH]=cfg.buoyH||0;
+		a[paramsOff.buoySub]=cfg.buoySub||0;
+		a[paramsOff.buoyShow]=cfg.buoyShow||0;
 	}
 	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,makeParamsArray,writeParams};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.config;

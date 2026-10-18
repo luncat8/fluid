@@ -51,16 +51,22 @@
 			if(accumulator>=frameDt){
 				if(accumulator>frameDt*4)accumulator=frameDt*4;
 				accumulator-=frameDt;
-				// substeps from the last readback maxVel (<= statsEvery frames stale);
-				// the drag speed is known now and must not wait for the readback
-				// (draw blowup trigger). the outflow limiter in compute_flux is the
-				// hard safety net when CFL is still exceeded.
+				// the substep policy is optional. with it on, ns comes from the last
+				// readback maxVel (<= statsEvery frames stale); the drag speed is known
+				// now and must not wait for the readback (draw blowup trigger). with it
+				// off every frame is one step at dt=frameDt, which is what the tests and
+				// measurements are compared against. either way the outflow limiter in
+				// compute_flux is the hard safety net when CFL is exceeded.
 				const st=solver.getStats();
-				const maxVel=Math.max(st.motion.maxVel,Math.abs(cfg.mouseVX),Math.abs(cfg.mouseVY));
-				let ns=Math.ceil(maxVel*frameDt/cfg.cflTarget);
-				if(ns<1)ns=1;
-				if(ns>cfg.substepMax)ns=cfg.substepMax;
+				let ns=1;
+				if(cfg.substepsAuto){
+					const maxVel=Math.max(st.motion.maxVel,Math.abs(cfg.mouseVX),Math.abs(cfg.mouseVY));
+					ns=Math.ceil(maxVel*frameDt/cfg.cflTarget);
+					if(ns<1)ns=1;
+					if(ns>cfg.substepMax)ns=cfg.substepMax;
+				}
 				const dts=frameDt/ns;
+				if(hud)hud.setSubsteps(ns);
 				cfg.vClamp=cfg.vMax/frameDt;
 				if(inputState)inputState.flushPaint();
 				const needStats=st.frame%cfg.statsEvery===0;
@@ -76,7 +82,7 @@
 		}
 		if(hud)hud.update(now);
 		if(controls)controls.update(now);
-		solver.pollStats();
+		solver.pollReadback();
 		rafId=requestAnimationFrame(frame);
 	}
 	function stop(){

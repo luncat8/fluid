@@ -9,6 +9,7 @@
 	<script defer src="src/core/grid.js"></script>
 	<script defer src="src/core/stats.js"></script>
 	<script defer src="src/core/solver.js"></script>
+	<script defer src="src/core/buoy.js"></script>
 	<script defer src="src/gpu/device.js"></script>
 	<script defer src="src/gpu/shaders.js"></script>
 	<script defer src="src/gpu/fields.js"></script>
@@ -44,6 +45,10 @@
 					<label class="ctrl-check"><input type="checkbox" id="ctrl-gravity"> Gravity</label>
 				</div>
 				<div class="ctrl-row">
+					<label class="ctrl-check" title="auto-cfl substepping; off runs one step per frame (test mode)"><input type="checkbox" id="ctrl-substeps"> Substeps</label>
+					<label class="ctrl-check" title="diagnostic floating body, dam scenario only"><input type="checkbox" id="ctrl-buoy"> Buoy</label>
+				</div>
+				<div class="ctrl-row">
 					<span class="ctrl-label">Paint</span>
 					<button class="ctrl-btn" data-paint="0">Dye</button>
 					<button class="ctrl-btn" data-paint="1">Wall</button>
@@ -72,8 +77,9 @@
 			<div id="state" class="hud-block"></div>
 			<div id="error-panel" role="alert" hidden></div>
 			<div id="help-overlay" hidden>
-				<p><strong>Keys</strong>: 0-7 view modes · space pause · . step · r reset · n scenario · b paint dye/wall/erase · c dye color · f toggle FCT · g gravity · +/- pressure iters · [ ] grid size · s dump stats · h help</p>
+				<p><strong>Keys</strong>: 0-7 view modes · space pause · . step · r reset · n scenario · b paint dye/wall/erase · c dye color · f toggle FCT · g gravity · u substep policy · y buoy · +/- pressure iters · [ ] grid size · s dump stats · h help</p>
 				<p>Drag to stir and paint. Dye painting is ledger-accounted: drift stays green. Walls block flow and are visible in view 5.</p>
+				<p>The dam scenario drops a buoy: an outlined rectangle lifted by the blue inside it, so it rides the water surface. It only reads the field, so nothing is added to the ledger. <code>u</code> turns auto-substepping off for single-step tests.</p>
 				<p>Drift thresholds: green &lt; 1e-6, yellow &lt; 1e-3, red above. min values are the monotonicity watchdog.</p>
 			</div>
 		</section>

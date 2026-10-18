@@ -747,6 +747,83 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	stats[13u] = maxVel; stats[14u] = pMin; stats[15u] = pMax; stats[16u] = maxDiv;
 }
 `;
+	// ---------- buoy field sample: one workgroup over the body footprint ----------
+	// six raw sums; the cpu twin is Fluid.core.buoy.sampleCpu. the body normalises by
+	// its own footprint area, so a rectangle clipped by a domain wall reads less fluid.
+	shaders.buoySample=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(2) var velTex: texture_2d<f32>;
+@group(0) @binding(3) var<storage,read_write> buoySample: array<f32>;
+
+var<workgroup> shBlue: array<f32,64>;
+var<workgroup> shMass: array<f32,64>;
+var<workgroup> shU: array<f32,64>;
+var<workgroup> shV: array<f32,64>;
+var<workgroup> shMax: array<f32,64>;
+var<workgroup> shCnt: array<f32,64>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(local_invocation_index) lid: u32) {
+	let texW = i32(params.values[2]);
+	let texH = i32(params.values[3]);
+	let x0 = i32(params.values[88]);
+	let y0 = i32(params.values[89]);
+	let bw = i32(params.values[90]);
+	let bh = i32(params.values[91]);
+	if (bw <= 0 || bh <= 0) {
+		if (lid == 0u) {
+			for (var i = 0u; i < 6u; i++) { buoySample[i] = 0.0; }
+		}
+		return;
+	}
+	let wu = u32(bw);
+	let n = u32(bw * bh);
+	var blue = 0.0; var mass = 0.0; var su = 0.0; var sv = 0.0; var mx = 0.0; var cnt = 0.0;
+	var k = lid;
+	loop {
+		if (k >= n) { break; }
+		let cx = x0 + i32(k % wu);
+		let cy = y0 + i32(k / wu);
+		if (cx >= 1 && cx < texW - 1 && cy >= 1 && cy < texH - 1) {
+			let m = textureLoad(massTex, vec2<i32>(cx, cy));
+			blue = blue + m.b;
+			mass = mass + m.a;
+			mx = max(mx, m.b);
+			let v = textureLoad(velTex, vec2<i32>(cx, cy), 0);
+			su = su + v.r;
+			sv = sv + v.g;
+			cnt = cnt + 1.0;
+		}
+		k = k + 64u;
+	}
+	shBlue[lid] = blue; shMass[lid] = mass; shU[lid] = su;
+	shV[lid] = sv; shMax[lid] = mx; shCnt[lid] = cnt;
+	workgroupBarrier();
+	var stride = 32u;
+	loop {
+		if (stride == 0u) { break; }
+		if (lid < stride) {
+			shBlue[lid] = shBlue[lid] + shBlue[lid + stride];
+			shMass[lid] = shMass[lid] + shMass[lid + stride];
+			shU[lid] = shU[lid] + shU[lid + stride];
+			shV[lid] = shV[lid] + shV[lid + stride];
+			shMax[lid] = max(shMax[lid], shMax[lid + stride]);
+			shCnt[lid] = shCnt[lid] + shCnt[lid + stride];
+		}
+		workgroupBarrier();
+		stride = stride >> 1u;
+	}
+	if (lid == 0u) {
+		buoySample[0u] = shBlue[0];
+		buoySample[1u] = shMass[0];
+		buoySample[2u] = shCnt[0];
+		buoySample[3u] = shU[0];
+		buoySample[4u] = shV[0];
+		buoySample[5u] = shMax[0];
+	}
+}
+`;
 	// ---------- view modes ----------
 	shaders.toDisplay=`
 @group(0) @binding(0) var<uniform> params: Params;
@@ -768,6 +845,23 @@ fn hueRgb(hue: f32) -> vec3<f32> {
 	let k = fract(vec3<f32>(hue, hue - 0.3333, hue + 0.3333));
 	let c = clamp(abs(k * 6.0 - 3.0) - vec3<f32>(1.0), vec3<f32>(0.0), vec3<f32>(1.0));
 	return c;
+}
+// the body rectangle is drawn over every view mode: a smoky hull that still shows
+// the fluid inside it, tinted up to the sampled submerged fraction, amber outline.
+fn buoyOverlay(x: i32, y: i32, base: vec4<f32>) -> vec4<f32> {
+	if (params.values[93] < 0.5) { return base; }
+	let bx = x - i32(params.values[88]);
+	let by = y - i32(params.values[89]);
+	let bw = i32(params.values[90]);
+	let bh = i32(params.values[91]);
+	if (bx < 0 || bx >= bw || by < 0 || by >= bh) { return base; }
+	let wet = f32(by) < params.values[92] * f32(bh);
+	var hull = mix(base.rgb, vec3<f32>(0.07, 0.08, 0.1), 0.55);
+	if (wet) { hull = mix(hull, vec3<f32>(0.15, 0.4, 1.0), 0.35); }
+	if (bx == 0 || by == 0 || bx == bw - 1 || by == bh - 1) {
+		return vec4<f32>(1.0, 0.78, 0.25, 1.0);
+	}
+	return vec4<f32>(hull, 1.0);
 }
 
 @compute @workgroup_size(8,8)
@@ -823,7 +917,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		out = vec4<f32>(g * 0.6, g * 0.6, g * 0.7, 1.0);
 		if (wall) { out = vec4<f32>(0.9, 0.25, 0.2, 1.0); }
 	}
-	textureStore(displayTex, vec2<i32>(x, y), out);
+	textureStore(displayTex, vec2<i32>(x, y), buoyOverlay(x, y, out));
 }
 `;
 	shaders.renderVert=`

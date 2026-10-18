@@ -92,6 +92,21 @@
 				cfg.gravityY=gravChk.checked?Fluid.core.config.defaults.gravityY:0;
 			});
 		}
+		const subChk=document.getElementById("ctrl-substeps");
+		if(subChk){
+			subChk.checked=!!cfg.substepsAuto;
+			subChk.addEventListener("change",()=>{cfg.substepsAuto=subChk.checked;});
+		}
+		// the body spawns from the scenario, so toggling it respawns instead of reset
+		const buoyChk=document.getElementById("ctrl-buoy");
+		if(buoyChk){
+			buoyChk.checked=cfg.buoyEnabled>0;
+			buoyChk.addEventListener("change",()=>{
+				cfg.buoyEnabled=buoyChk.checked?1:0;
+				if(solver&&solver.buoy)solver.buoy.reset();
+				cfg._dirty=true;
+			});
+		}
 		// sliders: pressure iters, grid size
 		const kSlider=document.getElementById("ctrl-iters");
 		const kVal=document.getElementById("ctrl-iters-val");
@@ -125,6 +140,8 @@
 			if(pauseBtn)pauseBtn.textContent=cfg._paused?"Resume":"Pause";
 			if(fctChk)fctChk.checked=cfg.fctLimiter>0;
 			if(gravChk)gravChk.checked=cfg.gravityY!==0;
+			if(subChk)subChk.checked=!!cfg.substepsAuto;
+			if(buoyChk)buoyChk.checked=cfg.buoyEnabled>0;
 			if(kSlider)kSlider.value=cfg.pressureIters;
 			if(kVal)kVal.textContent=cfg.pressureIters;
 			if(gridSlider)gridSlider.value=cfg.N;

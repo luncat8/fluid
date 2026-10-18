@@ -24,6 +24,20 @@ PASS dam break: max|div u| after projection below 1 (K=60 at 64^2, during splash
 PASS dam break: no overpacking (m <= rho_liq*1.001)  cntOver=0 maxM=0.9983
 PASS dam break: mass and energy conserved below 1e-7  drift_m=-3.94e-9 drift_E=1.42e-8
 PASS dam break: block actually moved (maxVel > 0 at some point or dye spread)
+PASS substep policy off: one step per frame regardless of velocity  ns=1 at maxVel=1e6
+PASS substep policy on: cfl target followed, then capped  ns=4 at the cfl target, 8 at the cap 8
+PASS substep policy off: dam break stays finite and non-negative  sumM=1829.400 maxM=1.070 neg=0 maxDiv=1.70e+0
+PASS buoy spawn: rectangle scaled from the 16x64 reference, dam only  w=4 h=8 cy=48.0
+PASS buoy: sampled every 4 frames, marched every frame  samples=100 marches=400
+PASS buoy: sinks into the liquid and is lifted back out by the blue  dropped from cy=48, dipped to 6.2, rose back to 19.7 (vy=-5.22)
+PASS buoy: ends partially submerged in the blue, inside the water band  sub=55.9% blue/cell=0.177 cy=19.7
+PASS buoy: inertia caps a frame of motion below one cell  max |dy| per frame=0.510 cells
+PASS buoy: stays inside the domain  cx=32.6 cy=19.7
+PASS buoy: field identical to the buoy-less run (no back-reaction on the solver)  max|dmass|=0
+PASS buoy model: [r,g,255] lifts harder than [r,g,123] and air sinks  a[blue=1]=225.0 a[blue=0.5]=75.0 a[empty]=-75.0
+PASS buoy model: sub fraction is mean blue over local peak, float line is the body density  sub=1.000/1.000 aY=75.00
+PASS buoy model: half a footprint of blue is neutral buoyancy  aY=0.00e+0 sub=0.500
+PASS buoy model: one frame of full lift moves it by well under a cell  dy=5.38e-2 vy=3.23
 PASS wall integrity: no red dye crossed a one cell wall  dyeRight=0.000e+0 dyeLeft=49.411
 PASS wall integrity: closed box conserved below 1e-6  drift_m=1.57e-8 drift_dr=1.75e-7
 PASS emitter accounting: drift below 1e-7 relative with 50 injected patches  worst_rel=5.03e-8 injected_m=1832.578494

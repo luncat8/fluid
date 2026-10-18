@@ -11,6 +11,14 @@
 		let pipes=passes.createPipelines(device,format);
 		let groups=passes.makeBindGroups(device,pipes,pool);
 		const paramsArray=Fluid.core.config.makeParamsArray();
+		// diagnostic body: reads the field through the buoy_sample kernel, never
+		// writes it. owned here because reset/resize rebuild the scenario it spawns in.
+		const buoy=Fluid.core.buoy.create(cfg);
+		const buoyRaw=new Float32Array(Fluid.core.buoy.SAMPLE_LEN);
+		const buoyZero=new Float32Array(Fluid.core.buoy.SAMPLE_LEN);
+		let buoyPending=false;
+		let buoyInFlight=false;
+		let buoyGeneration=0;
 		// Mass has three slots for dye FCT; therm and velocity remain ping-pong.
 		// Pressure parity is invariant (red+black returns to tex[0]).
 		const state={m:0,t:0,v:0,pw:0,ph:0};
@@ -34,6 +42,10 @@
 		function reset(){
 			statsGeneration++;
 			pendingRead=false;
+			buoyPending=false;
+			buoyGeneration=statsGeneration;
+			device.queue.writeBuffer(pool.buoy,0,buoyZero);
+			buoy.reset();
 			const sc=coreSolver.buildScenario(cfg);
 			fields.writeTextureRect(device,pool.mass.tex[0],cfg.texW,cfg.texH,"rgba32float",sc.massA);
 			fields.writeTextureRect(device,pool.mass.tex[1],cfg.texW,cfg.texH,"rgba32float",sc.massA);
@@ -97,8 +109,13 @@
 			// full texture upload from the authoritative cpu mirror (paint is rare)
 			fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
 		}
-		// one frame: optional substeps, optional stats, always display + render
+		// one frame: optional substeps, optional stats and buoy sample, always render.
+		// the body is marched here, at the frame rate, from the last sample; the
+		// sample itself is refreshed only every cfg.buoySampleEvery frames because it
+		// costs a readback, and its staleness is hidden by the body inertia.
 		function frame(dts,substeps,needStats){
+			buoy.march(dts*substeps);
+			const needBuoy=buoy.state.active&&(frameCount%Math.max(1,cfg.buoySampleEvery)===0);
 			cfg.dt=dts;
 			cfg.substeps=substeps;
 			cfg.frame=frameCount;
@@ -113,6 +130,9 @@
 			if(needStats){
 				passes.encodeStats(cpass,pool,pipes,groups,state);
 			}
+			if(needBuoy){
+				passes.encodeBuoySample(cpass,pool,pipes,groups,state);
+			}
 			passes.encodeDisplay(cpass,pool,pipes,groups,state);
 			cpass.end();
 			if(needStats&&!readbackInFlight){
@@ -121,6 +141,11 @@
 				pendingFrame=frameCount+1;
 				pendingGeneration=statsGeneration;
 				pendingRead=true;
+			}
+			if(needBuoy&&!buoyInFlight){
+				encoder.copyBufferToBuffer(pool.buoy,0,pool.buoyRead,0,buoyZero.byteLength);
+				buoyGeneration=statsGeneration;
+				buoyPending=true;
 			}
 			const view=context.getCurrentTexture().createView();
 			const rpass=encoder.beginRenderPass({
@@ -134,6 +159,7 @@
 			timeAcc+=dts*substeps;
 		}
 		function renderOnly(){
+			writeParams();
 			const encoder=device.createCommandEncoder({label:"renderOnly"});
 			const cpass=encoder.beginComputePass({label:"display"});
 			passes.encodeDisplay(cpass,pool,pipes,groups,state);
@@ -146,6 +172,28 @@
 			passes.encodeRender(rpass,pipes,groups);
 			rpass.end();
 			device.queue.submit([encoder.finish()]);
+		}
+		async function pollReadback(){
+			await pollStats();
+			await pollBuoy();
+		}
+		async function pollBuoy(){
+			if(!buoyPending||buoyInFlight)return;
+			buoyPending=false;
+			buoyInFlight=true;
+			const readPool=pool;
+			const readGeneration=buoyGeneration;
+			try{
+				await readPool.buoyRead.mapAsync(GPUMapMode.READ);
+				if(readGeneration===statsGeneration){
+					buoyRaw.set(new Float32Array(readPool.buoyRead.getMappedRange(),0,buoyRaw.length));
+					buoy.ingest(buoyRaw);
+				}
+				readPool.buoyRead.unmap();
+			}catch(e){
+				console.error("buoy readback failed",e);
+			}
+			buoyInFlight=false;
 		}
 		async function pollStats(){
 			if(!pendingRead||readbackInFlight)return;
@@ -221,7 +269,7 @@
 			fields.destroyPool(pool);
 		}
 		reset();
-		return {pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollStats,getStats,resize,destroy,flagsMirror};
+		return {pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollReadback,getStats,buoy,resize,destroy,flagsMirror};
 	}
 	Fluid.gpu.solver={create:createSolver};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.solver;

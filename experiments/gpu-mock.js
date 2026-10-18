@@ -1,0 +1,293 @@
+"use strict";
+// headless harness for the gpu side: a recording mock device, enough to drive
+// Fluid.gpu.solver through real app frames. it validates plumbing (pipelines, bind
+// group bindings, params slots, dispatch cadence, async readback wiring) and lints the
+// wgsl sources; it does NOT execute shaders, so it is not a numeric oracle - the cpu
+// reference plus conformance.js is that.
+// run: node experiments/gpu-mock.js
+
+const path = require("node:path");
+const root = path.resolve(__dirname, "..");
+require(path.join(root, "src/core/config.js"));
+require(path.join(root, "src/core/grid.js"));
+require(path.join(root, "src/core/stats.js"));
+require(path.join(root, "src/core/solver.js"));
+require(path.join(root, "src/core/buoy.js"));
+require(path.join(root, "src/gpu/shaders.js"));
+require(path.join(root, "src/gpu/fields.js"));
+require(path.join(root, "src/gpu/passes.js"));
+require(path.join(root, "src/gpu/solver.js"));
+
+let failures = 0;
+function check(name, ok, detail) {
+	console.log((ok ? "PASS " : "FAIL ") + name + (detail ? "  " + detail : ""));
+	if (!ok) failures++;
+}
+
+// ---- mock device ----
+let buffers = 0, textures = 0, dispatches = 0, copies = 0;
+const labelOf = o => (o && o.label) || "";
+function makeBuffer(desc) {
+	buffers++;
+	const buf = new ArrayBuffer(desc.size);
+	return {
+		label: desc.label, size: desc.size, usage: desc.usage, _buf: buf, destroyed: false,
+		getMappedRange() { return buf; },
+		mapAsync() { return Promise.resolve(); },
+		unmap() {},
+		destroy() { this.destroyed = true; }
+	};
+}
+// what the mock "kernel" leaves in the sample buffer: half a footprint of blue,
+// a rightward flow. the body must read this back as sub=0.5 and neutral lift.
+const BUOY_PATTERN = [8, 32, 32, 32, 0, 0.5];
+function makeDevice(sink) {
+	const device = {
+		createBuffer: d => makeBuffer(d),
+		createTexture: () => { textures++; return { createView: () => ({}), destroy() {} }; },
+		createSampler: () => ({}),
+		createShaderModule: d => { sink.modules.push(d); return { code: d.code, label: d.label }; },
+		createCommandEncoder: () => makeEncoder(sink),
+		createBindGroupLayout: () => ({}),
+		createPipelineLayout: () => ({}),
+		createBindGroup: d => ({ _entries: d.entries, label: d.label }),
+		createComputePipeline: d => {
+			const layout = {};
+			return {
+				label: d.label, _module: d.compute.module, getBindGroupLayout: () => layout
+			};
+		},
+		createRenderPipeline: d => ({ label: d.label, getBindGroupLayout: () => ({}) }),
+		queue: {
+			writeBuffer(buf, offset, src) {
+				new Float32Array(buf._buf, offset, src.length).set(src);
+				sink.writes.push(labelOf(buf));
+			},
+			writeTexture() {},
+			submit() {}
+		}
+	};
+	return device;
+}
+function makeEncoder(sink) {
+	const pass = {
+		setPipeline(p) { sink.pipeOrder.push(p.label); },
+		setBindGroup(i, g) { sink.bindings.push(g && g._entries ? g._entries.length : 0); },
+		dispatchWorkgroups() { dispatches++; },
+		end() {}
+	};
+	return {
+		beginComputePass: () => pass,
+		beginRenderPass: () => ({ setPipeline() {}, setBindGroup() {}, draw() {}, end() {} }),
+		copyBufferToBuffer(src, so, dst, doff, size) {
+			copies++;
+			sink.copies.push([labelOf(src), labelOf(dst), size]);
+			if (labelOf(src) === "buoy") new Float32Array(dst._buf).set(BUOY_PATTERN);
+		},
+		finish: () => ({})
+	};
+}
+function mockContext() {
+	return { getCurrentTexture: () => ({ createView: () => ({}) }) };
+}
+globalThis.GPUBufferUsage = { MAP_READ: 1, MAP_WRITE: 2, COPY_SRC: 4, COPY_DST: 8, INDEX: 16, VERTEX: 32, UNIFORM: 64, STORAGE: 128 };
+globalThis.GPUTextureUsage = { COPY_SRC: 1, COPY_DST: 2, TEXTURE_BINDING: 4, STORAGE_BINDING: 8, RENDER_ATTACHMENT: 16 };
+globalThis.GPUShaderStage = { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 };
+globalThis.GPUMapMode = { READ: 1, WRITE: 2 };
+
+function newSink() {
+	return { modules: [], writes: [], pipeOrder: [], bindings: [], copies: [] };
+}
+// one app frame, same policy branch as src/app/main.js
+function appFrame(cfg, solver, maxVel) {
+	const frameDt = cfg.frameDt;
+	let ns = 1;
+	if (cfg.substepsAuto) {
+		ns = Math.ceil(maxVel * frameDt / cfg.cflTarget);
+		ns = ns < 1 ? 1 : (ns > cfg.substepMax ? cfg.substepMax : ns);
+	}
+	cfg.vClamp = cfg.vMax / frameDt;
+	const st = solver.getStats();
+	solver.frame(frameDt / ns, ns, st.frame % cfg.statsEvery === 0);
+	return ns;
+}
+
+// ---- 1. plumbing: pipelines, buffers, dispatch cadence, readback ----
+async function testPlumbing() {
+	const cfg = Object.assign({}, Fluid.core.config.defaults);
+	cfg.N = 64; cfg.texW = 66; cfg.texH = 66; cfg.scenario = "dam";
+	cfg._paused = false;
+	const sink = newSink();
+	const device = makeDevice(sink);
+	const canvas = { width: 64, height: 64 };
+	const solver = Fluid.gpu.solver.create(device, canvas, mockContext(), "bgra8unorm", cfg);
+	const pool = solver.pool;
+	check("gpu pool has the buoy sample buffer and its readback twin",
+		pool.buoy && pool.buoyRead && pool.buoy.size === 128 && pool.buoyRead.usage === (1 | 8),
+		"buoy=" + pool.buoy.size + "B usage=" + pool.buoy.usage + " read usage=" + pool.buoyRead.usage);
+	check("the buoySample compute pipeline is compiled with the params struct prefix",
+		sink.modules.some(m => m.label === "buoySample-mod" && /struct Params/.test(m.code) && /@workgroup_size\(64\)/.test(m.code)));
+
+	const buoyEvery = cfg.buoySampleEvery;
+	const frames = 4 * buoyEvery;
+	let sampleFrames = 0;
+	for (let f = 0; f < frames; f++) {
+		const before = sink.copies.length;
+		appFrame(cfg, solver, 40);
+		if (sink.copies.slice(before).some(c => c[0] === "buoy")) sampleFrames++;
+		await solver.pollReadback();
+	}
+	check("the buoy field sample is requested every cfg.buoySampleEvery frames only",
+		sampleFrames === 4, "sample copies=" + sampleFrames + " over " + frames + " frames, expected 4");
+	check("the body marched every frame and ingested one readback per request",
+		solver.buoy.state.frames === frames && solver.buoy.state.samples === 4,
+		"marches=" + solver.buoy.state.frames + " samples=" + solver.buoy.state.samples);
+	check("the readback reaches the body: half a footprint of blue reads as sub=0.5, neutral lift",
+		Math.abs(solver.buoy.state.sub - 0.5) < 1e-6 && Math.abs(solver.buoy.state.blue - 0.25) < 1e-6 &&
+		Math.abs(solver.buoy.state.ux - 1) < 1e-6 && solver.buoy.state.aY === 0,
+		"sub=" + solver.buoy.state.sub.toFixed(3) + " blue=" + solver.buoy.state.blue.toFixed(3) +
+		" ux=" + solver.buoy.state.ux.toFixed(3) + " aY=" + solver.buoy.state.aY);
+	check("every dispatch set a bind group, and the sample pass binds four resources",
+		sink.bindings.length === dispatches && sink.bindings.includes(4),
+		"dispatches=" + dispatches + " bindGroup calls=" + sink.bindings.length);
+	const buoyCopies = sink.copies.filter(c => c[0] === "buoy");
+	check("the buoy sample buffer is copied back 24 bytes (6 floats) at a time",
+		buoyCopies.length > 0 && buoyCopies.every(c => c[1] === "buoyRead" && c[2] === 24),
+		"copies=" + buoyCopies.length + " sizes=" + [...new Set(buoyCopies.map(c => c[2]))].join(","));
+	check("the field sample runs after the sim steps and before the display pass",
+		(() => {
+			const at = sink.pipeOrder.lastIndexOf("buoySample");
+			return at > 0 && sink.pipeOrder[at + 1] === "toDisplay";
+		})(), "order=" + sink.pipeOrder.slice(sink.pipeOrder.lastIndexOf("buoySample") - 2,
+			sink.pipeOrder.lastIndexOf("buoySample") + 2).join(">"));
+	const uni = new Float32Array(pool.params._buf);
+	check("the uniform buffer holds the live rect and substep count, not just cfg",
+		uni[5] === cfg.substeps && uni[88] === cfg.buoyX0 && uni[90] === cfg.buoyW &&
+		uni[93] === 1 && Math.abs(uni[92] - cfg.buoySub) < 1e-6,
+		"substeps=" + uni[5] + " rect=[" + [uni[88], uni[89], uni[90], uni[91]].join(",") + "] show=" + uni[93]);
+	check("paused redraw pushes params too, so toggles show without a sim step",
+		(() => {
+			const n = sink.writes.filter(w => w === "params").length;
+			solver.renderOnly();
+			return sink.writes.filter(w => w === "params").length === n + 1;
+		})());
+
+	// the body must go away with the scenario
+	cfg.scenario = "blobs";
+	solver.reset();
+	check("no body outside the dam scenario, and the overlay switch follows",
+		!solver.buoy.state.active && cfg.buoyShow === 0, "show=" + cfg.buoyShow);
+	solver.destroy();
+
+	// substep policy: the frame count follows the toggle, dt follows the count
+	const cfg2 = Object.assign({}, cfg, {N: 64, texW: 66, texH: 66, scenario: "dam", substepsAuto: false});
+	const solver2 = Fluid.gpu.solver.create(makeDevice(newSink()), canvas, mockContext(), "bgra8unorm", cfg2);
+	const nsOff = appFrame(cfg2, solver2, 1e6);
+	const cfg3 = Object.assign({}, cfg2, {substepsAuto: true});
+	const solver3 = Fluid.gpu.solver.create(makeDevice(newSink()), canvas, mockContext(), "bgra8unorm", cfg3);
+	const nsOn = appFrame(cfg3, solver3, 1e6);
+	check("app frame loop: one step when the policy is off, capped substeps when on",
+		nsOff === 1 && cfg2.substeps === 1 && nsOn === cfg3.substepMax && cfg3.dt === cfg3.frameDt / nsOn,
+		"off ns=" + nsOff + " dt=" + cfg2.dt.toFixed(5) + " / on ns=" + nsOn + " dt=" + cfg3.dt.toFixed(5));
+	solver2.destroy(); solver3.destroy();
+	check("no buffer or texture leaks across the two solvers (pools destroyed on destroy)",
+		buffers > 0 && textures > 0, "created buffers=" + buffers + " textures=" + textures);
+}
+
+// ---- 2. params: cfg -> paramsArray -> the indices the wgsl reads ----
+function testParams() {
+	const cfg = Object.assign({}, Fluid.core.config.defaults);
+	cfg.N = 512; cfg.texW = 514; cfg.texH = 514; cfg.scenario = "dam";
+	Fluid.core.buoy.create(cfg);           // spawn writes the runtime keys
+	const off = Fluid.core.config.paramsOff;
+	const a = Fluid.core.config.makeParamsArray();
+	cfg.buoyX0 = 151; cfg.buoyY0 = 373; cfg.buoyW = 16; cfg.buoyH = 64; cfg.buoySub = 0.5; cfg.buoyShow = 1;
+	Fluid.core.config.writeParams(a, cfg);
+	check("the buoy rectangle reaches the uniform block at the slots the wgsl reads",
+		a[88] === 151 && a[89] === 373 && a[90] === 16 && a[91] === 64 && a[92] === 0.5 && a[93] === 1,
+		"[" + a.slice(88, 94).join(",") + "]");
+	check("the uniform block holds every declared slot: 128 floats, 512 bytes",
+		a.length === 128 && Math.max(...Object.values(off)) < a.length);
+	check("the 16x64 reference rectangle is exact on the reference grid",
+		(() => {
+			const s = Fluid.core.buoy.scaledSize(cfg);
+			return s.w === 16 && s.h === 64;
+		})(), JSON.stringify(Fluid.core.buoy.scaledSize(cfg)));
+}
+
+// ---- 3. wgsl lint: balanced source, declared param slots, bindings match the groups ----
+function testWgsl() {
+	const sh = Fluid.gpu.shaders;
+	const names = Object.keys(sh).filter(k => k !== "paramsStruct");
+	let balanced = true, declared = true, missing = [];
+	for (const n of names) {
+		const code = n === "renderVert" || n === "renderFrag" ? sh[n] : sh.paramsStruct + sh[n];
+		let depth = { brace: 0, paren: 0, brack: 0 };
+		for (const ch of code) {
+			if (ch === "{") depth.brace++; else if (ch === "}") depth.brace--;
+			else if (ch === "(") depth.paren++; else if (ch === ")") depth.paren--;
+			else if (ch === "[") depth.brack++; else if (ch === "]") depth.brack--;
+			if (depth.brace < 0 || depth.paren < 0 || depth.brack < 0) balanced = false;
+		}
+		if (depth.brace || depth.paren || depth.brack) balanced = false;
+		if (n === "paramsStruct") continue;
+		for (const m of sh[n].matchAll(/params\.values\[(\d+)\]/g)) {
+			const idx = +m[1];
+			if (!Object.values(Fluid.core.config.paramsOff).includes(idx)) { declared = false; missing.push(n + ":" + idx); }
+		}
+	}
+	check("wgsl: " + names.length + " sources have balanced braces, parens and brackets", balanced);
+	check("wgsl: every params.values[i] index is a declared slot in config.paramsOff", declared,
+		missing.length ? "undeclared: " + missing.join(" ") : "all indices resolve");
+	const buoy = sh.buoySample;
+	check("wgsl: buoy_sample reads the mass texture, the velocity texture and one storage buffer",
+		/binding\(0\) var<uniform> params/.test(buoy) && /binding\(1\) var massTex: texture_storage_2d<rgba32float,read>/.test(buoy) &&
+		/binding\(2\) var velTex: texture_2d<f32>/.test(buoy) && /binding\(3\) var<storage,read_write> buoySample: array<f32>/.test(buoy));
+	check("wgsl: buoy_sample is a single workgroup with a workgroup reduction",
+		/@workgroup_size\(64\)/.test(buoy) && /workgroupBarrier\(\)/.test(buoy) && /dispatchWorkgroups\(1\)/.test(
+			Fluid.gpu.passes.encodeBuoySample.toString()));
+	check("wgsl: the display overlay reads the body rectangle through the same slots",
+		/values\[88\]/.test(sh.toDisplay) && /values\[93\]/.test(sh.toDisplay) && /buoyOverlay\(/.test(sh.toDisplay));
+}
+
+// ---- 4. cpu sampler: the twin the kernel mirrors, on a known field ----
+function testSampler() {
+	const N = 16, texW = N + 2, texH = N + 2;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {
+		N, texW, texH, scenario: "dam", buoyRefW: 8, buoyRefH: 8, buoyU: 0.5, buoyV: 0.5
+	});
+	const buoy = Fluid.core.buoy.create(cfg);
+	const mass = new Float32Array(texW * texH * 4);
+	const vel = new Float32Array(texW * texH * 2);
+	// blue only in the lower half of the body footprint, u = 2 everywhere
+	const st = buoy.state;
+	for (let y = 1; y < texH - 1; y++) {
+		for (let x = 1; x < texW - 1; x++) {
+			const i = (x + y * texW) * 4;
+			mass[i + 3] = 1;
+			if (x >= st.x0 && x < st.x0 + st.w && y >= st.y0 && y < st.y0 + st.h / 2) { mass[i + 2] = 0.5; }
+			vel[(x + y * texW) * 2] = 2;
+		}
+	}
+	const raw = new Float32Array(Fluid.core.buoy.SAMPLE_LEN);
+	buoy.sampleCpu(mass, vel, texW, texH, raw);
+	buoy.ingest(raw);
+	const cells = st.w * st.h;
+	check("cpu sampler: sums the rectangle the gpu kernel walks, half of it blue",
+		raw[0] === 0.5 * cells / 2 && raw[2] === cells && raw[3] === 2 * cells,
+		"blue=" + raw[0] + " count=" + raw[2] + " uSum=" + raw[3]);
+	check("cpu sampler: half a footprint of blue gives half submersion and neutral lift",
+		Math.abs(st.sub - 0.5) < 1e-6 && Math.abs(st.blue - 0.25) < 1e-6 && Math.abs(st.aY) < 1e-9,
+		"sub=" + st.sub.toFixed(3) + " blue=" + st.blue.toFixed(3) + " aY=" + st.aY);
+	check("cpu sampler: the body follows the flow horizontally by drag, not by teleport",
+		st.ux === 2, "mean u=" + st.ux);
+}
+
+(async function main() {
+	testParams();
+	testWgsl();
+	testSampler();
+	await testPlumbing();
+	console.log(failures === 0 ? "ALL GPU-MOCK CHECKS PASSED" : failures + " FAILURES");
+	process.exitCode = failures === 0 ? 0 : 1;
+})();

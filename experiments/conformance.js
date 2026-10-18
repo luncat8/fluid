@@ -11,6 +11,7 @@ require(path.join(root, "src/core/config.js"));
 require(path.join(root, "src/core/grid.js"));
 require(path.join(root, "src/core/stats.js"));
 const solverMod = require(path.join(root, "src/core/solver.js"));
+const buoyMod = require(path.join(root, "src/core/buoy.js"));
 const sharpness = require(path.join(root, "experiments/sharpness.js"));
 const cfg0 = Fluid.core.config.defaults;
 const stats = Fluid.core.stats;
@@ -23,25 +24,48 @@ function check(name, ok, detail) {
 function makeCfg(over) {
 	const c = Object.assign({}, cfg0, over);
 	c.texW = c.N + 2; c.texH = c.N + 2;
+	// the suite measures the sim, so it runs the auto-cfl policy; the app default is
+	// off (one step per frame) and testSubstepPolicy covers both branches.
+	if (over === undefined || over.substepsAuto === undefined) c.substepsAuto = true;
 	return c;
 }
 // mirrors main.js: fixed frame dt, substeps from maxVel + live drag speed, cfl target 0.8
-function runFrames(sim, cfg, frames, onFrame) {
+function substepCount(cfg, maxVel) {
+	if (!cfg.substepsAuto) return 1;
+	let ns = Math.ceil(maxVel * cfg.frameDt / cfg.cflTarget);
+	return ns < 1 ? 1 : (ns > cfg.substepMax ? cfg.substepMax : ns);
+}
+function runFrames(sim, cfg, frames, onFrame, onFrameEnd) {
 	const frameDt = cfg.frameDt;
 	for (let f = 0; f < frames; f++) {
 		const vel = sim.vel.cur === 0 ? sim.vel.a : sim.vel.b;
 		const press = sim.press.cur === 0 ? sim.press.a : sim.press.b;
 		const mot = stats.motionTotals(vel, press, cfg.texW, cfg.texH, cfg.dt);
 		const maxVel = Math.max(mot.maxVel, Math.abs(cfg.mouseVX), Math.abs(cfg.mouseVY));
-		let ns = Math.ceil(maxVel * frameDt / cfg.cflTarget);
-		ns = ns < 1 ? 1 : (ns > cfg.substepMax ? cfg.substepMax : ns);
+		const ns = substepCount(cfg, maxVel);
 		const dts = frameDt / ns;
 		cfg.dt = dts;
 		for (let s = 0; s < ns; s++) {
 			sim.step(dts);
 			if (onFrame) onFrame(f, s, sim);
 		}
+		if (onFrameEnd) onFrameEnd(f, sim, cfg, ns);
 	}
+}
+// mirrors the app buoy cadence: march every frame, one field sample every
+// cfg.buoySampleEvery frames, ingested a frame later (the gpu readback latency)
+function makeBuoyRunner(cfg, buoy) {
+	const pending = new Float32Array(buoyMod.SAMPLE_LEN);
+	let ready = false;
+	return function step(sim, f) {
+		if (ready) { buoy.ingest(pending); ready = false; }
+		buoy.march(cfg.frameDt);
+		if (!buoy.state.active || f % Math.max(1, cfg.buoySampleEvery) !== 0) return;
+		const mass = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
+		const vel = sim.vel.cur === 0 ? sim.vel.a : sim.vel.b;
+		buoy.sampleCpu(mass, vel, cfg.texW, cfg.texH, pending);
+		ready = true;
+	};
 }
 function driftLine(sim) {
 	const t = sim.stats();
@@ -235,6 +259,116 @@ function testDam() {
 		t.mot.maxVel >= 0);
 }
 
+// 7b. the substep policy is optional: off pins every frame to one step at frameDt for
+// any velocity (the app default, for tests and measurements); the suite itself runs
+// substepped, which makeCfg sets explicitly.
+function testSubstepPolicy() {
+	const on = makeCfg({ N: 64, scenario: "dam" });
+	const off = makeCfg({ N: 64, scenario: "dam", substepsAuto: false });
+	const target = 4 * on.cflTarget / on.frameDt;
+	check("substep policy off: one step per frame regardless of velocity",
+		substepCount(off, 1e6) === 1 && substepCount(off, 0) === 1,
+		"ns=" + substepCount(off, 1e6) + " at maxVel=1e6");
+	check("substep policy on: cfl target followed, then capped",
+		substepCount(on, target) === 4 && substepCount(on, 0) === 1 && substepCount(on, 1e6) === on.substepMax,
+		"ns=" + substepCount(on, target) + " at the cfl target, " + substepCount(on, 1e6) + " at the cap " + on.substepMax);
+	// with the policy off the sim is still monotone: the per-cell outflow limiter in
+	// compute_flux is the safety net, so a coarse frame may be wrong but never blows up
+	const cfg = makeCfg({ N: 64, scenario: "dam", substepsAuto: false });
+	const sim = solverMod.create(cfg);
+	runFrames(sim, cfg, 400);
+	const r = driftLine(sim);
+	check("substep policy off: dam break stays finite and non-negative",
+		Number.isFinite(r.t.tot.sumM) && r.t.tot.cntNeg === 0 && r.t.tot.maxM < 10,
+		"sumM=" + r.t.tot.sumM.toFixed(3) + " maxM=" + r.t.tot.maxM.toFixed(3) +
+		" neg=" + r.t.tot.cntNeg + " maxDiv=" + r.t.mot.maxDiv.toExponential(2));
+}
+
+// 7c. buoy (draft.txt): a diagnostic body that only reads the field. it must sink
+// into the blue, be lifted back out, settle partially submerged, and leave the
+// conserved totals exactly where the buoy-less run leaves them.
+function testBuoy() {
+	const cfg = makeCfg({ N: 64, scenario: "dam" });
+	const sim = solverMod.create(cfg);
+	const buoy = buoyMod.create(cfg);
+	check("buoy spawn: rectangle scaled from the 16x64 reference, dam only",
+		buoy.state.active && buoy.state.w === 4 && buoy.state.h === 8,
+		"w=" + buoy.state.w + " h=" + buoy.state.h + " cy=" + buoy.state.cy.toFixed(1));
+	const step = makeBuoyRunner(cfg, buoy);
+	let maxStep = 0, minCy = Infinity, escaped = false;
+	let prevY = buoy.state.cy;
+	runFrames(sim, cfg, 400, null, (f, sm, c) => {
+		step(sm, f);
+		const d = Math.abs(buoy.state.cy - prevY); prevY = buoy.state.cy;
+		if (f > 8 && d > maxStep) maxStep = d;
+		if (buoy.state.cy < minCy) minCy = buoy.state.cy;
+		if (buoy.state.cx < 1 || buoy.state.cx > c.N + 1) escaped = true;
+		if (buoy.state.cy < 1 || buoy.state.cy > c.N + 1) escaped = true;
+	});
+	const st = buoy.state;
+	check("buoy: sampled every 4 frames, marched every frame",
+		st.samples === 100 && st.frames === 400, "samples=" + st.samples + " marches=" + st.frames);
+	check("buoy: sinks into the liquid and is lifted back out by the blue",
+		minCy < 20 && st.cy > minCy + 2, "dropped from cy=48, dipped to " + minCy.toFixed(1) +
+		", rose back to " + st.cy.toFixed(1) + " (vy=" + st.vy.toFixed(2) + ")");
+	check("buoy: ends partially submerged in the blue, inside the water band",
+		st.sub > 0.15 && st.sub < 0.85 && st.cy > 1 && st.cy < 40,
+		"sub=" + (st.sub * 100).toFixed(1) + "% blue/cell=" + st.blue.toFixed(3) + " cy=" + st.cy.toFixed(1));
+	// the point of the inertia: even with a force that changes by the full range
+	// between refreshes, and a splash around it, a frame moves the body sub-cell
+	check("buoy: inertia caps a frame of motion below one cell", maxStep < 1,
+		"max |dy| per frame=" + maxStep.toFixed(3) + " cells");
+	check("buoy: stays inside the domain", !escaped, "cx=" + st.cx.toFixed(1) + " cy=" + st.cy.toFixed(1));
+
+	// read-only claim: the same run without the body must give the same field
+	const cfg2 = makeCfg({ N: 64, scenario: "dam", buoyEnabled: 0 });
+	const sim2 = solverMod.create(cfg2);
+	runFrames(sim2, cfg2, 400);
+	const m1 = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
+	const m2 = sim2.mass.cur === 0 ? sim2.mass.a : sim2.mass.b;
+	let diff = 0;
+	for (let i = 0; i < m1.length; i++) diff = Math.max(diff, Math.abs(m1[i] - m2[i]));
+	check("buoy: field identical to the buoy-less run (no back-reaction on the solver)",
+		diff === 0, "max|dmass|=" + diff);
+}
+
+// 7d. the buoy model alone: the lift is the blue inside the footprint, nothing else
+function testBuoyModel() {
+	const cfg = makeCfg({ N: 512, scenario: "dam", buoySampleEvery: 1 });
+	const buoy = buoyMod.create(cfg);
+	const s = new Float32Array(buoyMod.SAMPLE_LEN);
+	const area = buoy.state.w * buoy.state.h;
+	function fill(meanBlue, peak) {
+		s.fill(0);
+		s[0] = meanBlue * area; s[2] = area; s[5] = peak;
+		return s;
+	}
+	buoy.ingest(fill(1.0, 1.0));
+	const liftBright = buoy.state.aY, subBright = buoy.state.sub;
+	buoy.ingest(fill(0.5, 0.5));
+	const liftDim = buoy.state.aY, subUniform = buoy.state.sub;
+	buoy.ingest(fill(0.0, 0.0));
+	const liftAir = buoy.state.aY;
+	check("buoy model: [r,g,255] lifts harder than [r,g,123] and air sinks",
+		liftBright > liftDim && liftDim > 0 && liftAir < 0,
+		"a[blue=1]=" + liftBright.toFixed(1) + " a[blue=0.5]=" + liftDim.toFixed(1) + " a[empty]=" + liftAir.toFixed(1));
+	check("buoy model: sub fraction is mean blue over local peak, float line is the body density",
+		Math.abs(subBright - 1) < 1e-6 && Math.abs(subUniform - 1) < 1e-6 &&
+		Math.abs(liftDim - cfg.gravityY * (0.5 - cfg.buoyRho)) < 1e-4,
+		"sub=" + subBright.toFixed(3) + "/" + subUniform.toFixed(3) + " aY=" + liftDim.toFixed(2));
+	buoy.ingest(fill(0.25, 0.5));
+	const subHalf = buoy.state.sub, neutral = buoy.state.aY;
+	check("buoy model: half a footprint of blue is neutral buoyancy", Math.abs(neutral) < 1e-5 && Math.abs(subHalf - 0.5) < 1e-6,
+		"aY=" + neutral.toExponential(2) + " sub=" + subHalf.toFixed(3));
+	// one frame of full lift must not teleport the body: that is what the inertia is for
+	const y0 = buoy.state.cy;
+	buoy.ingest(fill(1.0, 1.0));
+	buoy.march(cfg.frameDt);
+	check("buoy model: one frame of full lift moves it by well under a cell",
+		Math.abs(buoy.state.cy - y0) < 0.1 && Math.abs(buoy.state.vy) < 5,
+		"dy=" + (buoy.state.cy - y0).toExponential(2) + " vy=" + buoy.state.vy.toFixed(2));
+}
+
 // 8. wall integrity (a8): a one cell wall column holds against a pushed dye blob
 function testWall() {
 	const cfg = makeCfg({ N: 64, scenario: "blobs", pressureIters: 20 });
@@ -327,8 +461,7 @@ function testDraw() {
 			cfg.mouseStrength = 0; cfg.mouseVX = 0; cfg.mouseVY = 0;
 		}
 		// main.js substep rule; readback maxVel is statsEvery frames stale
-		let ns = Math.ceil(Math.max(staleVel, Math.abs(cfg.mouseVX), Math.abs(cfg.mouseVY)) * cfg.frameDt / cfg.cflTarget);
-		ns = ns < 1 ? 1 : (ns > cfg.substepMax ? cfg.substepMax : ns);
+		const ns = substepCount(cfg, Math.max(staleVel, Math.abs(cfg.mouseVX), Math.abs(cfg.mouseVY)));
 		const dts = cfg.frameDt / ns;
 		cfg.dt = dts; cfg.vClamp = cfg.vMax / cfg.frameDt;
 		for (let s = 0; s < ns; s++) sim.step(dts);
@@ -364,6 +497,9 @@ testFctLongConservation();
 testStill();
 testStirred();
 testDam();
+testSubstepPolicy();
+testBuoy();
+testBuoyModel();
 testWall();
 testEmitter();
 testDraw();

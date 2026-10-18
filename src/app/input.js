@@ -128,6 +128,12 @@
 				cfg.scenario=names[(names.indexOf(cfg.scenario)+1)%names.length];
 				if(solver)solver.reset();
 				cfg._dirty=true;
+			}else if(k==="u"){
+				cfg.substepsAuto=!cfg.substepsAuto;
+			}else if(k==="y"){
+				cfg.buoyEnabled=cfg.buoyEnabled>0?0:1;
+				if(solver&&solver.buoy)solver.buoy.reset();
+				cfg._dirty=true;
 			}
 		});
 		window.addEventListener("keyup",e=>{

@@ -20,6 +20,14 @@
 			if(a<1e-3)return "warn";
 			return "bad";
 		}
+		// the body is diagnostic, so its readout lives here and not in the solver
+		function buoyLine(){
+			const b=solver&&solver.buoy?solver.buoy.state:null;
+			if(!b)return "buoy: no solver";
+			if(!b.active)return "buoy: off (dam scenario only, y to enable)";
+			return "buoy  y="+b.cy.toFixed(1)+"  vy="+b.vy.toFixed(2)+"  submerged="+(b.sub*100).toFixed(0)+
+				"%  blue/cell="+b.blue.toFixed(3)+"  sample#"+b.samples;
+		}
 		function fmt(v){
 			if(!isFinite(v))return String(v);
 			const a=Math.abs(v);
@@ -47,7 +55,9 @@
 				lines.push(kinds[i]+": total="+totals[i]+" exp="+expects[i]+" drift="+drift+" ["+driftClass(drift)+"]");
 			}
 			lines.push("maxM="+s.maxM+" neg="+s.cntNeg+" over="+s.cntOver+" maxDiv="+s.motion.maxDiv+" p["+s.motion.pMin+".."+s.motion.pMax+"] maxVel="+s.motion.maxVel);
-			lines.push("statsFrame#"+s.statsFrame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+" fps~"+Math.round(fpsEma));
+			lines.push("statsFrame#"+s.statsFrame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+
+				" ns="+substepsShown+(cfg.substepsAuto?"/"+cfg.substepMax+" auto":" fixed")+" fps~"+Math.round(fpsEma));
+			lines.push(buoyLine());
 			return lines.join("\n");
 		}
 		async function copyToClipboard(){
@@ -85,7 +95,8 @@
 			const s=solver.getStats();
 			if(perfEl){
 				const txt="fps "+Math.round(fpsEma)+"  N="+cfg.N+"  dt="+cfg.dt.toFixed(4)+
-					"  K="+cfg.pressureIters+"  maxVel="+fmt(s.motion.maxVel)+"  frame#"+s.frame;
+					"  K="+cfg.pressureIters+"  ns="+substepsShown+(cfg.substepsAuto?"/"+cfg.substepMax+" auto":"/1 fixed")+
+					"  maxVel="+fmt(s.motion.maxVel)+"  frame#"+s.frame;
 				if(txt!==lastPerf){
 					perfEl.textContent=txt;
 					lastPerf=txt;
@@ -115,7 +126,8 @@
 				const paintName=Fluid.core.config.paintModeNames[cfg.paintMode]||String(cfg.paintMode);
 				const txt="mode="+modeName+"  scenario="+cfg.scenario+"  paint="+paintName+
 					"  FCT="+(cfg.fctLimiter?"on":"off")+"  gravity="+(cfg.gravityY!==0?"on":"off")+"  "+(cfg._paused?"PAUSED":"running")+
-					"\nkeys: 0-7 view · space pause · . step · r reset · n scenario · b paint · c color · f FCT · g gravity · +/- K · [ ] size · s dump · h help";
+					"\n"+buoyLine()+
+					"\nkeys: 0-7 view · space pause · . step · r reset · n scenario · b paint · c color · f FCT · g gravity · u substeps · y buoy · +/- K · [ ] size · s dump · h help";
 				if(txt!==lastState){
 					stateEl.textContent=txt;
 					lastState=txt;
