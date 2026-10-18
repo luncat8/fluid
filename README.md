@@ -27,8 +27,9 @@ cell counts, max velocity and divergence.
 
 `node experiments/conformance.js` runs the CPU reference (the numeric oracle for
 the scheme in `0.0.0-plan.md` section 5) through: stats-reduction error, still
-box, stirred closed box, dam break, wall integrity, and emitter accounting.
-Keep output in `experiments/logs/<date>-conformance.log`.
+box, stirred closed box, dam break, wall integrity, emitter accounting, and a
+draw stroke that guards the per-cell flux outflow limiter. Keep output in
+`experiments/logs/<date>-conformance.log`.
 
 No build, no dependencies, no modules, no network. All WGSL is inline as JS
 template strings; `file://` works.

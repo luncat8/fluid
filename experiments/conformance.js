@@ -24,14 +24,15 @@ function makeCfg(over) {
 	c.texW = c.N + 2; c.texH = c.N + 2;
 	return c;
 }
-// mirrors main.js: fixed frame dt, substeps from maxVel, cfl target 0.8
+// mirrors main.js: fixed frame dt, substeps from maxVel + live drag speed, cfl target 0.8
 function runFrames(sim, cfg, frames, onFrame) {
 	const frameDt = cfg.frameDt;
 	for (let f = 0; f < frames; f++) {
 		const vel = sim.vel.cur === 0 ? sim.vel.a : sim.vel.b;
 		const press = sim.press.cur === 0 ? sim.press.a : sim.press.b;
 		const mot = stats.motionTotals(vel, press, cfg.texW, cfg.texH, cfg.dt);
-		let ns = Math.ceil(mot.maxVel * frameDt / cfg.cflTarget);
+		const maxVel = Math.max(mot.maxVel, Math.abs(cfg.mouseVX), Math.abs(cfg.mouseVY));
+		let ns = Math.ceil(maxVel * frameDt / cfg.cflTarget);
 		ns = ns < 1 ? 1 : (ns > cfg.substepMax ? cfg.substepMax : ns);
 		const dts = frameDt / ns;
 		cfg.dt = dts;
@@ -191,11 +192,93 @@ function testEmitter() {
 		" injected_m=" + sim.ledger.injectedM.toFixed(6));
 }
 
+// 7. draw stroke (user report 2026-10-18): dye paint + drag stir blows up when
+// per-cell total outgoing flux exceeds 1. the +-1 per-face clamp lets a diverging
+// cell empty through 4 faces at once (k up to 4); the donor update q'=q*(1-k)+in
+// then amplifies sign-alternating mass every step (measured: minM -8 -> NaN in
+// ~15 frames). compute_flux must limit each cell's total outflow to 1.
+function testDraw() {
+	const cfg = makeCfg({ N: 64, scenario: "blobs", pressureIters: 20 });
+	const sim = solverMod.create(cfg);
+	const texW = cfg.texW, texH = cfg.texH;
+	// raw per-face flux exactly as compute_flux computes it, for the k_out probe
+	function rawOut() {
+		const vv = sim.vel.cur === 0 ? sim.vel.a : sim.vel.b;
+		const fr = (x, y) => sim.uBlocked(x, y) ? 0 : Math.max(-1, Math.min(1, vv[(x + y * texW) * 2] * cfg.dt));
+		const fs = (x, y) => sim.vBlocked(x, y) ? 0 : Math.max(-1, Math.min(1, vv[(x + y * texW) * 2 + 1] * cfg.dt));
+		let worst = 0;
+		for (let y = 1; y < texH - 1; y++) for (let x = 1; x < texW - 1; x++) {
+			const out = Math.max(0, -fr(x, y)) + Math.max(0, fr(x + 1, y))
+				+ Math.max(0, -fs(x, y)) + Math.max(0, fs(x, y + 1));
+			if (out > worst) worst = out;
+		}
+		return worst;
+	}
+	function storedOut() {
+		const fl = sim.flux;
+		let worst = 0;
+		for (let y = 1; y < texH - 1; y++) for (let x = 1; x < texW - 1; x++) {
+			const i2 = (x + y * texW) * 2;
+			const out = Math.max(0, -fl[i2]) + Math.max(0, fl[i2 + 2])
+				+ Math.max(0, -fl[i2 + 1]) + Math.max(0, fl[i2 + texW * 2 + 1]);
+			if (out > worst) worst = out;
+		}
+		return worst;
+	}
+	let staleVel = 0, nan = false, minEver = Infinity, maxEver = 0, negCells = 0;
+	let rawOutMax = 0, storedOutMax = 0;
+	for (let f = 0; f < 240; f++) {
+		if (f % 30 === 0) staleVel = stats.motionTotals(
+			sim.vel.cur === 0 ? sim.vel.a : sim.vel.b,
+			sim.press.cur === 0 ? sim.press.a : sim.press.b,
+			texW, texH, cfg.dt).maxVel;
+		if (f >= 60 && f < 180) {
+			// stroke: paint + stir exactly as input.js does in dye mode
+			const u = 0.15 + 0.7 * (f - 60) / 120, v = 0.5 + 0.15 * Math.sin(f * 0.2);
+			sim.applyDyePatch(solverMod.buildDyePatch(cfg, u, v, [1, 0, 0]));
+			cfg.rhoMean = (sim.ledger.initialM + sim.ledger.injectedM) / (cfg.N * cfg.N);
+			cfg.mouseStrength = 1; cfg.mouseVX = 600; cfg.mouseVY = 0;
+			cfg.mouseX = u * cfg.N; cfg.mouseY = v * cfg.N;
+		} else {
+			cfg.mouseStrength = 0; cfg.mouseVX = 0; cfg.mouseVY = 0;
+		}
+		// main.js substep rule; readback maxVel is statsEvery frames stale
+		let ns = Math.ceil(Math.max(staleVel, Math.abs(cfg.mouseVX), Math.abs(cfg.mouseVY)) * cfg.frameDt / cfg.cflTarget);
+		ns = ns < 1 ? 1 : (ns > cfg.substepMax ? cfg.substepMax : ns);
+		const dts = cfg.frameDt / ns;
+		cfg.dt = dts; cfg.vClamp = cfg.vMax / cfg.frameDt;
+		for (let s = 0; s < ns; s++) sim.step(dts);
+		const ro = rawOut(), so = storedOut();
+		if (ro > rawOutMax) rawOutMax = ro;
+		if (so > storedOutMax) storedOutMax = so;
+		const mass = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
+		const therm = sim.therm.cur === 0 ? sim.therm.a : sim.therm.b;
+		const t = stats.totalsFromFields(mass, therm, texW, texH);
+		if (!isFinite(t.sumM) || !isFinite(t.sumE)) nan = true;
+		if (t.minM < minEver) minEver = t.minM;
+		if (t.maxM > maxEver) maxEver = t.maxM;
+		if (t.cntNeg > 0) negCells += t.cntNeg;
+	}
+	const r = driftLine(sim);
+	check("draw stroke: survived paint+stir without NaN", !nan, "sumM=" + r.t.tot.sumM.toFixed(3));
+	check("draw stroke: no negative cells (donor-cell monotone, not clipped)", negCells === 0,
+		"negCells=" + negCells + " minM=" + minEver.toExponential(3));
+	check("draw stroke: no runaway overpack", maxEver < 10, "maxM=" + maxEver.toFixed(3));
+	check("draw stroke: invariants conserved below 1e-6 with injected dye",
+		Math.abs(r.drift.m) < 1e-6 && Math.abs(r.drift.dr) < 1e-6 && Math.abs(r.drift.E) < 1e-6,
+		"drift_m=" + r.drift.m.toExponential(2) + " drift_dr=" + r.drift.dr.toExponential(2));
+	check("draw stroke: limiter exercised (raw k_out exceeded 1)", rawOutMax > 1 + 1e-6,
+		"rawOutMax=" + rawOutMax.toFixed(3));
+	check("draw stroke: stored flux k_out <= 1 per cell (monotone transport)", storedOutMax <= 1 + 1e-6,
+		"storedOutMax=" + storedOutMax.toFixed(3));
+}
+
 testReduction();
 testStill();
 testStirred();
 testDam();
 testWall();
 testEmitter();
+testDraw();
 console.log(failures === 0 ? "ALL CONFORMANCE TESTS PASSED" : failures + " FAILURES");
 process.exitCode = failures === 0 ? 0 : 1;

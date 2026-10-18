@@ -329,22 +329,43 @@
 			const rb=Math.max(ms[(bx+by*texW)*4+3],cfg.rhoVac);
 			return 1/(2*ra*rb/(ra+rb));
 		}
+		function rawFx(vv,dt,x,y){
+			if(uBlocked(x,y))return 0;
+			const u=vv[(x+y*texW)*2]*dt;
+			return u>1?1:(u<-1?-1:u);
+		}
+		function rawFy(vv,dt,x,y){
+			if(vBlocked(x,y))return 0;
+			const v=vv[(x+y*texW)*2+1]*dt;
+			return v>1?1:(v<-1?-1:v);
+		}
+		function outFlux(vv,dt,x,y){
+			const fw=rawFx(vv,dt,x,y),fe=rawFx(vv,dt,x+1,y),fs=rawFy(vv,dt,x,y),fn=rawFy(vv,dt,x,y+1);
+			return (fw<0?-fw:0)+(fe>0?fe:0)+(fs<0?-fs:0)+(fn>0?fn:0);
+		}
 		function computeFlux(dt){
 			const vv=grid.curBuf(vel);
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
-					const vi=(x+y*texW)*2;
-					const fi=(x+y*texW)*2;
-					let fx=0,fy=0;
-					if(!uBlocked(x,y)){
-						fx=vv[vi]*dt;
-						if(fx>1)fx=1;else if(fx<-1)fx=-1;
+					const i2=(x+y*texW)*2;
+					let fx=rawFx(vv,dt,x,y),fy=rawFy(vv,dt,x,y);
+					// monotone donor-cell needs total outflow <= 1 volume per cell per
+					// step. the +-1 face clamp alone is not enough: a diverging cell
+					// empties through up to 4 faces at once and the q'=q*(1-k)+in
+					// update then amplifies sign-alternating mass every step (draw +
+					// stir exploded to NaN in ~15 frames). scale the faces a cell owns
+					// as outflow so they sum to <= 1; each face is outflow for exactly
+					// one of its two cells, so the stored value stays the single shared
+					// flux and conservation is untouched. same limiter in the wgsl.
+					if(fx!==0){
+						const s=fx>0?outFlux(vv,dt,x-1,y):outFlux(vv,dt,x,y);
+						if(s>1)fx/=s;
 					}
-					if(!vBlocked(x,y)){
-						fy=vv[vi+1]*dt;
-						if(fy>1)fy=1;else if(fy<-1)fy=-1;
+					if(fy!==0){
+						const s=fy>0?outFlux(vv,dt,x,y-1):outFlux(vv,dt,x,y);
+						if(s>1)fy/=s;
 					}
-					flux[fi]=fx;flux[fi+1]=fy;
+					flux[i2]=fx;flux[i2+1]=fy;
 				}
 			}
 		}

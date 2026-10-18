@@ -148,10 +148,17 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   per-cell store rounds to f32, so the global total is a random walk at ~eps32 scale
   (measured 3.7e-8 relative over 1200 stirred frames, 8.5e-9 over a dam break).
   "exactly 0.0" is not achievable with f32 fields; acceptance thresholds are 1e-7.
-- [verified] the flux clamp (+-1 per substep) silently breaks divergence-freeness
-  when CFL is exceeded: without substepping the dam break overpacks and runs away
-  (maxM 1.2 -> NaN in ~40 steps). substeps from maxVel (cfl target 0.8, cap 8) keep
-  fluxes under the clamp; the clamp stays as the safety net only.
+- [verified] the +-1 per-face flux clamp is NOT a safety net: donor cell needs the
+  per-cell total outflow k_out <= 1. a diverging cell can empty through up to 4
+  faces at once (k_out up to 4) and the q' = q*(1-k)+in update amplifies
+  sign-alternating mass every step (measured 2026-10-18: dye draw + drag stir at
+  N=256, stale substep counts -> minM -8, maxM 2.3e38, totals NaN in ~15 frames).
+  fix: compute_flux scales the faces a cell owns as outflow so they sum to <= 1
+  (each face leaves exactly one of its two cells, so the shared stored flux stays
+  consistent and conservation is exact). this makes transport monotone at any
+  cfl; substepping (cfl 0.8, now from maxVel and live drag speed) keeps fluxes
+  below the limiter so mass still follows the velocity field. the earlier note
+  here ("clamp stays as the safety net only") was wrong and is superseded.
 - [verified] a 20:1 density ratio (liquid 1.0 in 0.05 ambient) is numerically stiff:
   near-vacuum cells amplify residual pressure error by 1/rho (20x) and the interface
   churns. scenario ambient is 0.3 (~3:1) until 0.5.0 gives gas its own rho* and S.

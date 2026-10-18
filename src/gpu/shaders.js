@@ -304,6 +304,21 @@ fn isWall3(x: i32, y: i32, w: i32, h: i32) -> bool {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
 	return textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;
 }
+fn rawFx(x: i32, y: i32, w: i32, h: i32, dt: f32) -> f32 {
+	if (x <= 1 || x >= w - 1 || isWall3(x - 1, y, w, h) || isWall3(x, y, w, h)) { return 0.0; }
+	return clamp(textureLoad(velTex, vec2<i32>(x, y), 0).r * dt, -1.0, 1.0);
+}
+fn rawFy(x: i32, y: i32, w: i32, h: i32, dt: f32) -> f32 {
+	if (y <= 1 || y >= h - 1 || isWall3(x, y - 1, w, h) || isWall3(x, y, w, h)) { return 0.0; }
+	return clamp(textureLoad(velTex, vec2<i32>(x, y), 0).g * dt, -1.0, 1.0);
+}
+fn outFlux(x: i32, y: i32, w: i32, h: i32, dt: f32) -> f32 {
+	let fw = rawFx(x, y, w, h, dt);
+	let fe = rawFx(x + 1, y, w, h, dt);
+	let fs = rawFy(x, y, w, h, dt);
+	let fN = rawFy(x, y + 1, w, h, dt);
+	return max(0.0, -fw) + max(0.0, fe) + max(0.0, -fs) + max(0.0, fN);
+}
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let w = i32(params.values[2]);
@@ -312,13 +327,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let y = i32(gid.y);
 	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
 	let dt = params.values[4];
-	let vv = textureLoad(velTex, vec2<i32>(x, y), 0);
-	var fx = 0.0;
-	var fy = 0.0;
-	let ub = x <= 1 || x >= w - 1 || isWall3(x - 1, y, w, h) || isWall3(x, y, w, h);
-	let vb = y <= 1 || y >= h - 1 || isWall3(x, y - 1, w, h) || isWall3(x, y, w, h);
-	if (!ub) { fx = clamp(vv.r * dt, -1.0, 1.0); }
-	if (!vb) { fy = clamp(vv.g * dt, -1.0, 1.0); }
+	var fx = rawFx(x, y, w, h, dt);
+	var fy = rawFy(x, y, w, h, dt);
+	// monotone donor-cell needs total outflow <= 1 volume per cell per step. the
+	// +-1 face clamp alone is not enough: a diverging cell empties through up to
+	// 4 faces at once and the q'=q*(1-k)+in update then amplifies sign-alternating
+	// mass every step (draw + stir exploded to NaN in ~15 frames). scale the faces
+	// a cell owns as outflow so they sum to <= 1; each face is outflow for exactly
+	// one of its two cells, so the stored value stays the single shared flux and
+	// conservation is untouched. same limiter in src/core/solver.js.
+	if (fx != 0.0) {
+		let s = select(outFlux(x, y, w, h, dt), outFlux(x - 1, y, w, h, dt), fx > 0.0);
+		if (s > 1.0) { fx = fx / s; }
+	}
+	if (fy != 0.0) {
+		let s = select(outFlux(x, y, w, h, dt), outFlux(x, y - 1, w, h, dt), fy > 0.0);
+		if (s > 1.0) { fy = fy / s; }
+	}
 	textureStore(fluxDst, vec2<i32>(x, y), vec4<f32>(fx, fy, 0.0, 0.0));
 }
 `;

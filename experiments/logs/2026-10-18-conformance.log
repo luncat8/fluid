@@ -4,17 +4,23 @@ PASS reduction E sequential-f32 error is the old hud warn  seq_err=2.68e+2 kahan
 PASS reduction E kahan-f32 error below 1e-7 relative  rel=7.25e-9
 PASS still box: max|vel| below 1e-2 after 500 frames (stratified, hydrostatic)  maxVel=0.00e+0 maxDiv=0.00e+0
 PASS still box: zero mass/energy drift  drift_m=0.00e+0 drift_E=0.00e+0
-PASS stirred box: all five invariants conserved below 1e-7 relative over 1200 frames  worst_rel=3.65e-8
-PASS stirred box: no negative cell ever  negCells=0 minM=0.26222631335258484
+PASS stirred box: all five invariants conserved below 1e-7 relative over 1200 frames  worst_rel=2.59e-8
+PASS stirred box: no negative cell ever  negCells=0 minM=0.2959481477737427
 PASS stirred box: no NaN
-PASS stirred box: flux bound respected (|F| <= 1)  maxFlux=0.8005
-PASS stirred box: motion survived stirring (vortices decay slowly)  maxVel=8.612
+PASS stirred box: flux bound respected (|F| <= 1)  maxFlux=0.8086
+PASS stirred box: motion survived stirring (vortices decay slowly)  maxVel=9.536
 PASS dam break: no NaN, no negative cells  sumM=1829.400
-PASS dam break: max|div u| after projection below 1 (K=60 at 64^2, during splash)  maxDiv=5.04e-1
+PASS dam break: max|div u| after projection below 1 (K=60 at 64^2, during splash)  maxDiv=5.11e-1
 PASS dam break: no overpacking (m <= rho_liq*1.001)  cntOver=0 maxM=0.9983
-PASS dam break: mass and energy conserved below 1e-7  drift_m=-8.54e-9 drift_E=2.36e-8
+PASS dam break: mass and energy conserved below 1e-7  drift_m=-3.94e-9 drift_E=1.42e-8
 PASS dam break: block actually moved (maxVel > 0 at some point or dye spread)
 PASS wall integrity: no red dye crossed a one cell wall  dyeRight=0.000e+0 dyeLeft=49.411
 PASS wall integrity: closed box conserved below 1e-7  drift_m=1.57e-8
-PASS emitter accounting: drift below 1e-7 relative with 50 injected patches  worst_rel=2.77e-8 injected_m=1832.578494
+PASS emitter accounting: drift below 1e-7 relative with 50 injected patches  worst_rel=3.45e-8 injected_m=1832.578494
+PASS draw stroke: survived paint+stir without NaN  sumM=5738.214
+PASS draw stroke: no negative cells (donor-cell monotone, not clipped)  negCells=0 minM=2.922e-1
+PASS draw stroke: no runaway overpack  maxM=5.483
+PASS draw stroke: invariants conserved below 1e-6 with injected dye  drift_m=-1.50e-8 drift_dr=7.28e-9
+PASS draw stroke: limiter exercised (raw k_out exceeded 1)  rawOutMax=1.311
+PASS draw stroke: stored flux k_out <= 1 per cell (monotone transport)  storedOutMax=1.000
 ALL CONFORMANCE TESTS PASSED

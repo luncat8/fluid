@@ -50,15 +50,18 @@
 				if(accumulator>frameDt*4)accumulator=frameDt*4;
 				accumulator-=frameDt;
 				// substeps from the last readback maxVel (<= statsEvery frames stale);
-				// the +-1 flux clamp in compute_flux is the hard safety net
-				const maxVel=solver.getStats().motion.maxVel;
+				// the drag speed is known now and must not wait for the readback
+				// (draw blowup trigger). the outflow limiter in compute_flux is the
+				// hard safety net when CFL is still exceeded.
+				const st=solver.getStats();
+				const maxVel=Math.max(st.motion.maxVel,Math.abs(cfg.mouseVX),Math.abs(cfg.mouseVY));
 				let ns=Math.ceil(maxVel*frameDt/cfg.cflTarget);
 				if(ns<1)ns=1;
 				if(ns>cfg.substepMax)ns=cfg.substepMax;
 				const dts=frameDt/ns;
 				cfg.vClamp=cfg.vMax/frameDt;
 				if(inputState)inputState.flushPaint();
-				const needStats=solver.getStats().frame%cfg.statsEvery===0;
+				const needStats=st.frame%cfg.statsEvery===0;
 				solver.frame(dts,ns,needStats);
 				cfg._stepOnce=false;
 				cfg._dirty=false;
