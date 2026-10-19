@@ -30,7 +30,7 @@
 		const viewMenu=Fluid.app.viewMenu.create(cfg);
 		hud=Fluid.app.hud.create(solver,cfg);
 		inputState=Fluid.app.input.create(canvas,cfg,solver,viewMenu.setMode);
-		controls=Fluid.app.controls.create(cfg,solver);
+		controls=Fluid.app.controls.create(cfg,solver,viewMenu.setMode);
 		canvas.width=cfg.N;
 		canvas.height=cfg.N;
 		lastTime=performance.now();

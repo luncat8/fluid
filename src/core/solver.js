@@ -34,12 +34,17 @@
 			}
 		}
 		if(cfg.scenario==="convection"){
-			// seed the rolls: a smooth warm/cold perturbation at uniform energy
-			// density per unit mass, so buoyancy has something to amplify
+			// start unstably stratified, hot at the bottom to cold at the top,
+			// plus a smooth warm/cold perturbation so buoyancy has rolls to
+			// amplify from the first step. heating a uniform box from the
+			// bottom band alone cannot do this on demo timescales: at the
+			// default conductivity the conducted layer is ~1 cell thick after
+			// 10 s and the rest of the box stays at T_amb (flat temperature map).
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
 					const i=(x+y*texW)*4;
-					const T=TAmb+3*Math.sin(6.2831853*(x-0.5)/N)*Math.sin(3.14159265*(y-0.5)/N);
+					const grad=cfg.convBotT+(cfg.convTopT-cfg.convBotT)*(y-0.5)/N;
+					const T=grad+4*Math.sin(6.2831853*(x-0.5)/N)*Math.sin(3.14159265*(y-0.5)/N);
 					thermA[i]=massA[i+3]*cLiq*T;
 					thermA[i+1]=T;
 				}
@@ -163,7 +168,7 @@
 			flux.fill(0);divsrc.fill(0);
 			flags.set(sc.flagsA);
 			mass.cur=0;therm.cur=0;vel.cur=0;press.cur=0;
-			cfg.thermalSources=cfg.scenario==="convection"?1:0;
+			Fluid.core.config.prepareScenario(cfg);
 			const tot=acc.totalsFromFields(mass.a,therm.a,texW,texH);
 			ledger=acc.createLedger(tot);
 			cfg.frame=0;cfg.time=0;
@@ -201,15 +206,21 @@
 			}
 			grid.swap(vel);
 		}
+		// sign: gravityY is a magnitude pointing down (-y in texel space, as
+		// the density term shows: heavier than mean accelerates to -y).
+		// hot fluid is a density deficit, so its perturbation acceleration
+		// is opposite gravity: +beta*(T-TRef) along the gravity components.
+		// the old minus sign made hot fluid sink and cold rise into the
+		// walls, which is why the heated box never convected.
 		function cellAx(ms,ts,x,y,rhoMean){
 			if(x<1||x>texW-2||y<1||y>texH-2)return 0;
 			const i=(x+y*texW)*4;
-			return cfg.gravityX*(rhoMean-ms[i+3])/cfg.rhoRef-cfg.gravityX*cfg.beta*(ts[i+1]-cfg.TRef);
+			return cfg.gravityX*(rhoMean-ms[i+3])/cfg.rhoRef+cfg.gravityX*cfg.beta*(ts[i+1]-cfg.TRef);
 		}
 		function cellAy(ms,ts,x,y,rhoMean){
 			if(x<1||x>texW-2||y<1||y>texH-2)return 0;
 			const i=(x+y*texW)*4;
-			return cfg.gravityY*(rhoMean-ms[i+3])/cfg.rhoRef-cfg.gravityY*cfg.beta*(ts[i+1]-cfg.TRef);
+			return cfg.gravityY*(rhoMean-ms[i+3])/cfg.rhoRef+cfg.gravityY*cfg.beta*(ts[i+1]-cfg.TRef);
 		}
 		function mouseFall(dx,dy,R,R2){
 			const r2=dx*dx+dy*dy;
@@ -570,7 +581,10 @@
 					if(ms[(x+y*texW)*4+3]<cfg.mEps||isWall(x,y))continue;
 					const i=(x+y*texW)*4;
 					let dE=0;
-					if(y<=band)dE=f32(dE+f32(cfg.heatPower*dt));
+					// thermostat cap: a fixed-power band otherwise runs away
+					// (measured 467 K after 20 s) since conduction away from
+					// it is ~100x slower than the input at the defaults.
+					if(y<=band&&(!cfg.heatTarget||ts[i+1]<cfg.heatTarget))dE=f32(dE+f32(cfg.heatPower*dt));
 					if(y>N-band){
 						const C=f32(ms[i+3]*cfg.cLiq);
 						const dT=f32(ts[i+1]-cfg.TAmb);

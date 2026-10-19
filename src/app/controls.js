@@ -2,7 +2,7 @@
 	"use strict";
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.app=Fluid.app||{};
-	function createControls(cfg,solver){
+	function createControls(cfg,solver,setMode){
 		const panel=document.getElementById("controls-panel");
 		if(!panel)return {update(){}};
 		// scenario
@@ -18,6 +18,7 @@
 			scenSel.addEventListener("change",()=>{
 				cfg.scenario=scenSel.value;
 				if(solver)solver.reset();
+				if(cfg.scenario==="convection"&&setMode)setMode(Fluid.core.config.viewModes.temperature);
 				cfg._dirty=true;
 			});
 		}

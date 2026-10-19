@@ -65,7 +65,7 @@
 			fields.clearTexture(device,pool.divsrc,cfg.texW,cfg.texH,"r32float");
 			flagsMirror.set(sc.flagsA);
 			state.m=0;state.t=0;state.v=0;
-			cfg.thermalSources=cfg.scenario==="convection"?1:0;
+			Fluid.core.config.prepareScenario(cfg);
 			heatNetKnown=0;pendingHeatNet=0;
 			const init=stats.totalsFromFields(sc.massA,sc.thermA,cfg.texW,cfg.texH);
 			ledger=stats.createLedger(init);

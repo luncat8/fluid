@@ -148,6 +148,8 @@
 				const names=Fluid.core.config.scenarioNames;
 				cfg.scenario=names[(names.indexOf(cfg.scenario)+1)%names.length];
 				if(solver)solver.reset();
+				// convection is a temperature show: land on the map that shows it
+				if(cfg.scenario==="convection"&&setMode)setMode(Fluid.core.config.viewModes.temperature);
 				cfg._dirty=true;
 			}else if(k==="u"){
 				cfg.substepsAuto=!cfg.substepsAuto;

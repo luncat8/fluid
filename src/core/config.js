@@ -8,7 +8,7 @@
 		gravityX:16,gravityY:17,rhoRef:18,beta:19,TRef:20,mouseX:21,mouseY:22,mouseStrength:23,
 		mouseVX:24,mouseVY:25,mouseR:26,rhoMean:27,
 		pressureIters:32,fctLimiter:33,viscosity:34,conductivity:35,SMax:36,tauPhase:37,vClamp:38,
-		heatPower:39,coolTop:40,wallCool:41,heatBand:42,thermalOn:43,
+		heatPower:39,coolTop:40,wallCool:41,heatBand:42,thermalOn:43,heatTarget:44,
 		cSol:48,cLiq:49,cGas:50,Lf:51,Lv:52,TMelt:53,TBoil:54,rhoLiq:55,rhoGas0:56,rhoVac:57,mEps:58,
 		viewMode:80,TMin:81,TMax:82,PMin:83,PMax:84,VMax:85,overlay:86,colorGain:87,
 		buoyX0:88,buoyY0:89,buoyW:90,buoyH:91,buoySub:92,buoyShow:93,
@@ -47,6 +47,13 @@
 		wallCool:0,
 		heatBand:2,
 		thermalSources:0,
+		// convection demo endpoints: the scenario starts from this unstable
+		// stratification (hot below cold) instead of uniform T_amb plus a heater
+		// whose heat conduction spreads <1 cell in 10 s at the 0.2 default.
+		// the heater/cold plate then sustain the gradient the rolls feed on.
+		heatTarget:0,
+		convBotT:343,
+		convTopT:293,
 		SMax:30,
 		tauPhase:0.05,
 		vClamp:480,
@@ -137,6 +144,24 @@
 		if(ns>cfg.substepMax)ns=cfg.substepMax;
 		return ns;
 	}
+	// per-scenario presentation/physics setup, applied by both solvers on reset
+	// so cpu and gpu cannot drift. convection gets a heater band that scales
+	// with N (a fixed 2-cell band is invisible at 512) and a temperature view
+	// range matched to its stratification, not the full 273..373 phase range:
+	// with the full range a 60 K gradient used only ~half the colormap and the
+	// old uniform start used none of it.
+	function prepareScenario(cfg){
+		const conv=cfg.scenario==="convection";
+		cfg.thermalSources=conv?1:0;
+		cfg.heatBand=conv?Math.max(2,Math.round(cfg.N/32)):defaults.heatBand;
+		cfg.TMin=conv?cfg.convTopT:defaults.TMin;
+		cfg.heatTarget=conv?cfg.convBotT:0;
+		// velocities are in cells/s, so at fixed beta a 512 box turns over
+		// 8x slower on screen than a 64 box. scale buoyancy with N so the
+		// demo turnover time is roughly resolution independent.
+		cfg.beta=conv?defaults.beta*Math.max(1,cfg.N/64):defaults.beta;
+		cfg.TMax=conv?cfg.convBotT:defaults.TMax;
+	}
 	function makeParamsArray(){
 		return new Float32Array(128);
 	}
@@ -177,6 +202,7 @@
 		a[paramsOff.wallCool]=cfg.wallCool;
 		a[paramsOff.heatBand]=cfg.heatBand;
 		a[paramsOff.thermalOn]=cfg.thermalSources||0;
+		a[paramsOff.heatTarget]=cfg.heatTarget||0;
 		a[paramsOff.cSol]=cfg.cSol;
 		a[paramsOff.cLiq]=cfg.cLiq;
 		a[paramsOff.cGas]=cfg.cGas;
@@ -203,6 +229,6 @@
 		a[paramsOff.buoySub]=cfg.buoySub||0;
 		a[paramsOff.buoyShow]=cfg.buoyShow||0;
 	}
-	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,substepCount,makeParamsArray,writeParams};
+	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,substepCount,prepareScenario,makeParamsArray,writeParams};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.config;
 })(globalThis);

@@ -1,0 +1,18 @@
+PASS presentation: convection starts stratified over most of the view range  T=[293.0..343.0] view=[293..343]
+PASS presentation: heater/cold-plate band scales with N  heatBand=16 at N=512
+PASS presentation: rolls underway within 2 s  maxVel=8.13 T=[293.1..343.0]
+PASS derive_T: T = E/(m c) with substance, T_amb in vacuum, monotone in E  T_sub=350.000 T_vac=293
+PASS conduction: E conserved below 1e-7 over 4000 f32 exchanges (ping-pong)  drift_rel=2.34e-8
+PASS conduction: no overshoot, field relaxed toward the 310 mean  T range after= [308.21..311.79]
+PASS conduction: absurd coefficient is clamped, monotone and reported, not explosive  clamped faces=1984 T range=[308.21..311.79]
+PASS heat sources: injected and removed energy both reached the ledger  in=482.5 out=315.6
+PASS heat sources: heaters change E only (m drift below 1e-9, E drift below 1e-6)  drift_m=0.00e+0 drift_E=3.10e-7
+PASS energy budget: stored E + kinetic closes below 1e-3 with gravity off  closure_rel=3.10e-7 kinetic=0.00e+0
+PASS heat sources: bottom hotter than top after 600 steps  T range=[293.2..343.0] mean=318.0
+PASS convection: motion onsets and reaches roll speeds  onset=1.17s peak|v|=36.88
+PASS convection: hot fluid rises on average (buoyancy sign)  mean v in hot cells=3.182 over 126 cells
+PASS convection: bottom stays warmer than the cold plate  bottom=321.4 top=313.9 T range=[297.9..341.7]
+PASS convection: m and E at the f32 floor with heater and cold plate running  drift_m=9.48e-6 drift_E=1.01e-8 neg=0
+INFO convection after 5000 steps (20.8s): maxVel=19.98 heatIn=60645 heatOut=71282 clampedFaces/step=0
+PASS stability: finite at 10x beta and 10x conductivity  maxVel=54.10 Tmax=343.0
+ALL CONVECTION TESTS PASSED

@@ -138,7 +138,10 @@ function testConvection() {
 	// upward velocity where the fluid is hot: the buoyancy sign check
 	for (let y = 1; y < cfg.texH - 1; y++) for (let x = 1; x < cfg.texW - 1; x++) {
 		const i = (x + y * cfg.texW) * 4, iv = (x + y * cfg.texW) * 2;
-		if (therm[i + 1] < cfg.TRef + 5 || mass[i + 3] < cfg.mEps) continue;
+		// only the genuinely hot bottom layer must rise on average: with the
+		// stratified start most of the box is above TRef+5, including the
+		// sinking return flow, so a low threshold averages the rolls away
+		if (therm[i + 1] < cfg.TRef + 35 || mass[i + 3] < cfg.mEps) continue;
 		hotRise += 0.5 * (vel[iv + 1] + vel[iv + cfg.texW * 2 + 1]); hotCount++;
 	}
 	const meanHotV = hotCount ? hotRise / hotCount : 0;
@@ -178,6 +181,7 @@ function testConvection() {
 function testStability() {
 	const cfg = makeCfg({ N: 32, scenario: "convection", pressureIters: 10, beta: cfg0.beta * 10, conductivity: cfg0.conductivity * 10 });
 	const sim = solverMod.create(cfg);
+	cfg.beta = cfg0.beta * 10; // after create: prepareScenario pins the scenario beta on reset
 	for (let s = 0; s < 300; s++) sim.step(1 / 240);
 	const st = sim.stats();
 	check("stability: finite at 10x beta and 10x conductivity",
@@ -185,6 +189,31 @@ function testStability() {
 		"maxVel=" + st.mot.maxVel.toFixed(2) + " Tmax=" + st.thermal.TMax.toFixed(1));
 }
 
+// 6. the demo as shipped, at the default 512: the temperature map was flat
+// because the box started uniform, the heater band was 2 cells and the view
+// spanned 273..373. the scenario must start visibly stratified, with the
+// view range matched to it and a band that scales with N.
+function testScenarioPresentation(){
+	const cfg=makeCfg({N:512,scenario:"convection"});
+	const sim=solverMod.create(cfg);
+	const st=sim.stats();
+	check("presentation: convection starts stratified over most of the view range",
+		st.thermal.TMax-st.thermal.TMin>=45&&cfg.TMax-cfg.TMin<=70&&
+		cfg.TMin<=st.thermal.TMin+5&&cfg.TMax>=st.thermal.TMax-5,
+		"T=["+st.thermal.TMin.toFixed(1)+".."+st.thermal.TMax.toFixed(1)+"] view=["+cfg.TMin+".."+cfg.TMax+"]");
+	check("presentation: heater/cold-plate band scales with N",
+		cfg.heatBand>=8,"heatBand="+cfg.heatBand+" at N=512");
+	// rolls must be underway within the first seconds, not after a minute of
+	// conducted warm-up: 2 s at the app substep dt on a mid-size box
+	const cfg2=makeCfg({N:128,scenario:"convection",pressureIters:20});
+	const sim2=solverMod.create(cfg2);
+	for(let s=0;s<480;s++)sim2.step(1/240);
+	const st2=sim2.stats();
+	check("presentation: rolls underway within 2 s",
+		st2.mot.maxVel>2,"maxVel="+st2.mot.maxVel.toFixed(2)+" T=["+st2.thermal.TMin.toFixed(1)+".."+st2.thermal.TMax.toFixed(1)+"]");
+}
+
+testScenarioPresentation();
 testDerive();
 testConduction();
 testSourcesClosure();

@@ -33,13 +33,13 @@ fn cellAccelX(x: i32, y: i32, w: i32, h: i32, gx: f32, rhoMean: f32, rhoRef: f32
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return 0.0; }
 	let m = textureLoad(massTex, vec2<i32>(x, y), 0).a;
 	let T = textureLoad(thermTex, vec2<i32>(x, y), 0).g;
-	return gx * (rhoMean - m) / rhoRef - gx * beta * (T - tref);
+	return gx * (rhoMean - m) / rhoRef + gx * beta * (T - tref);
 }
 fn cellAccelY(x: i32, y: i32, w: i32, h: i32, gy: f32, rhoMean: f32, rhoRef: f32, beta: f32, tref: f32) -> f32 {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return 0.0; }
 	let m = textureLoad(massTex, vec2<i32>(x, y), 0).a;
 	let T = textureLoad(thermTex, vec2<i32>(x, y), 0).g;
-	return gy * (rhoMean - m) / rhoRef - gy * beta * (T - tref);
+	return gy * (rhoMean - m) / rhoRef + gy * beta * (T - tref);
 }
 fn mouseFall(dx: f32, dy: f32, r: f32) -> f32 {
 	let r2 = dx * dx + dy * dy;
@@ -526,7 +526,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let band = max(i32(params.values[42]), 1);
 			let n = i32(params.values[0]);
 			var dE = 0.0;
-			if (y <= band) { dE = dE + params.values[39] * dt; }
+			if (y <= band && (params.values[44] == 0.0 || q.g < params.values[44])) { dE = dE + params.values[39] * dt; }
 			if (y > n - band) { dE = dE - params.values[40] * (q.g - params.values[20]) * (m * params.values[49]) * dt; }
 			q.r = q.r + dE;
 			q.b = q.b + max(dE, 0.0);

@@ -9,7 +9,9 @@ Zalesak FCT for RGB dye tracers, ledger-accounted dye and wall painting, conserv
 meters, eight view modes, a diagnostic floating body that reads the field without touching
 it (dam scenario), an optional auto-CFL substep policy, thermal conduction with
 ledger-accounted heater/cold-plate sources and Boussinesq buoyancy (convection
-scenario: bottom heated box with a cold top), and a CPU reference solver with a
+scenario: an unstably stratified box, hot at the bottom and cold at the top,
+sustained by a thermostat-capped heater band and a cold plate; selecting it
+switches to the temperature view, whose range matches the stratification), and a CPU reference solver with a
 conformance suite. GPU thermal pipelines mirror the CPU ones; browser parity/performance
 measurements remain pending.
 
