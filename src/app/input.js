@@ -3,7 +3,7 @@
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.app=Fluid.app||{};
 	const DYE_COLORS=[[1,0,0],[0,1,0],[0,0,1],[1,1,0]];
-	function createInput(canvas,cfg,solver){
+	function createInput(canvas,cfg,solver,setMode){
 		const state={
 			x:0,y:0,dx:0,dy:0,down:false,
 			lastX:0,lastY:0,lastT:0,
@@ -86,8 +86,7 @@
 			const k=e.key.toLowerCase();
 			state.keys[k]=true;
 			if(k>="0"&&k<="7"&&k.length===1){
-				cfg.viewMode=parseInt(k,10);
-				cfg._dirty=true;
+				setMode(parseInt(k,10));
 			}else if(k===" "){
 				cfg._paused=!cfg._paused;
 				e.preventDefault();

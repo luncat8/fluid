@@ -63,10 +63,13 @@
 		statsEvery:30,
 		cflTarget:0.8,
 		substepMax:8,
-		// the auto-cfl substep policy is optional. off = one step per frame at
-		// dt=frameDt, which is what the measurements and tests are compared
-		// against; the per-cell outflow limiter in compute_flux keeps that monotone.
+		// the auto-cfl substep policy is optional. with it off the frame still runs
+		// substepsFixed steps, not one: a single 1/60 s step at 512^2 lets the cfl
+		// number reach 20+, the outflow limiter clamps most of the field and the
+		// liquid reads as smeared and sticky. 4 is the smallest count that keeps the
+		// frame budget playable while giving the solve a usable dt.
 		substepsAuto:false,
+		substepsFixed:4,
 		vMax:8,
 		buoyEnabled:1,
 		buoyRefW:16,
@@ -109,6 +112,22 @@
 		"c":"cycleColor","b":"cyclePaint","n":"nextScenario","f":"toggleFct",
 		"u":"toggleSubsteps","y":"toggleBuoy"
 	};
+	// steps per rendered frame. the single implementation: app, core experiments and
+	// the gpu plumbing mock all call this, so the rule cannot drift between them.
+	// auto follows the cfl target from the live velocity, clamped to the step budget;
+	// off runs the fixed count from the slider, clamped the same way.
+	function substepCount(cfg,maxVel){
+		if(!cfg.substepsAuto){
+			let n=Math.round(cfg.substepsFixed)||1;
+			if(n<1)n=1;
+			if(n>cfg.substepMax)n=cfg.substepMax;
+			return n;
+		}
+		let ns=Math.ceil(maxVel*cfg.frameDt/cfg.cflTarget);
+		if(!(ns>=1))ns=1;
+		if(ns>cfg.substepMax)ns=cfg.substepMax;
+		return ns;
+	}
 	function makeParamsArray(){
 		return new Float32Array(128);
 	}
@@ -169,6 +188,6 @@
 		a[paramsOff.buoySub]=cfg.buoySub||0;
 		a[paramsOff.buoyShow]=cfg.buoyShow||0;
 	}
-	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,makeParamsArray,writeParams};
+	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,substepCount,makeParamsArray,writeParams};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.config;
 })(globalThis);

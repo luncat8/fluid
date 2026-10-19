@@ -98,14 +98,10 @@ globalThis.GPUMapMode = { READ: 1, WRITE: 2 };
 function newSink() {
 	return { modules: [], writes: [], pipeOrder: [], bindings: [], copies: [] };
 }
-// one app frame, same policy branch as src/app/main.js
+// one app frame, the shared substep policy the app loop calls
 function appFrame(cfg, solver, maxVel) {
 	const frameDt = cfg.frameDt;
-	let ns = 1;
-	if (cfg.substepsAuto) {
-		ns = Math.ceil(maxVel * frameDt / cfg.cflTarget);
-		ns = ns < 1 ? 1 : (ns > cfg.substepMax ? cfg.substepMax : ns);
-	}
+	const ns = Fluid.core.config.substepCount(cfg, maxVel);
 	cfg.vClamp = cfg.vMax / frameDt;
 	const st = solver.getStats();
 	solver.frame(frameDt / ns, ns, st.frame % cfg.statsEvery === 0);
@@ -172,6 +168,19 @@ async function testPlumbing() {
 			return sink.writes.filter(w => w === "params").length === n + 1;
 		})());
 
+	// grid resize: pipelines are size independent, so only the pool and the bind
+	// groups are rebuilt and the exported handles follow the new pool. recompiling
+	// the wgsl set here was the hitch the grid slider hit.
+	const modulesBefore = sink.modules.length;
+	solver.resize(128);
+	const orderBefore = sink.pipeOrder.length;
+	appFrame(cfg, solver, 40);
+	check("resize reuses the compiled pipelines and swaps the pool",
+		sink.modules.length === modulesBefore && solver.pool !== pool && solver.pool.N === 128 &&
+		solver.flagsMirror.length === 130 * 130 * 4 && canvas.width === 128 && sink.pipeOrder.length > orderBefore,
+		"modules +" + (sink.modules.length - modulesBefore) + " N=" + solver.pool.N +
+		" flags=" + solver.flagsMirror.length + " canvas=" + canvas.width);
+
 	// the body must go away with the scenario
 	cfg.scenario = "blobs";
 	solver.reset();
@@ -186,9 +195,11 @@ async function testPlumbing() {
 	const cfg3 = Object.assign({}, cfg2, {substepsAuto: true});
 	const solver3 = Fluid.gpu.solver.create(makeDevice(newSink()), canvas, mockContext(), "bgra8unorm", cfg3);
 	const nsOn = appFrame(cfg3, solver3, 1e6);
-	check("app frame loop: one step when the policy is off, capped substeps when on",
-		nsOff === 1 && cfg2.substeps === 1 && nsOn === cfg3.substepMax && cfg3.dt === cfg3.frameDt / nsOn,
-		"off ns=" + nsOff + " dt=" + cfg2.dt.toFixed(5) + " / on ns=" + nsOn + " dt=" + cfg3.dt.toFixed(5));
+	check("app frame loop: fixed steps when the policy is off, capped substeps when on",
+		nsOff === cfg2.substepsFixed && cfg2.substeps === nsOff && nsOn === cfg3.substepMax &&
+		cfg3.dt === cfg3.frameDt / nsOn,
+		"off ns=" + nsOff + "/" + cfg2.substepsFixed + " dt=" + cfg2.dt.toFixed(5) +
+		" / on ns=" + nsOn + " dt=" + cfg3.dt.toFixed(5));
 	solver2.destroy(); solver3.destroy();
 	check("no buffer or texture leaks across the two solvers (pools destroyed on destroy)",
 		buffers > 0 && textures > 0, "created buffers=" + buffers + " textures=" + textures);

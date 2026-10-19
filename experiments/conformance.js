@@ -25,16 +25,12 @@ function makeCfg(over) {
 	const c = Object.assign({}, cfg0, over);
 	c.texW = c.N + 2; c.texH = c.N + 2;
 	// the suite measures the sim, so it runs the auto-cfl policy; the app default is
-	// off (one step per frame) and testSubstepPolicy covers both branches.
+	// off (a fixed step count) and testSubstepPolicy covers both branches.
 	if (over === undefined || over.substepsAuto === undefined) c.substepsAuto = true;
 	return c;
 }
-// mirrors main.js: fixed frame dt, substeps from maxVel + live drag speed, cfl target 0.8
-function substepCount(cfg, maxVel) {
-	if (!cfg.substepsAuto) return 1;
-	let ns = Math.ceil(maxVel * cfg.frameDt / cfg.cflTarget);
-	return ns < 1 ? 1 : (ns > cfg.substepMax ? cfg.substepMax : ns);
-}
+// the app, the core experiments and this suite share one rule (config.js)
+const substepCount = Fluid.core.config.substepCount;
 function runFrames(sim, cfg, frames, onFrame, onFrameEnd) {
 	const frameDt = cfg.frameDt;
 	for (let f = 0; f < frames; f++) {
@@ -259,21 +255,27 @@ function testDam() {
 		t.mot.maxVel >= 0);
 }
 
-// 7b. the substep policy is optional: off pins every frame to one step at frameDt for
-// any velocity (the app default, for tests and measurements); the suite itself runs
-// substepped, which makeCfg sets explicitly.
+// 7b. the substep policy is optional: off pins every frame to the fixed count from
+// config (the app default, for tests and measurements) whatever the velocity; on
+// follows the cfl target. the suite itself runs substepped, which makeCfg sets.
 function testSubstepPolicy() {
 	const on = makeCfg({ N: 64, scenario: "dam" });
 	const off = makeCfg({ N: 64, scenario: "dam", substepsAuto: false });
 	const target = 4 * on.cflTarget / on.frameDt;
-	check("substep policy off: one step per frame regardless of velocity",
-		substepCount(off, 1e6) === 1 && substepCount(off, 0) === 1,
-		"ns=" + substepCount(off, 1e6) + " at maxVel=1e6");
+	check("substep policy off: fixed count regardless of velocity",
+		substepCount(off, 1e6) === off.substepsFixed && substepCount(off, 0) === off.substepsFixed && off.substepsFixed > 1,
+		"ns=" + substepCount(off, 1e6) + " fixed=" + off.substepsFixed + " at maxVel=1e6");
+	check("fixed count is clamped to [1, substepMax]",
+		substepCount(Object.assign({}, off, { substepsFixed: 0 }), 0) === 1 &&
+		substepCount(Object.assign({}, off, { substepsFixed: 100 }), 0) === off.substepMax,
+		"0 -> " + substepCount(Object.assign({}, off, { substepsFixed: 0 }), 0) +
+		", 100 -> " + substepCount(Object.assign({}, off, { substepsFixed: 100 }), 0));
 	check("substep policy on: cfl target followed, then capped",
 		substepCount(on, target) === 4 && substepCount(on, 0) === 1 && substepCount(on, 1e6) === on.substepMax,
 		"ns=" + substepCount(on, target) + " at the cfl target, " + substepCount(on, 1e6) + " at the cap " + on.substepMax);
 	// with the policy off the sim is still monotone: the per-cell outflow limiter in
-	// compute_flux is the safety net, so a coarse frame may be wrong but never blows up
+	// compute_flux is the safety net, so the fixed count may be too coarse for the cfl
+	// ratio and the run is still finite
 	const cfg = makeCfg({ N: 64, scenario: "dam", substepsAuto: false });
 	const sim = solverMod.create(cfg);
 	runFrames(sim, cfg, 400);

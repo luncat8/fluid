@@ -9,7 +9,20 @@ h1 { font-size: 28px; margin-bottom: 4px; }
 a { color: #7fd8d0; }
 .subtitle { color: #9dafbe; }
 .workspace { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(260px, 1fr); gap: 24px; }
+.canvas-column { min-width: 0; }
 canvas { width: 100%; aspect-ratio: 1; background: #080d12; border: 1px solid #354450; image-rendering: pixelated; }
+
+/* view mode row: eight radios styled as a segmented control under the canvas */
+.view-menu { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 8px; }
+.view-menu label {
+	position: relative; display: inline-flex; align-items: center; justify-content: center;
+	padding: 3px 5px; font-size: 11px; line-height: 1.2; color: #9dafbe;
+	background: #182630; border: 1px solid #3a5569; cursor: pointer; user-select: none;
+}
+.view-menu input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
+.view-menu label:has(input:checked) { color: #d5e3ed; background: #2a4a5a; border-color: #7fd8d0; }
+.view-menu label:has(input:focus-visible) { outline: 1px solid #7fd8d0; outline-offset: 1px; }
+@media (hover: hover) and (pointer: fine) { .view-menu label:hover { color: #d5e3ed; border-color: #7fd8d0; } }
 #hud, section { min-width: 0; }
 #status { color: #7fd8d0; }
 #copyFeedback { color: #7fd8d0; font-size: 13px; margin-left: 6px; }

@@ -42,6 +42,10 @@
 		function setSubsteps(ns){
 			substepsShown=ns;
 		}
+		// fixed mode still runs substepsFixed steps; only auto has a live maximum
+		function substepLabel(){
+			return cfg.substepsAuto?substepsShown+"/"+cfg.substepMax+" auto":substepsShown+" fixed";
+		}
 		// build a copyable diagnostics snapshot (used by button and 's' key)
 		function buildSnapshot(){
 			if(!solver) return "no solver";
@@ -56,7 +60,7 @@
 			}
 			lines.push("maxM="+s.maxM+" neg="+s.cntNeg+" over="+s.cntOver+" maxDiv="+s.motion.maxDiv+" p["+s.motion.pMin+".."+s.motion.pMax+"] maxVel="+s.motion.maxVel);
 			lines.push("statsFrame#"+s.statsFrame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+
-				" ns="+substepsShown+(cfg.substepsAuto?"/"+cfg.substepMax+" auto":" fixed")+" fps~"+Math.round(fpsEma));
+				" ns="+substepLabel()+" fps~"+Math.round(fpsEma));
 			lines.push(buoyLine());
 			return lines.join("\n");
 		}
@@ -95,7 +99,7 @@
 			const s=solver.getStats();
 			if(perfEl){
 				const txt="fps "+Math.round(fpsEma)+"  N="+cfg.N+"  dt="+cfg.dt.toFixed(4)+
-					"  K="+cfg.pressureIters+"  ns="+substepsShown+(cfg.substepsAuto?"/"+cfg.substepMax+" auto":"/1 fixed")+
+					"  K="+cfg.pressureIters+"  ns="+substepLabel()+
 					"  maxVel="+fmt(s.motion.maxVel)+"  frame#"+s.frame;
 				if(txt!==lastPerf){
 					perfEl.textContent=txt;

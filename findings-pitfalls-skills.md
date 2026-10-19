@@ -296,3 +296,51 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 	Fluid.core.config.paramsOff, which is otherwise invisible until a shader silently reads zero.
 	it executes no shader, so it is not a numeric oracle - conformance.js and the cpu reference
 	stay that.
+
+## 2026-10-19 control panel and resize
+
+- pitfall: a cfg -> dom sync loop that rewrites `input.value` fights a pointer drag.
+  a range input commits on `change` (release), so cfg still holds the old value while
+  the thumb moves; the next sync snaps the thumb back and the release can commit the
+  old value, so the change appears to do nothing. track pointerdown/up/cancel/blur and
+  skip the sync for the held element. [verified in a DOM-stub test, not a browser]
+- skill: live readout on `input`, expensive work on `change`. a resize reallocates
+  every texture (~20) and rebuilds ~30 bind groups; doing that per input event stalls
+  the page under a moving pointer.
+- skill: compute pipelines are size independent when dispatch sizes come from the
+  uniform block, so a grid resize can keep them and rebuild only the pool and the
+  bind groups. recompiling 18 shader modules plus the render pipeline was the visible
+  hitch on every Grid N change.
+- pitfall: a factory that returns `{pool,...}` as an object literal freezes that
+  handle. after resize, `solver.pool` pointed at the destroyed pool. assign the new
+  pool/flagsMirror onto the returned object inside resize.
+- pitfall: assigning `canvas.width`/`height` clears the drawing surface right away, so
+  a resize that waits for the next rAF flashes a blank frame. repaint (`renderOnly`)
+  in the same task. [reasoned from the html canvas spec, not observed here]
+- note: one substep at 60 Hz is not a "safe default off", it is a dt the scheme cannot
+  resolve at 512^2 (cfl ratio 20+). the outflow limiter keeps it monotone, but the
+  transport then follows the limiter, which reads as smeared/sticky liquid. the fixed
+  floor default is 4 (dt 1/240).
+
+## 2026-10-19 view-mode row
+
+- skill: one `change` listener on the radio container plus one `pointerover` listener
+	implements click, keyboard and hover. walk `event.target` up to the nearest `LABEL`
+	and take `label.control`; that finds the wrapped input without building a selector
+	string or an array per event. [verified in experiments/ui.js]
+- pitfall: `pointerover` fires for the radio inside the label as well as the label and
+	the text. stop at the first `LABEL` and return, and make the handler idempotent
+	(`checked = true` plus a `setMode` that returns on the active id), or one enter
+	becomes two updates. [verified in experiments/ui.js]
+- pitfall: a programmatic `input.checked = true` does not fire `change`. a keyboard
+	shortcut that only writes cfg leaves the radio stale, so the single writer has to
+	sync the radio too (or the render loop has to, once per change).
+- skill: gate hover switching by reading `matchMedia('(hover: hover) and (pointer:
+	fine)').matches` at event time, not once at setup: a hybrid touch laptop changes its
+	primary pointer. keep the MediaQueryList, never call `matchMedia` per event.
+- skill: hide radios with `opacity: 0` and a 1 px box, not `display: none`, to keep
+	native radio keyboard behavior (tab to the checked one, arrows move the group); draw
+	the focus ring on the label with `:has(input:focus-visible)`.
+- skill: a ~100 line DOM stub is enough to test this contract in node. it needs radio
+	group semantics (checking one unchecks the group), bubbled events, `label.control`,
+	and a `window` alias. see experiments/ui.js; no jsdom dependency.

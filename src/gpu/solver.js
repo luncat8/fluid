@@ -8,7 +8,7 @@
 		const stats=Fluid.core.stats;
 		const coreSolver=Fluid.core.solver;
 		let pool=fields.createPool(device,cfg.N);
-		let pipes=passes.createPipelines(device,format);
+		const pipes=passes.createPipelines(device,format);
 		let groups=passes.makeBindGroups(device,pipes,pool);
 		const paramsArray=Fluid.core.config.makeParamsArray();
 		// diagnostic body: reads the field through the buoy_sample kernel, never
@@ -258,18 +258,27 @@
 			cfg.texW=newN+2;
 			cfg.texH=newN+2;
 			pool=fields.createPool(device,newN);
-			pipes=passes.createPipelines(device,format);
+			// pipelines are size independent (dispatch sizes come from params), so only
+			// the pool and the bind groups are rebuilt: recompiling every wgsl module
+			// here stalled the page on each grid change
 			groups=passes.makeBindGroups(device,pipes,pool);
 			flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
 			canvas.width=newN;
 			canvas.height=newN;
+			api.pool=pool;
+			api.flagsMirror=flagsMirror;
 			reset();
+			// setting canvas.width/height clears the drawing surface; repaint in this
+			// task so the grid change does not flash a blank frame until the next rAF
+			renderOnly();
 		}
 		function destroy(){
 			fields.destroyPool(pool);
 		}
 		reset();
-		return {pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollReadback,getStats,buoy,resize,destroy,flagsMirror};
+		// resize replaces the pool, so the exported handles are kept current
+		const api={pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollReadback,getStats,buoy,resize,destroy,flagsMirror};
+		return api;
 	}
 	Fluid.gpu.solver={create:createSolver};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.solver;

@@ -16,6 +16,7 @@
 	<script defer src="src/gpu/passes.js"></script>
 	<script defer src="src/gpu/solver.js"></script>
 	<script defer src="src/gpu/view.js"></script>
+	<script defer src="src/app/viewmenu.js"></script>
 	<script defer src="src/app/input.js"></script>
 	<script defer src="src/app/controls.js"></script>
 	<script defer src="src/app/hud.js"></script>
@@ -26,12 +27,13 @@
 	<p class="subtitle">One substance. Conserved color and energy. Flow, transport, conservation meters.</p>
 	<p><span id="status" role="status">Booting...</span> <button id="copyBtn" title="Copy diagnostics to clipboard">Copy stats</button> <span id="copyFeedback" aria-live="polite"></span></p>
 	<div class="workspace">
-		<canvas id="c" width="512" height="512" tabindex="0" aria-label="Simulation canvas"></canvas>
+		<div class="canvas-column">
+			<canvas id="c" width="512" height="512" tabindex="0" aria-label="Simulation canvas"></canvas>
+			<div id="view-menu" class="view-menu" role="radiogroup" aria-label="View mode"></div>
+		</div>
 		<section id="hud" aria-label="Diagnostics">
 			<div id="controls-panel" class="hud-block" aria-label="Simulation controls">
 				<div class="ctrl-row">
-					<label for="ctrl-view">View</label>
-					<select id="ctrl-view"></select>
 					<label for="ctrl-scenario">Scenario</label>
 					<select id="ctrl-scenario"></select>
 				</div>
@@ -45,8 +47,13 @@
 					<label class="ctrl-check"><input type="checkbox" id="ctrl-gravity"> Gravity</label>
 				</div>
 				<div class="ctrl-row">
-					<label class="ctrl-check" title="auto-cfl substepping; off runs one step per frame (test mode)"><input type="checkbox" id="ctrl-substeps"> Substeps</label>
+					<label class="ctrl-check" title="auto-cfl substepping; off runs the fixed count below"><input type="checkbox" id="ctrl-substeps"> Substeps</label>
 					<label class="ctrl-check" title="diagnostic floating body, dam scenario only"><input type="checkbox" id="ctrl-buoy"> Buoy</label>
+				</div>
+				<div class="ctrl-row">
+					<label for="ctrl-substeps-fixed" title="steps per frame while auto substeps is off">Fixed steps</label>
+					<input type="range" id="ctrl-substeps-fixed" min="1" max="8" step="1">
+					<output id="ctrl-substeps-fixed-val"></output>
 				</div>
 				<div class="ctrl-row">
 					<span class="ctrl-label">Paint</span>
@@ -78,12 +85,12 @@
 			<div id="error-panel" role="alert" hidden></div>
 			<div id="help-overlay" hidden>
 				<p><strong>Keys</strong>: 0-7 view modes · space pause · . step · r reset · n scenario · b paint dye/wall/erase · c dye color · f toggle FCT · g gravity · u substep policy · y buoy · +/- pressure iters · [ ] grid size · s dump stats · h help</p>
+				<p>The view row under the canvas switches modes on click; on a mouse or trackpad, hovering a mode switches it too.</p>
 				<p>Drag to stir and paint. Dye painting is ledger-accounted: drift stays green. Walls block flow and are visible in view 5.</p>
-				<p>The dam scenario drops a buoy: an outlined rectangle lifted by the blue inside it, so it rides the water surface. It only reads the field, so nothing is added to the ledger. <code>u</code> turns auto-substepping off for single-step tests.</p>
+				<p>The dam scenario drops a buoy: an outlined rectangle lifted by the blue inside it, so it rides the water surface. It only reads the field, so nothing is added to the ledger. <code>u</code> switches between auto-cfl substeps and the fixed step count in the panel.</p>
 				<p>Drift thresholds: green &lt; 1e-6, yellow &lt; 1e-3, red above. min values are the monotonicity watchdog.</p>
 			</div>
 		</section>
 	</div>
-	<p><small>Runs from file:// or via <code>python3 run_index.py</code>. No build, no modules, no network.</small></p>
 </body>
 </html>

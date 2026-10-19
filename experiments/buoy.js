@@ -51,8 +51,7 @@ function measure(cfgOver, specs) {
 	for (let f = 0; f < frames; f++) {
 		const mot = stats.motionTotals(sim.vel.cur === 0 ? sim.vel.a : sim.vel.b,
 			sim.press.cur === 0 ? sim.press.a : sim.press.b, cfg.texW, cfg.texH, cfg.dt);
-		let ns = Math.ceil(mot.maxVel * cfg.frameDt / cfg.cflTarget);
-		ns = ns < 1 ? 1 : (ns > cfg.substepMax ? cfg.substepMax : ns);
+		const ns = Fluid.core.config.substepCount(cfg, mot.maxVel);
 		cfg.dt = cfg.frameDt / ns;
 		for (let s = 0; s < ns; s++) sim.step(cfg.dt);
 		const mass = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;

@@ -1,5 +1,6 @@
 # AGENTS.md
 
+these are not strict rules, use best. feel free to stop any task and improve something if you found really good way: system was developed by different agents and some was not very smart.
 
 ## style
 
@@ -15,7 +16,7 @@ const $ = id => document.getElementById(id);
 - no new {}, [], object literals, closures, or string concat in the frame loop.
 - reuse preallocated buffers / typed arrays / scratch objects.
 - allocate once at setup, mutate in place per frame.
-- these are not strict rules, use best.
+
 
 - plan*.md is NOT the implementation log. if need - update/improve plan, but keep final plan as artifact for possible fork or reimplementation without referring of what was and what done, without referring chat, etc.
 - plan number i.e. 0.1 - is not version sequence. it is ok to continue old numbers by subject and implement in any useful order.
@@ -58,8 +59,6 @@ experiments/logs/ - keep useful;
 git push returns "Invalid username or token" is ok, no need to investigate or report - i will apply manually
 
 ## Workflow
-
-- **Worklog**: 
 
 start work with review previous task: it was done by another agent and you can find really better way to improve it or find some issues. dont need to run tests again because already done in previous stage.
 then continue with next: review next step plan, if found good ideas - improve plan, implement.

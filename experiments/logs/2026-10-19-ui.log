@@ -1,0 +1,21 @@
+ok   one label per mode
+ok   every label wraps a radio
+ok   group name and values
+ok   exactly one checked at boot
+ok   label text follows the input
+ok   change sets the mode
+ok   change marks the view dirty
+ok   one checked after click
+ok   setMode on the active mode returns before dirtying
+ok   setMode ignores unknown ids
+ok   key 5 routes through setMode
+ok   keyboard checks the radio
+ok   touch/stylus pointerover does not switch
+ok   touch/stylus leaves the checked radio alone
+ok   fine-pointer hover switches
+ok   hover checks exactly one radio
+ok   hover from the label text finds the radio
+ok   pointerover outside a label does not switch
+ok   change from a foreign input is ignored
+
+all 19 checks pass

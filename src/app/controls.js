@@ -5,18 +5,6 @@
 	function createControls(cfg,solver){
 		const panel=document.getElementById("controls-panel");
 		if(!panel)return {update(){}};
-		// view mode
-		const viewSel=document.getElementById("ctrl-view");
-		if(viewSel){
-			const names=Fluid.core.config.viewModeNames;
-			for(let i=0;i<names.length;i++){
-				const o=document.createElement("option");
-				o.value=i;o.textContent=names[i];
-				viewSel.appendChild(o);
-			}
-			viewSel.value=cfg.viewMode;
-			viewSel.addEventListener("change",()=>{cfg.viewMode=parseInt(viewSel.value,10);cfg._dirty=true;});
-		}
 		// scenario
 		const scenSel=document.getElementById("ctrl-scenario");
 		if(scenSel){
@@ -107,10 +95,29 @@
 				cfg._dirty=true;
 			});
 		}
-		// sliders: pressure iters, grid size
+		// a range input owns its value while the pointer is down: the 5 hz cfg -> dom
+		// sync would otherwise snap the thumb back mid-drag and the change event then
+		// never sees the value the pointer stopped on.
+		const dragging=new Set();
+		function trackSlider(el){
+			if(!el)return;
+			const release=()=>{dragging.delete(el);};
+			el.addEventListener("pointerdown",()=>{dragging.add(el);});
+			el.addEventListener("pointerup",release);
+			el.addEventListener("pointercancel",release);
+			el.addEventListener("blur",release);
+			window.addEventListener("pointerup",release);
+		}
+		function syncSlider(el,out,value){
+			if(!el||dragging.has(el))return;
+			el.value=value;
+			if(out)out.textContent=value;
+		}
+		// sliders: pressure iters, grid size, fixed substeps
 		const kSlider=document.getElementById("ctrl-iters");
 		const kVal=document.getElementById("ctrl-iters-val");
 		if(kSlider){
+			trackSlider(kSlider);
 			kSlider.value=cfg.pressureIters;
 			if(kVal)kVal.textContent=cfg.pressureIters;
 			kSlider.addEventListener("input",()=>{
@@ -121,31 +128,47 @@
 		const gridSlider=document.getElementById("ctrl-grid");
 		const gridVal=document.getElementById("ctrl-grid-val");
 		if(gridSlider){
+			trackSlider(gridSlider);
 			gridSlider.value=cfg.N;
 			if(gridVal)gridVal.textContent=cfg.N;
+			// the readout follows the thumb, the rebuild waits for release: a resize
+			// reallocates every texture and rebuilds every bind group, so doing it per
+			// input event stalls the page while the pointer moves
+			gridSlider.addEventListener("input",()=>{
+				if(gridVal)gridVal.textContent=gridSlider.value;
+			});
 			gridSlider.addEventListener("change",()=>{
 				const n=parseInt(gridSlider.value,10);
-				if(n!==cfg.N&&solver){
-					solver.resize(n);
-					cfg._dirty=true;
-					if(gridVal)gridVal.textContent=n;
-				}
+				if(gridVal)gridVal.textContent=n;
+				if(n===cfg.N||!solver)return;
+				solver.resize(n);
+				cfg._dirty=true;
+			});
+		}
+		const fixedSlider=document.getElementById("ctrl-substeps-fixed");
+		const fixedVal=document.getElementById("ctrl-substeps-fixed-val");
+		if(fixedSlider){
+			trackSlider(fixedSlider);
+			fixedSlider.max=cfg.substepMax;
+			fixedSlider.value=cfg.substepsFixed;
+			if(fixedVal)fixedVal.textContent=cfg.substepsFixed;
+			fixedSlider.addEventListener("input",()=>{
+				cfg.substepsFixed=parseInt(fixedSlider.value,10);
+				if(fixedVal)fixedVal.textContent=cfg.substepsFixed;
 			});
 		}
 		let lastCtrlUpdate=0;
 		function update(now){
 			if(now-lastCtrlUpdate<200)return;
 			lastCtrlUpdate=now;
-			if(viewSel)viewSel.value=cfg.viewMode;
 			if(pauseBtn)pauseBtn.textContent=cfg._paused?"Resume":"Pause";
 			if(fctChk)fctChk.checked=cfg.fctLimiter>0;
 			if(gravChk)gravChk.checked=cfg.gravityY!==0;
 			if(subChk)subChk.checked=!!cfg.substepsAuto;
 			if(buoyChk)buoyChk.checked=cfg.buoyEnabled>0;
-			if(kSlider)kSlider.value=cfg.pressureIters;
-			if(kVal)kVal.textContent=cfg.pressureIters;
-			if(gridSlider)gridSlider.value=cfg.N;
-			if(gridVal)gridVal.textContent=cfg.N;
+			syncSlider(kSlider,kVal,cfg.pressureIters);
+			syncSlider(gridSlider,gridVal,cfg.N);
+			syncSlider(fixedSlider,fixedVal,cfg.substepsFixed);
 			if(scenSel)scenSel.value=cfg.scenario;
 			updatePaintHighlight();
 			updateColorHighlight();

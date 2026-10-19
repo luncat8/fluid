@@ -27,8 +27,9 @@
 		cfg._paused=false;cfg._stepOnce=false;cfg._dirty=true;
 		if(status)status.textContent="Running";
 		solver=Fluid.gpu.solver.create(initRes.device,canvas,initRes.context,initRes.format,cfg);
+		const viewMenu=Fluid.app.viewMenu.create(cfg);
 		hud=Fluid.app.hud.create(solver,cfg);
-		inputState=Fluid.app.input.create(canvas,cfg,solver);
+		inputState=Fluid.app.input.create(canvas,cfg,solver,viewMenu.setMode);
 		controls=Fluid.app.controls.create(cfg,solver);
 		canvas.width=cfg.N;
 		canvas.height=cfg.N;
@@ -51,20 +52,14 @@
 			if(accumulator>=frameDt){
 				if(accumulator>frameDt*4)accumulator=frameDt*4;
 				accumulator-=frameDt;
-				// the substep policy is optional. with it on, ns comes from the last
-				// readback maxVel (<= statsEvery frames stale); the drag speed is known
-				// now and must not wait for the readback (draw blowup trigger). with it
-				// off every frame is one step at dt=frameDt, which is what the tests and
-				// measurements are compared against. either way the outflow limiter in
-				// compute_flux is the hard safety net when CFL is exceeded.
+				// substeps: the shared policy in config.js. auto follows the last readback
+				// maxVel (<= statsEvery frames stale) plus the live drag speed, which is
+				// known now and must not wait for the readback (draw blowup trigger). off
+				// runs a fixed count, never one step: at 1/60 s the cfl ratio is far past
+				// what the scheme resolves and the liquid only sees the outflow limiter.
 				const st=solver.getStats();
-				let ns=1;
-				if(cfg.substepsAuto){
-					const maxVel=Math.max(st.motion.maxVel,Math.abs(cfg.mouseVX),Math.abs(cfg.mouseVY));
-					ns=Math.ceil(maxVel*frameDt/cfg.cflTarget);
-					if(ns<1)ns=1;
-					if(ns>cfg.substepMax)ns=cfg.substepMax;
-				}
+				const maxVel=Math.max(st.motion.maxVel,Math.abs(cfg.mouseVX),Math.abs(cfg.mouseVY));
+				const ns=Fluid.core.config.substepCount(cfg,maxVel);
 				const dts=frameDt/ns;
 				if(hud)hud.setSubsteps(ns);
 				cfg.vClamp=cfg.vMax/frameDt;

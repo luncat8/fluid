@@ -1,0 +1,26 @@
+PASS the buoy rectangle reaches the uniform block at the slots the wgsl reads  [151,373,16,64,0.5,1]
+PASS the uniform block holds every declared slot: 128 floats, 512 bytes
+PASS the 16x64 reference rectangle is exact on the reference grid  {"w":16,"h":64}
+PASS wgsl: 18 sources have balanced braces, parens and brackets
+PASS wgsl: every params.values[i] index is a declared slot in config.paramsOff  all indices resolve
+PASS wgsl: buoy_sample reads the mass texture, the velocity texture and one storage buffer
+PASS wgsl: buoy_sample is a single workgroup with a workgroup reduction
+PASS wgsl: the display overlay reads the body rectangle through the same slots
+PASS cpu sampler: sums the rectangle the gpu kernel walks, half of it blue  blue=4 count=16 uSum=32
+PASS cpu sampler: half a footprint of blue gives half submersion and neutral lift  sub=0.500 blue=0.250 aY=0
+PASS cpu sampler: the body follows the flow horizontally by drag, not by teleport  mean u=2
+PASS gpu pool has the buoy sample buffer and its readback twin  buoy=128B usage=140 read usage=9
+PASS the buoySample compute pipeline is compiled with the params struct prefix
+PASS the buoy field sample is requested every cfg.buoySampleEvery frames only  sample copies=4 over 16 frames, expected 4
+PASS the body marched every frame and ingested one readback per request  marches=16 samples=4
+PASS the readback reaches the body: half a footprint of blue reads as sub=0.5, neutral lift  sub=0.500 blue=0.250 ux=1.000 aY=0
+PASS every dispatch set a bind group, and the sample pass binds four resources  dispatches=8278 bindGroup calls=8278
+PASS the buoy sample buffer is copied back 24 bytes (6 floats) at a time  copies=4 sizes=24
+PASS the field sample runs after the sim steps and before the display pass  order=limiterPrepare>limiterApply>buoySample>toDisplay
+PASS the uniform buffer holds the live rect and substep count, not just cfg  substeps=4 rect=[17,44,4,8] show=1
+PASS paused redraw pushes params too, so toggles show without a sim step
+PASS resize reuses the compiled pipelines and swaps the pool  modules +0 N=128 flags=67600 canvas=128
+PASS no body outside the dam scenario, and the overlay switch follows  show=0
+PASS app frame loop: fixed steps when the policy is off, capped substeps when on  off ns=4/4 dt=0.00417 / on ns=8 dt=0.00208
+PASS no buffer or texture leaks across the two solvers (pools destroyed on destroy)  created buffers=28 textures=72
+ALL GPU-MOCK CHECKS PASSED
