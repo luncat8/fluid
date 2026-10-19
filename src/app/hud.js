@@ -50,11 +50,29 @@
 		function cflBound(s){
 			return 2*s.motion.maxVel*cfg.dt;
 		}
+		function recommendedK(){
+			// Gauss-Seidel residual ~ exp(-K / N); N=512 needs ~2x K of N=256 for same maxDiv
+			const want=Math.ceil(cfg.N*0.18+20);
+			if(cfg.pressureIters<want) return want;
+			return 0;
+		}
 		function healthLine(s){
 			const cfl=cflBound(s);
-			return "CFL bound="+fmt(cfl)+(cfl>1?" [transport limiting likely]":"")+
-				(s.cntNeg>0?" | NEGATIVE VALUES: inspect minima":"")+
-				(s.maxM>2?" | SEVERE COMPRESSION: conservation is not stability":"");
+			const recK=recommendedK();
+			const epsNeg=1e-9;
+			const hasNeg=s.mins.m<-epsNeg||s.mins.dr<-epsNeg||s.mins.dg<-epsNeg||s.mins.db<-epsNeg||s.mins.E<-epsNeg||s.cntNeg>0;
+			const mildOver=s.cntOver>0&&s.maxM<=1.05;
+			const modOver=s.maxM>1.05&&s.maxM<=1.5;
+			const severe=s.maxM>1.5||s.maxM>2;
+			let line="CFL bound="+fmt(cfl)+(cfl>1?" [transport limiting likely · try more substeps]":"");
+			if(hasNeg) line+=" | NEGATIVE VALUES: inspect minima (threshold 1e-9)";
+			if(s.diag && s.diag.residual) line+=" | residual "+fmt(s.diag.residual);
+			if(s.motion.maxDiv>1) line+=" | high divergence "+fmt(s.motion.maxDiv)+" (K="+cfg.pressureIters+(recK?" → try "+recK:"")+")";
+			else if(s.motion.maxDiv>0.5) line+=" | divergence "+fmt(s.motion.maxDiv);
+			if(severe) line+=" | SEVERE COMPRESSION: conservation is not stability";
+			else if(modOver) line+=" | compression maxM="+fmt(s.maxM);
+			else if(mildOver) line+=" | mild overpack "+s.cntOver+" cells";
+			return line;
 		}
 		// build a copyable diagnostics snapshot (used by button and 's' key)
 		function buildSnapshot(){

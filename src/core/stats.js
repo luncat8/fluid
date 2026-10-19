@@ -11,6 +11,10 @@
 	// temperature range and kinetic energy reconstructed from the face velocities
 	const IDX_HEAT_IN=17,IDX_HEAT_OUT=18,IDX_T_MIN=19,IDX_T_MAX=20,IDX_T_MEAN=21,IDX_KINETIC=22;
 	const STATS_LEN=32;
+	// negatives below -1e-9 are real; smaller is f32/FCT roundoff (≈1e-28 seen at N=512).
+	// over threshold 1.001 catches any liquid overpack; severity is decided in the hud.
+	const NEG_EPS=1e-9;
+	const OVER_EPS=1.001;
 	function totalsFromFields(mass,therm,texW,texH){
 		let sumM=0,sumDr=0,sumDg=0,sumDb=0,sumE=0;
 		let minM=Infinity,minDr=Infinity,minDg=Infinity,minDb=Infinity,minE=Infinity;
@@ -28,8 +32,8 @@
 				if(db<minDb)minDb=db;
 				if(E<minE)minE=E;
 				if(m>maxM)maxM=m;
-				if(m<0||dr<0||dg<0||db<0||E<0)cntNeg++;
-				if(m>1.001)cntOver++;
+				if(m<-NEG_EPS||dr<-NEG_EPS||dg<-NEG_EPS||db<-NEG_EPS||E<-NEG_EPS)cntNeg++;
+				if(m>OVER_EPS)cntOver++;
 			}
 		}
 		if(minM===Infinity)minM=0;

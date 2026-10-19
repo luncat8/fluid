@@ -745,7 +745,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 		totM = mass.a; totDr = mass.r; totDg = mass.g; totDb = mass.b; totE = therm.r;
 		minM = mass.a; minDr = mass.r; minDg = mass.g; minDb = mass.b; minE = therm.r;
 		maxM = mass.a;
-		if (mass.a < 0.0 || mass.r < 0.0 || mass.g < 0.0 || mass.b < 0.0 || therm.r < 0.0) { neg = 1.0; }
+		if (mass.a < -1e-9 || mass.r < -1e-9 || mass.g < -1e-9 || mass.b < -1e-9 || therm.r < -1e-9) { neg = 1.0; }
 		if (mass.a > 1.001) { over = 1.0; }
 		let uL = textureLoad(velTex, vec2<i32>(x, y), 0).r;
 		let uR = textureLoad(velTex, vec2<i32>(x + 1, y), 0).r;

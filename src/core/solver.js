@@ -149,6 +149,15 @@
 		const massFctTmp=new Float32Array(texW*texH*4);
 		const acc=Fluid.core.stats;
 		let ledger=null;
+		const diag={divBefore:0,divAfter:0,pressureResidual:0};
+		let mg=null;
+		if(cfg.useMultigrid && Fluid.core.multigrid){
+			mg=Fluid.core.multigrid.create(cfg,texW,texH,{
+				press, divsrc,
+				massCur:()=>grid.curBuf(mass),
+				flags
+			});
+		}
 		function isWall(x,y){
 			if(x<1||x>texW-2||y<1||y>texH-2)return true;
 			return flags[(x+y*texW)*4]>0;
@@ -285,6 +294,7 @@
 		// max|vel| every ~2 steps and NaNs by step 100). gas rho* arrives in 0.5.0.
 		function poissonRhs(dt){
 			const vv=grid.curBuf(vel);
+			let maxB=0;
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
 					const i=x+y*texW;
@@ -298,11 +308,21 @@
 						S=(m-cfg.rhoLiq)/(m*cfg.tauPhase);
 						if(S>cfg.SMax)S=cfg.SMax;
 					}
-					divsrc[i]=(uR-uL+vT-vB)/dt-S;
+					const b=(uR-uL+vT-vB)/dt-S;
+					divsrc[i]=b;
+					const ab=Math.abs(b);
+					if(ab>maxB) maxB=ab;
 				}
 			}
+			diag.divBefore=maxB;
 		}
 		function project(iters){
+			if(mg && cfg.useMultigrid){
+				// one V-cycle approximates iters fine RB steps: pre 2, coarse iters, post 2.
+				// The coarse grid is 4x cheaper, so wall time is dominated by fine smooths.
+				mg.vcycle(2,iters,2);
+				return;
+			}
 			const ms=grid.curBuf(mass);
 			for(let k=0;k<iters;k++){
 				for(let color=0;color<2;color++){
@@ -604,6 +624,9 @@
 			poissonRhs(dt);
 			project(cfg.pressureIters);
 			applyGrad(dt);
+			const motPost=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,dt);
+			diag.divAfter=motPost.maxDiv;
+			diag.pressureResidual=diag.divBefore>0?motPost.maxDiv/diag.divBefore:0;
 			computeFlux(dt);
 			advectScalar();
 			deriveT();
@@ -617,7 +640,7 @@
 			const tot=acc.totalsFromFields(grid.curBuf(mass),grid.curBuf(therm),texW,texH);
 			const mot=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,cfg.dt);
 			const thermal=acc.thermalTotals(grid.curBuf(mass),grid.curBuf(therm),grid.curBuf(vel),texW,texH,cfg.mEps,cfg.cLiq,cfg.TAmb);
-			return {frame:cfg.frame,tot,mot,thermal,ledger};
+			return {frame:cfg.frame,tot,mot,thermal,ledger,diag:{divBefore:diag.divBefore,divAfter:diag.divAfter,residual:diag.pressureResidual}};
 		}
 		function applyDyePatch(patch){
 			const buf=grid.curBuf(mass),tbuf=grid.curBuf(therm);
@@ -645,7 +668,7 @@
 			}
 		}
 		reset();
-		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,flags,ledger,thermDiag,
+		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,flags,ledger,thermDiag,diag,mg,
 			isWall,uBlocked,vBlocked,reset,step,stats,forces,advectVel,poissonRhs,project,applyGrad,computeFlux,advectScalar,
 			deriveT,conduction,heatSources,
 			applyDyePatch,applyWallPatch};

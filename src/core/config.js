@@ -87,6 +87,7 @@
 		substepsAuto:false,
 		substepsFixed:4,
 		vMax:8,
+		useMultigrid:false,
 		buoyEnabled:1,
 		buoyRefW:16,
 		buoyRefH:64,
@@ -156,11 +157,25 @@
 		cfg.heatBand=conv?Math.max(2,Math.round(cfg.N/32)):defaults.heatBand;
 		cfg.TMin=conv?cfg.convTopT:defaults.TMin;
 		cfg.heatTarget=conv?cfg.convBotT:0;
-		// velocities are in cells/s, so at fixed beta a 512 box turns over
-		// 8x slower on screen than a 64 box. scale buoyancy with N so the
-		// demo turnover time is roughly resolution independent.
-		cfg.beta=conv?defaults.beta*Math.max(1,cfg.N/64):defaults.beta;
+		// velocities are in cells/s, so at fixed beta a 512 box turns over 8x slower
+		// than a 64 box. scale buoyancy sub-linearly so turnover stays visible
+		// without the 512 box exploding to 400 cells/s (measured with linear scale).
+		// sqrt(N/64) gives ~2.8x at N=512 instead of 8x, capped at 4x.
+		if(conv){
+			const s=Math.sqrt(Math.max(1,cfg.N/64));
+			cfg.beta=defaults.beta*Math.min(4,s);
+		} else {
+			cfg.beta=defaults.beta;
+		}
 		cfg.TMax=conv?cfg.convBotT:defaults.TMax;
+	}
+	function recommendedIters(N){
+		// Gauss-Seidel needs O(N) iterations for similar residual; tuned to keep
+		// maxDiv <0.2 at N=64/K=60 and scale to N=512. slider max is 200.
+		let k=Math.round(28+N*0.15);
+		if(k<20) k=20;
+		if(k>200) k=200;
+		return k;
 	}
 	function makeParamsArray(){
 		return new Float32Array(128);
@@ -229,6 +244,6 @@
 		a[paramsOff.buoySub]=cfg.buoySub||0;
 		a[paramsOff.buoyShow]=cfg.buoyShow||0;
 	}
-	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,substepCount,prepareScenario,makeParamsArray,writeParams};
+	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,substepCount,prepareScenario,recommendedIters,makeParamsArray,writeParams};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.config;
 })(globalThis);
