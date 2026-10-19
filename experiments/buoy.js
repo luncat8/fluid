@@ -5,10 +5,16 @@
 // the field sample is refreshed every cfg.buoySampleEvery frames and ingested one
 // frame later, which is the gpu readback latency.
 //
-// one run per grid size drives many buoy variants: the dye is a passive tracer, the
-// flow does not feel it, so scaling the sampled blue is exactly what a bluer or a
-// dimmer scenario would give the body, and the sampling interval is a body-side knob.
-// run: node experiments/buoy.js | tee experiments/logs/<date>-buoy.log
+// one fluid run drives many body variants: the dye is a passive tracer, the flow does
+// not feel the body, so scaling the sampled blue is exactly what a bluer or a dimmer
+// scenario would give it, and the sampling interval is a body-side knob. that keeps the
+// whole study to one solver run per grid instead of one per variant.
+//
+// usage (run from the repo root, output belongs in experiments/logs/):
+//   node experiments/buoy.js                                   # 64-grid study + 128-grid pass
+//   node experiments/buoy.js --n=512 --frames=200 --coarse=1    # one fine run, 16x64 rect
+//   node experiments/buoy.js --scenario=pool --every=8
+//   node experiments/buoy.js | tee experiments/logs/<date>-buoy.log
 
 const path = require("node:path");
 const root = path.resolve(__dirname, "..");
@@ -23,10 +29,11 @@ const cfg0 = Fluid.core.config.defaults;
 function makeCfg(over) {
 	const c = Object.assign({}, cfg0, over);
 	c.texW = c.N + 2; c.texH = c.N + 2;
-	c.substepsAuto = true;
+	c.substepsAuto = true;	// the measured velocity, not a fixed dt, sets the step count
 	return c;
 }
-// one fluid run, one body per variant; returns per-variant metrics
+
+// one solver run, one body per variant. specs: {name, cfg, blue}
 function measure(cfgOver, specs) {
 	const cfg = makeCfg(cfgOver);
 	const sim = solverMod.create(cfg);
@@ -36,7 +43,8 @@ function measure(cfgOver, specs) {
 		return {
 			name: sp.name, blue: sp.blue === undefined ? 1 : sp.blue, cfg: vcfg, buoy,
 			pending: new Float32Array(buoyMod.SAMPLE_LEN), ready: false,
-			maxStep: 0, prevY: buoy.state.cy, prevSub: 0, settle: 0, subBand: [1, 0], trace: []
+			maxStep: 0, stepSum: 0, stepN: 0, prevY: buoy.state.cy, prevSub: 0,
+			settle: 0, subBand: [1, 0], trace: []
 		};
 	});
 	const frames = cfgOver.frames;
@@ -53,6 +61,7 @@ function measure(cfgOver, specs) {
 	}
 	return { cfg, sim, runs };
 }
+
 function update(r, mass, vel, f, frames) {
 	const b = r.buoy;
 	if (r.ready) { b.ingest(r.pending); r.ready = false; }
@@ -64,11 +73,14 @@ function update(r, mass, vel, f, frames) {
 	}
 	const d = Math.abs(b.state.cy - r.prevY); r.prevY = b.state.cy;
 	if (d > r.maxStep) r.maxStep = d;
+	r.stepSum += d; r.stepN++;
 	if (f > 60) {
 		r.subBand[0] = Math.min(r.subBand[0], b.state.sub);
 		r.subBand[1] = Math.max(r.subBand[1], b.state.sub);
 	}
-	// "settled" = the last frame where the float line still moved by over 1% of the rect
+	// "settled" = the last frame where the float line still moved by over 1% of the rect.
+	// a body heaving with a period near the sampling window trips this early, so the
+	// trace below is what actually shows whether it came to rest.
 	if (Math.abs(b.state.sub - r.prevSub) > 0.01) r.settle = f;
 	r.prevSub = b.state.sub;
 	if (f % 50 === 0 || f === frames - 1) {
@@ -76,13 +88,31 @@ function update(r, mass, vel, f, frames) {
 			" sub=" + (100 * b.state.sub).toFixed(1) + "% blue/cell=" + b.state.blue.toFixed(3));
 	}
 }
+
 function line(r) {
 	const s = r.buoy.state;
 	return "  " + (r.name + "                    ").slice(0, 22) + " sub=" + (100 * s.sub).toFixed(1) +
-		"% [" + (100 * r.subBand[0]).toFixed(0) + ".." + (100 * r.subBand[1]).toFixed(0) + "]" +
-		" cy=" + s.cy.toFixed(1) + " vy=" + s.vy.toFixed(2) + " maxStep=" + r.maxStep.toFixed(3) +
+		(s.samples ? "% [" + (100 * r.subBand[0]).toFixed(0) + ".." + (100 * r.subBand[1]).toFixed(0) + "]" : "% (no body)") +
+		" cy=" + s.cy.toFixed(1) + " vy=" + s.vy.toFixed(2) +
+		" maxStep=" + r.maxStep.toFixed(3) + " meanStep=" + (r.stepSum / Math.max(1, r.stepN)).toFixed(3) +
 		" settled@f=" + r.settle + " samples=" + s.samples;
 }
+
+const argv = process.argv.slice(2);
+function arg(name, dflt) {
+	const a = argv.find(s => s.startsWith("--" + name + "="));
+	return a === undefined ? dflt : +a.slice(name.length + 3);
+}
+function flag(name) { return argv.includes("--" + name); }
+
+const n = arg("n", 64);
+const frames = arg("frames", 600);
+if (!Number.isInteger(n) || n < 32 || n > 1024 || !Number.isFinite(frames) || frames < 1)
+	throw new Error("bad --n/--frames: " + n + " / " + frames);
+const scenario = (argv.find(s => s.startsWith("--scenario=")) || "--scenario=dam").slice(11);
+const over = { N: n, scenario, frames, pressureIters: 30 };
+const every = arg("every", 0);
+if (every) over.buoySampleEvery = every;
 
 const specs = [
 	{name: "sample every 1", cfg: {buoySampleEvery: 1}},
@@ -100,16 +130,25 @@ const specs = [
 	{name: "drag tau 0.04 (loose)", cfg: {buoyDrag: 0.04}},
 	{name: "drag tau 0.5 (stiff)", cfg: {buoyDrag: 0.5}}
 ];
-console.log("=== dam break, N=64, 600 frames, buoy scaled to " +
-	JSON.stringify(buoyMod.scaledSize(makeCfg({N: 64, scenario: "dam"}))) + " ===");
-const small = measure({N: 64, scenario: "dam", frames: 600, pressureIters: 30}, specs);
+
+const rect = buoyMod.scaledSize(makeCfg({ N: n, scenario: scenario }));
+console.log("=== " + scenario + ", N=" + n + ", " + frames + " frames, buoy rect " +
+	JSON.stringify(rect) + " ===");
+const small = measure(over, specs);
 for (const r of small.runs) console.log(line(r));
 console.log("--- float trace, default variant (sub = mean blue in the rect / local peak) ---");
 for (const t of small.runs[2].trace) console.log(t);
 
-console.log("=== same on N=128 (rect 4x16), 400 frames ===");
-const big = measure({N: 128, scenario: "dam", frames: 400, pressureIters: 30},
-	[specs[2], specs[6], specs[7], specs[8], specs[9]]);
-for (const r of big.runs) console.log(line(r));
-console.log("--- float trace, default variant ---");
-for (const t of big.runs[0].trace) console.log(t);
+// the 64-grid study is the cheap one; a second grid shows whether the numbers are an
+// artefact of a 4x8 body. --coarse=1 skips it, and a grid at or above 256 is already
+// its own measurement, so it is skipped there too.
+if (!flag("coarse") && n < 256) {
+	const nBig = 128, fBig = arg("framesBig", 400);
+	const big = measure({ N: nBig, scenario, frames: fBig, pressureIters: 30 },
+		[specs[2], specs[6], specs[7], specs[8], specs[9]]);
+	console.log("=== same on N=" + nBig + " (rect " +
+		JSON.stringify(buoyMod.scaledSize(makeCfg({ N: nBig, scenario }))) + "), " + fBig + " frames ===");
+	for (const r of big.runs) console.log(line(r));
+	console.log("--- float trace, default variant, N=" + nBig + " ---");
+	for (const t of big.runs[0].trace) console.log(t);
+}
