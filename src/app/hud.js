@@ -119,6 +119,8 @@
 				}
 				lines.push("maxM="+fmt(s.maxM)+" neg="+s.cntNeg+" over="+s.cntOver+
 					" maxDiv="+fmt(s.motion.maxDiv)+" p["+fmt(s.motion.pMin)+".."+fmt(s.motion.pMax)+"]");
+				if(s.thermal)lines.push("T["+fmt(s.thermal.TMin)+".."+fmt(s.thermal.TMax)+"] mean="+fmt(s.thermal.TMean)+
+					" heatIn="+fmt(s.thermal.heatIn)+" heatOut="+fmt(s.thermal.heatOut)+" KE="+fmt(s.thermal.kinetic));
 				const txt=lines.join("\n");
 				if(txt!==lastCons){
 					consEl.textContent=txt;

@@ -19,14 +19,29 @@
 			for(let x=1;x<texW-1;x++){
 				const i=(x+y*texW)*4;
 				let m=0.3;
-				if(cfg.scenario==="still")m=1.0;
+				if(cfg.scenario==="still"||cfg.scenario==="convection")m=1.0;
 				if(cfg.scenario==="dam"&&x<Math.ceil(N*0.45)&&x>=Math.ceil(N*0.1)&&y<=Math.ceil(N*0.6))m=1.0;
 				massA[i+3]=m;
 				if(cfg.scenario==="dam"&&m>0.5)massA[i+2]=0.5*m;
 				thermA[i]=m*cLiq*TAmb;
 				thermA[i+1]=TAmb;
-				thermA[i+2]=1;
+				// b/a are the cumulative heater/cold-plate source sums (0.4.0):
+				// donor transport carries them with the fluid, so their field
+				// totals are the exact source ledger and survive advection.
+				thermA[i+2]=0;
 				thermA[i+3]=0;
+			}
+		}
+		if(cfg.scenario==="convection"){
+			// seed the rolls: a smooth warm/cold perturbation at uniform energy
+			// density per unit mass, so buoyancy has something to amplify
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const i=(x+y*texW)*4;
+					const T=TAmb+3*Math.sin(6.2831853*(x-0.5)/N)*Math.sin(3.14159265*(y-0.5)/N);
+					thermA[i]=massA[i+3]*cLiq*T;
+					thermA[i+1]=T;
+				}
 			}
 		}
 		if(cfg.scenario==="blobs"){
@@ -147,6 +162,7 @@
 			flux.fill(0);divsrc.fill(0);
 			flags.set(sc.flagsA);
 			mass.cur=0;therm.cur=0;vel.cur=0;press.cur=0;
+			cfg.thermalSources=cfg.scenario==="convection"?1:0;
 			const tot=acc.totalsFromFields(mass.a,therm.a,texW,texH);
 			ledger=acc.createLedger(tot);
 			cfg.frame=0;cfg.time=0;
@@ -470,6 +486,95 @@
 			limiterPrepare(mSrc,mLow);
 			limiterApply(mSrc,mLow);
 		}
+		const thermDiag={clamped:0};
+		// therm.g is a cache, never a transported quantity: T = E/(m*c) for cells
+		// with substance, T_amb for vacuum (no capacity, no buoyancy there)
+		function deriveT(){
+			const ms=grid.curBuf(mass),ts=grid.curBuf(therm);
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const i=(x+y*texW)*4;
+					ts[i+1]=ms[i+3]>=cfg.mEps?ts[i]/(ms[i+3]*cfg.cLiq):cfg.TAmb;
+				}
+			}
+		}
+		// clamped pairwise exchange (0.0.0 5.7). ping-pong is mandatory: both
+		// cells read the same pre-update state, so the two face writes are exact
+		// opposites and conduction cannot create or destroy energy.
+		function conduction(dt){
+			const ms=grid.curBuf(mass);
+			const src=grid.curBuf(therm),dst=grid.nxtBuf(therm);
+			thermDiag.clamped=0;
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const i=(x+y*texW)*4;
+					let E=src[i];
+					if(ms[i+3]>=cfg.mEps&&!isWall(x,y)){
+						const T=src[i+1],C=ms[i+3]*cfg.cLiq;
+						E+=faceExchange(ms,src,x,y,x-1,y,T,dt)+faceExchange(ms,src,x,y,x+1,y,T,dt)
+							+faceExchange(ms,src,x,y,x,y-1,T,dt)+faceExchange(ms,src,x,y,x,y+1,T,dt);
+						if(cfg.wallCool>0&&(isWall(x-1,y)||isWall(x+1,y)||isWall(x,y-1)||isWall(x,y+1))){
+							const dE=-cfg.wallCool*(T-cfg.TAmb)*C*dt;
+							E+=dE;
+							if(dE>0)ledger.heatInE+=dE;else ledger.heatOutE-=dE;
+							dst[i+2]=src[i+2]+(dE>0?dE:0);
+							dst[i+3]=src[i+3]+(dE<0?-dE:0);
+						}else{
+							dst[i+2]=src[i+2];dst[i+3]=src[i+3];
+						}
+					}else{
+						dst[i+2]=src[i+2];dst[i+3]=src[i+3];
+					}
+					dst[i]=E;
+					dst[i+1]=ms[i+3]>=cfg.mEps?E/(ms[i+3]*cfg.cLiq):cfg.TAmb;
+				}
+			}
+			grid.swap(therm);
+		}
+		// one face of the conduction update for cell (x,y) against (nx,ny);
+		// the neighbour computes the exact negation from the same inputs
+		function faceExchange(ms,ts,x,y,nx,ny,T,dt){
+			if(nx<1||nx>texW-2||ny<1||ny>texH-2)return 0;
+			const j=(nx+ny*texW)*4;
+			if(flags[j]>0){
+				return 0; // wall faces exchange through wallCool above, not pairwise
+			}
+			if(ms[j+3]<cfg.mEps)return 0; // vacuum does not conduct
+			const dT=ts[j+1]-T;
+			if(dT===0)return 0;
+			const CL=ms[(x+y*texW)*4+3]*cfg.cLiq,CR=ms[j+3]*cfg.cLiq;
+			const Ch=(CL*CR)/(CL+CR);
+			let dE=cfg.conductivity*dT*dt;
+			const limit=0.5*Ch*Math.abs(dT);
+			if(Math.abs(dE)>limit){dE=dE>0?limit:-limit;thermDiag.clamped++;}
+			return dE;
+		}
+		// local sources, in place is safe (no pairwise coupling). bottom band:
+		// fixed power per cell; top band: cold plate relaxing T toward T_amb.
+		// every joule is charged to the ledger and to the therm.b/a accumulators
+		// the gpu stats reduction reads back.
+		function heatSources(dt){
+			if(!cfg.thermalSources)return;
+			const ms=grid.curBuf(mass),ts=grid.curBuf(therm);
+			const band=Math.max(1,Math.round(cfg.heatBand));
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					if(ms[(x+y*texW)*4+3]<cfg.mEps||isWall(x,y))continue;
+					const i=(x+y*texW)*4;
+					let dE=0;
+					if(y<=band)dE+=cfg.heatPower*dt;
+					if(y>N-band){
+						const C=ms[i+3]*cfg.cLiq;
+						dE-=cfg.coolTop*(ts[i+1]-cfg.TAmb)*C*dt;
+					}
+					if(dE===0)continue;
+					ts[i]+=dE;
+					ts[i+1]=ts[i]/(ms[i+3]*cfg.cLiq);
+					if(dE>0){ledger.heatInE+=dE;ts[i+2]+=dE;}
+					else{ledger.heatOutE-=dE;ts[i+3]-=dE;}
+				}
+			}
+		}
 		function step(dt){
 			forces(dt);
 			advectVel(dt);
@@ -478,13 +583,18 @@
 			applyGrad(dt);
 			computeFlux(dt);
 			advectScalar();
+			deriveT();
+			conduction(dt);
+			heatSources(dt);
+			deriveT();
 			cfg.frame++;
 			cfg.time+=dt;
 		}
 		function stats(){
 			const tot=acc.totalsFromFields(grid.curBuf(mass),grid.curBuf(therm),texW,texH);
 			const mot=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,cfg.dt);
-			return {frame:cfg.frame,tot,mot,ledger};
+			const thermal=acc.thermalTotals(grid.curBuf(mass),grid.curBuf(therm),grid.curBuf(vel),texW,texH,cfg.mEps,cfg.cLiq,cfg.TAmb);
+			return {frame:cfg.frame,tot,mot,thermal,ledger};
 		}
 		function applyDyePatch(patch){
 			const buf=grid.curBuf(mass),tbuf=grid.curBuf(therm);
@@ -497,6 +607,7 @@
 					buf[i+2]+=patch.massPatch[p+2];
 					buf[i+3]+=patch.massPatch[p+3];
 					tbuf[i]+=patch.ePatch[x+y*patch.w];
+					if(buf[i+3]>=cfg.mEps)tbuf[i+1]=tbuf[i]/(buf[i+3]*cfg.cLiq);
 				}
 			}
 			const t=patchTotals(patch);
@@ -511,8 +622,9 @@
 			}
 		}
 		reset();
-		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,flags,ledger,
+		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,flags,ledger,thermDiag,
 			isWall,uBlocked,vBlocked,reset,step,stats,forces,advectVel,poissonRhs,project,applyGrad,computeFlux,advectScalar,
+			deriveT,conduction,heatSources,
 			applyDyePatch,applyWallPatch};
 	}
 	Fluid.core.solver={create,buildScenario,buildDyePatch,buildWallPatch,patchTotals,paintBlob};

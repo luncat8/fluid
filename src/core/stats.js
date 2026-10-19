@@ -7,6 +7,9 @@
 	const IDX_MIN_M=5,IDX_MIN_DR=6,IDX_MIN_DG=7,IDX_MIN_DB=8,IDX_MIN_E=9;
 	const IDX_MAX_M=10,IDX_CNT_NEG=11,IDX_CNT_OVER=12;
 	const IDX_MAX_VEL=13,IDX_P_MIN=14,IDX_P_MAX=15,IDX_MAX_DIV=16;
+	// cumulative thermal source sums carried in therm.b / therm.a (0.4.0), then
+	// temperature range and kinetic energy reconstructed from the face velocities
+	const IDX_HEAT_IN=17,IDX_HEAT_OUT=18,IDX_T_MIN=19,IDX_T_MAX=20,IDX_T_MEAN=21,IDX_KINETIC=22;
 	const STATS_LEN=32;
 	function totalsFromFields(mass,therm,texW,texH){
 		let sumM=0,sumDr=0,sumDg=0,sumDb=0,sumE=0;
@@ -85,12 +88,34 @@
 		let denom=Math.max(Math.abs(expected),1e-12);
 		return (actual-expected)/denom;
 	}
+	// temperature range over cells with substance, and kinetic energy from the
+	// mac faces: cell velocity is the average of its two faces per axis
+	// (0.0.0/0.4.0: the same reconstruction on cpu and gpu, closure depends on it)
+	function thermalTotals(mass,therm,vel,texW,texH,mEps,cLiq,TAmb){
+		let TMin=Infinity,TMax=-Infinity,TSum=0,TCount=0,kinetic=0;
+		for(let y=1;y<texH-1;y++){
+			for(let x=1;x<texW-1;x++){
+				const i=(x+y*texW)*4,iv=(x+y*texW)*2;
+				const m=mass[i+3];
+				if(m<mEps)continue;
+				const T=therm[i+1];
+				if(T<TMin)TMin=T;
+				if(T>TMax)TMax=T;
+				TSum+=T;TCount++;
+				const uc=0.5*(vel[iv]+vel[iv+2]),vc=0.5*(vel[iv+1]+vel[iv+texW*2+1]);
+				kinetic+=0.5*m*(uc*uc+vc*vc);
+			}
+		}
+		if(TCount===0){TMin=TAmb;TMax=TAmb;}
+		return {TMin,TMax,TMean:TCount?TSum/TCount:TAmb,kinetic};
+	}
 	function createLedger(initial){
 		return {
 			initialM:initial.sumM,initialDr:initial.sumDr,initialDg:initial.sumDg,initialDb:initial.sumDb,initialE:initial.sumE,
 			injectedM:0,injectedDr:0,injectedDg:0,injectedDb:0,injectedE:0,
 			removedM:0,removedDr:0,removedDg:0,removedDb:0,removedE:0,
-			boundaryM:0,boundaryDr:0,boundaryDg:0,boundaryDb:0,boundaryE:0
+			boundaryM:0,boundaryDr:0,boundaryDg:0,boundaryDb:0,boundaryE:0,
+			heatInE:0,heatOutE:0
 		};
 	}
 	function expectedTotal(ledger,kind){
@@ -98,7 +123,7 @@
 		if(kind==="dr")return ledger.initialDr+ledger.injectedDr-ledger.removedDr-ledger.boundaryDr;
 		if(kind==="dg")return ledger.initialDg+ledger.injectedDg-ledger.removedDg-ledger.boundaryDg;
 		if(kind==="db")return ledger.initialDb+ledger.injectedDb-ledger.removedDb-ledger.boundaryDb;
-		if(kind==="E")return ledger.initialE+ledger.injectedE-ledger.removedE-ledger.boundaryE;
+		if(kind==="E")return ledger.initialE+ledger.injectedE-ledger.removedE-ledger.boundaryE+(ledger.heatInE||0)-(ledger.heatOutE||0);
 		return 0;
 	}
 	function writeExpectedTotals(out,ledger){
@@ -115,6 +140,6 @@
 		if(a<1e-3)return "warn";
 		return "bad";
 	}
-	Fluid.core.stats={STATS_LEN,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,STATS_FIELDS,totalsFromFields,motionTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift};
+	Fluid.core.stats={STATS_LEN,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,IDX_HEAT_IN,IDX_HEAT_OUT,IDX_T_MIN,IDX_T_MAX,IDX_T_MEAN,IDX_KINETIC,STATS_FIELDS,totalsFromFields,motionTotals,thermalTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.stats;
 })(globalThis);

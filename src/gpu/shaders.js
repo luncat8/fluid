@@ -419,6 +419,124 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	textureStore(thermDst, vec2<i32>(x, y), out);
 }
 `;
+	// ---------- derive_T (0.4.0): therm.g is a cache of E/(m*c), never transported ----------
+	shaders.deriveT=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(2) var thermSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(3) var thermDst: texture_storage_2d<rgba32float,write>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
+	let at = vec2<i32>(x, y);
+	let m = textureLoad(massTex, at).a;
+	var q = textureLoad(thermSrc, at);
+	q.g = select(params.values[20], q.r / (m * params.values[49]), m >= params.values[58]);
+	textureStore(thermDst, at, q);
+}
+`;
+	// ---------- conduction (0.4.0): clamped pairwise exchange, ping-pong ----------
+	// each cell sums its four face exchanges from the pre-update state; the
+	// neighbour computes the exact negation, so E is conserved by construction.
+	shaders.conduction=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(2) var thermSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(3) var thermDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(4) var flagsTex: texture_2d<u32>;
+
+fn faceExchange(x: i32, y: i32, nx: i32, ny: i32, w: i32, h: i32, T: f32, dt: f32) -> f32 {
+	if (nx < 1 || nx > w - 2 || ny < 1 || ny > h - 2) { return 0.0; }
+	let at = vec2<i32>(nx, ny);
+	if (textureLoad(flagsTex, at, 0).r > 0u) { return 0.0; }
+	let mN = textureLoad(massTex, at).a;
+	if (mN < params.values[58]) { return 0.0; }
+	let dT = textureLoad(thermSrc, at).g - T;
+	if (dT == 0.0) { return 0.0; }
+	let cL = textureLoad(massTex, vec2<i32>(x, y)).a * params.values[49];
+	let cR = mN * params.values[49];
+	let ch = (cL * cR) / (cL + cR);
+	let dE = params.values[35] * dT * dt;
+	let limit = 0.5 * ch * abs(dT);
+	return clamp(dE, -limit, limit);
+}
+fn isWallAt(x: i32, y: i32, w: i32, h: i32) -> bool {
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
+	return textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;
+}
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
+	let at = vec2<i32>(x, y);
+	let dt = params.values[4];
+	let m = textureLoad(massTex, at).a;
+	var q = textureLoad(thermSrc, at);
+	var E = q.r;
+	if (m >= params.values[58] && !isWallAt(x, y, w, h)) {
+		let T = q.g;
+		E = E + faceExchange(x, y, x - 1, y, w, h, T, dt) + faceExchange(x, y, x + 1, y, w, h, T, dt)
+			+ faceExchange(x, y, x, y - 1, w, h, T, dt) + faceExchange(x, y, x, y + 1, w, h, T, dt);
+		let wallCool = params.values[41];
+		if (wallCool > 0.0 && (isWallAt(x - 1, y, w, h) || isWallAt(x + 1, y, w, h) || isWallAt(x, y - 1, w, h) || isWallAt(x, y + 1, w, h))) {
+			let dE = -wallCool * (T - params.values[20]) * (m * params.values[49]) * dt;
+			E = E + dE;
+			q.b = q.b + max(dE, 0.0);
+			q.a = q.a + max(-dE, 0.0);
+		}
+	}
+	q.r = E;
+	q.g = select(params.values[20], E / (m * params.values[49]), m >= params.values[58]);
+	textureStore(thermDst, at, q);
+}
+`;
+	// ---------- heat sources (0.4.0): bottom heater band, top cold plate ----------
+	// local and accounted: therm.b/a accumulate injected/removed energy per cell;
+	// donor transport carries them, so their field sums are the source ledger.
+	shaders.heatSources=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(2) var thermSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(3) var thermDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(4) var flagsTex: texture_2d<u32>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
+	let at = vec2<i32>(x, y);
+	var q = textureLoad(thermSrc, at);
+	if (params.values[43] > 0.5) {
+		let m = textureLoad(massTex, at).a;
+		let wall = textureLoad(flagsTex, at, 0).r > 0u;
+		if (m >= params.values[58] && !wall) {
+			let dt = params.values[4];
+			let band = max(i32(params.values[42]), 1);
+			let n = i32(params.values[0]);
+			var dE = 0.0;
+			if (y <= band) { dE = dE + params.values[39] * dt; }
+			if (y > n - band) { dE = dE - params.values[40] * (q.g - params.values[20]) * (m * params.values[49]) * dt; }
+			q.r = q.r + dE;
+			q.b = q.b + max(dE, 0.0);
+			q.a = q.a + max(-dE, 0.0);
+			q.g = q.r / (m * params.values[49]);
+		}
+	}
+	textureStore(thermDst, at, q);
+}
+`;
 	// ---------- Zalesak FCT for RGB dye densities ----------
 	shaders.limiterPrepare=`
 @group(0) @binding(0) var<uniform> params: Params;
@@ -610,6 +728,13 @@ var<workgroup> shMaxVel: array<f32,64>;
 var<workgroup> shPMin: array<f32,64>;
 var<workgroup> shPMax: array<f32,64>;
 var<workgroup> shMaxDiv: array<f32,64>;
+var<workgroup> shHeatIn: array<f32,64>;
+var<workgroup> shHeatOut: array<f32,64>;
+var<workgroup> shTMin: array<f32,64>;
+var<workgroup> shTMax: array<f32,64>;
+var<workgroup> shTSum: array<f32,64>;
+var<workgroup> shTCnt: array<f32,64>;
+var<workgroup> shKin: array<f32,64>;
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
@@ -622,6 +747,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 	var minM = 1e30; var minDr = 1e30; var minDg = 1e30; var minDb = 1e30; var minE = 1e30;
 	var maxM = -1e30; var neg = 0.0; var over = 0.0;
 	var maxVel = 0.0; var pMin = 1e30; var pMax = -1e30; var maxDiv = 0.0;
+	var heatIn = 0.0; var heatOut = 0.0; var tMin = 1e30; var tMax = -1e30; var tSum = 0.0; var tCnt = 0.0; var kin = 0.0;
 	if (x >= 1 && x < w - 1 && y >= 1 && y < h - 1) {
 		let mass = textureLoad(massTex, vec2<i32>(x, y));
 		let therm = textureLoad(thermTex, vec2<i32>(x, y));
@@ -639,11 +765,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 		maxDiv = div;
 		let p = textureLoad(pressTex, vec2<i32>(x, y), 0).r;
 		pMin = p; pMax = p;
+		heatIn = therm.b; heatOut = therm.a;
+		if (mass.a >= params.values[58]) {
+			tMin = therm.g; tMax = therm.g; tSum = therm.g; tCnt = 1.0;
+			let uc = 0.5 * (uL + uR);
+			let vc = 0.5 * (vB + vT);
+			kin = 0.5 * mass.a * (uc * uc + vc * vc);
+		}
 	}
 	shM[lid] = totM; shDr[lid] = totDr; shDg[lid] = totDg; shDb[lid] = totDb; shE[lid] = totE;
 	shMinM[lid] = minM; shMinDr[lid] = minDr; shMinDg[lid] = minDg; shMinDb[lid] = minDb; shMinE[lid] = minE;
 	shMaxM[lid] = maxM; shNeg[lid] = neg; shOver[lid] = over;
 	shMaxVel[lid] = maxVel; shPMin[lid] = pMin; shPMax[lid] = pMax; shMaxDiv[lid] = maxDiv;
+	shHeatIn[lid] = heatIn; shHeatOut[lid] = heatOut;
+	shTMin[lid] = tMin; shTMax[lid] = tMax; shTSum[lid] = tSum; shTCnt[lid] = tCnt; shKin[lid] = kin;
 	workgroupBarrier();
 	var stride = 32u;
 	loop {
@@ -666,6 +801,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 			shPMin[lid] = min(shPMin[lid], shPMin[lid + stride]);
 			shPMax[lid] = max(shPMax[lid], shPMax[lid + stride]);
 			shMaxDiv[lid] = max(shMaxDiv[lid], shMaxDiv[lid + stride]);
+			shHeatIn[lid] = shHeatIn[lid] + shHeatIn[lid + stride];
+			shHeatOut[lid] = shHeatOut[lid] + shHeatOut[lid + stride];
+			shTMin[lid] = min(shTMin[lid], shTMin[lid + stride]);
+			shTMax[lid] = max(shTMax[lid], shTMax[lid + stride]);
+			shTSum[lid] = shTSum[lid] + shTSum[lid + stride];
+			shTCnt[lid] = shTCnt[lid] + shTCnt[lid + stride];
+			shKin[lid] = shKin[lid] + shKin[lid + stride];
 		}
 		workgroupBarrier();
 		stride = stride >> 1u;
@@ -690,6 +832,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 		partials[base + 14u] = shPMin[0];
 		partials[base + 15u] = shPMax[0];
 		partials[base + 16u] = shMaxDiv[0];
+		partials[base + 17u] = shHeatIn[0];
+		partials[base + 18u] = shHeatOut[0];
+		partials[base + 19u] = shTMin[0];
+		partials[base + 20u] = shTMax[0];
+		partials[base + 21u] = shTSum[0];
+		partials[base + 22u] = shKin[0];
+		partials[base + 23u] = shTCnt[0];
 	}
 }
 `;
@@ -713,6 +862,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	var neg = 0.0; var over = 0.0;
 	var minM = 1e30; var minDr = 1e30; var minDg = 1e30; var minDb = 1e30; var minE = 1e30;
 	var maxM = -1e30; var maxVel = 0.0; var pMin = 1e30; var pMax = -1e30; var maxDiv = 0.0;
+	var cIn = 0.0; var sIn = 0.0; var cOut = 0.0; var sOut = 0.0;
+	var cTS = 0.0; var sTS = 0.0; var cKin = 0.0; var sKin = 0.0; var tCnt = 0.0;
+	var tMin = 1e30; var tMax = -1e30;
 	for (var i = 0u; i < num; i++) {
 		let base = i * 32u;
 		var y = partials[base + 0u] - cM; var t = sM + y; cM = (t - sM) - y; sM = t;
@@ -720,6 +872,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		y = partials[base + 2u] - cDg; t = sDg + y; cDg = (t - sDg) - y; sDg = t;
 		y = partials[base + 3u] - cDb; t = sDb + y; cDb = (t - sDb) - y; sDb = t;
 		y = partials[base + 4u] - cE; t = sE + y; cE = (t - sE) - y; sE = t;
+		y = partials[base + 17u] - cIn; t = sIn + y; cIn = (t - sIn) - y; sIn = t;
+		y = partials[base + 18u] - cOut; t = sOut + y; cOut = (t - sOut) - y; sOut = t;
+		y = partials[base + 21u] - cTS; t = sTS + y; cTS = (t - sTS) - y; sTS = t;
+		y = partials[base + 22u] - cKin; t = sKin + y; cKin = (t - sKin) - y; sKin = t;
+		tCnt = tCnt + partials[base + 23u];
+		tMin = min(tMin, partials[base + 19u]);
+		tMax = max(tMax, partials[base + 20u]);
 		neg = neg + partials[base + 11u];
 		over = over + partials[base + 12u];
 		minM = min(minM, partials[base + 5u]);
@@ -745,6 +904,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	stats[5u] = minM; stats[6u] = minDr; stats[7u] = minDg; stats[8u] = minDb; stats[9u] = minE;
 	stats[10u] = maxM; stats[11u] = neg; stats[12u] = over;
 	stats[13u] = maxVel; stats[14u] = pMin; stats[15u] = pMax; stats[16u] = maxDiv;
+	if (tMin == 1e30) { tMin = 0.0; }
+	if (tMax == -1e30) { tMax = 0.0; }
+	stats[17u] = sIn; stats[18u] = sOut;
+	stats[19u] = tMin; stats[20u] = tMax;
+	stats[21u] = select(0.0, sTS / tCnt, tCnt > 0.0);
+	stats[22u] = sKin;
 }
 `;
 	// ---------- buoy field sample: one workgroup over the body footprint ----------
@@ -910,6 +1075,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		let div = abs(uR - uL + vT - vB) / dt;
 		let t = clamp(log2(1.0 + div) / 10.0, 0.0, 1.0);
 		out = vec4<f32>(t * t, t, 0.15 + 0.5 * t, 1.0);
+	} else if (mode == 6) {
+		// thermal debug: signed T - T_ref, rising hot and sinking cold at a glance
+		if (m > params.values[58]) {
+			let u = clamp((therm.g - params.values[20]) / 50.0, -1.0, 1.0);
+			out = vec4<f32>(max(u, 0.0), 0.1 + 0.1 * (1.0 - abs(u)), max(-u, 0.0), 1.0);
+		}
 	} else {
 		// flags: painted walls over a mass greyscale
 		let wall = textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;

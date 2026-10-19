@@ -48,6 +48,9 @@
 			flux:comp("flux",PS+sh.computeFlux),
 			advectMass:comp("advectMass",PS+sh.advectMass),
 			advectTherm:comp("advectTherm",PS+sh.advectTherm),
+			deriveT:comp("deriveT",PS+sh.deriveT),
+			conduction:comp("conduction",PS+sh.conduction),
+			heatSources:comp("heatSources",PS+sh.heatSources),
 			limiterPrepare:comp("limiterPrepare",PS+sh.limiterPrepare),
 			limiterApply:comp("limiterApply",PS+sh.limiterApply),
 			paintMass:comp("paintMass",PS+sh.paintMass),
@@ -81,9 +84,35 @@
 		const limiterBView=viewRes(pool.limiterB);
 		const groups={
 			forces:[],advectVel:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
+			deriveT:[],conduction:[],heatSources:[],
 			limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
 			statsA:[],toDisplay:[],statsB:null,buoySample:[],render:null
 		};
+		// thermal passes run after scalar transport, so they key on the mass
+		// slot that will be current then: [start mass slot][therm source][mass slot]
+		function thermalGroups(label,pipe,withFlags){
+			const out=[];
+			for(let m=0;m<3;m++){
+				out[m]=[];
+				for(let t=0;t<2;t++){
+					out[m][t]=[];
+					for(let mm=0;mm<3;mm++){
+						const entries=[
+							{binding:0,resource:{buffer:pool.params}},
+							{binding:1,resource:viewRes(pool.mass.tex[mm])},
+							{binding:2,resource:viewRes(pool.therm.tex[t])},
+							{binding:3,resource:viewRes(pool.therm.tex[1-t])}
+						];
+						if(withFlags)entries.push({binding:4,resource:flagsView});
+						out[m][t][mm]=bg(device,label+m+t+mm,pipe.getBindGroupLayout(0),entries);
+					}
+				}
+			}
+			return out;
+		}
+		groups.deriveT=thermalGroups("deriveT",pipes.deriveT,false);
+		groups.conduction=thermalGroups("conduction",pipes.conduction,true);
+		groups.heatSources=thermalGroups("heatSources",pipes.heatSources,true);
 		for(let m=0;m<3;m++){
 			const nextM=(m+1)%3,finalM=(m+2)%3;
 			const mm=pool.mass.tex[m],ml=pool.mass.tex[nextM];
@@ -286,7 +315,26 @@
 		}else{
 			state.m=nextM;
 		}
-		state.t=1-t;
+		// thermal chain (0.4.0): derive, conduction, sources, derive. four
+		// ping-pongs after the transport flip return therm to 1-t, as before.
+		const mf=state.m;
+		let ts=1-t;
+		cpass.setPipeline(pipes.deriveT);
+		cpass.setBindGroup(0,groups.deriveT[m][ts][mf]);
+		cpass.dispatchWorkgroups(wx,wy);
+		ts=1-ts;
+		cpass.setPipeline(pipes.conduction);
+		cpass.setBindGroup(0,groups.conduction[m][ts][mf]);
+		cpass.dispatchWorkgroups(wx,wy);
+		ts=1-ts;
+		cpass.setPipeline(pipes.heatSources);
+		cpass.setBindGroup(0,groups.heatSources[m][ts][mf]);
+		cpass.dispatchWorkgroups(wx,wy);
+		ts=1-ts;
+		cpass.setPipeline(pipes.deriveT);
+		cpass.setBindGroup(0,groups.deriveT[m][ts][mf]);
+		cpass.dispatchWorkgroups(wx,wy);
+		state.t=1-ts;
 		state.v=v;
 	}
 	function encodeStats(cpass,pool,pipes,groups,state){

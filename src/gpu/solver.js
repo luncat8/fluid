@@ -31,10 +31,14 @@
 		let pendingGeneration=0;
 		let statsGeneration=0;
 		const pendingExpected={m:0,dr:0,dg:0,db:0,E:0};
+		// cumulative net heater/cold-plate energy at the last stats readback;
+		// the snapshot expected E is corrected by the delta at poll time (0.4.0)
+		let heatNetKnown=0;
+		let pendingHeatNet=0;
 		let frameCount=0;
 		let timeAcc=0;
 		let statsCache=null;
-		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,ledger:null};
+		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,thermal:null,ledger:null};
 		function writeParams(){
 			Fluid.core.config.writeParams(paramsArray,cfg);
 			device.queue.writeBuffer(pool.params,0,paramsArray);
@@ -61,6 +65,8 @@
 			fields.clearTexture(device,pool.divsrc,cfg.texW,cfg.texH,"r32float");
 			flagsMirror.set(sc.flagsA);
 			state.m=0;state.t=0;state.v=0;
+			cfg.thermalSources=cfg.scenario==="convection"?1:0;
+			heatNetKnown=0;pendingHeatNet=0;
 			const init=stats.totalsFromFields(sc.massA,sc.thermA,cfg.texW,cfg.texH);
 			ledger=stats.createLedger(init);
 			cfg.rhoMean=init.sumM/(cfg.N*cfg.N);
@@ -73,7 +79,8 @@
 				expected,
 				mins:{m:init.minM,dr:init.minDr,dg:init.minDg,db:init.minDb,E:init.minE},
 				maxM:init.maxM,cntNeg:init.cntNeg,cntOver:init.cntOver,
-				motion:{maxVel:0,pMin:0,pMax:0,maxDiv:0}
+				motion:{maxVel:0,pMin:0,pMax:0,maxDiv:0},
+				thermal:{TMin:cfg.TAmb,TMax:cfg.TAmb,TMean:cfg.TAmb,kinetic:0,heatIn:0,heatOut:0}
 			};
 			writeParams();
 		}
@@ -138,6 +145,7 @@
 			if(needStats&&!readbackInFlight){
 				encoder.copyBufferToBuffer(pool.stats,0,pool.statsRead,0,128);
 				stats.writeExpectedTotals(pendingExpected,ledger);
+				pendingHeatNet=heatNetKnown;
 				pendingFrame=frameCount+1;
 				pendingGeneration=statsGeneration;
 				pendingRead=true;
@@ -203,7 +211,7 @@
 			const readGeneration=pendingGeneration;
 			const readFrame=pendingFrame;
 			const expM=pendingExpected.m,expDr=pendingExpected.dr,expDg=pendingExpected.dg;
-			const expDb=pendingExpected.db,expE=pendingExpected.E;
+			const expDb=pendingExpected.db,expE=pendingExpected.E,expHeatNet=pendingHeatNet;
 			try{
 				await readPool.statsRead.mapAsync(GPUMapMode.READ);
 				const buf=readPool.statsRead.getMappedRange();
@@ -232,6 +240,16 @@
 					statsCache.motion.pMin=readbackArray[14];
 					statsCache.motion.pMax=readbackArray[15];
 					statsCache.motion.maxDiv=readbackArray[16];
+					const heatIn=readbackArray[17],heatOut=readbackArray[18];
+					statsCache.expected.E=expE-expHeatNet+(heatIn-heatOut);
+					heatNetKnown=heatIn-heatOut;
+					ledger.heatInE=heatIn;ledger.heatOutE=heatOut;
+					statsCache.thermal.TMin=readbackArray[19];
+					statsCache.thermal.TMax=readbackArray[20];
+					statsCache.thermal.TMean=readbackArray[21];
+					statsCache.thermal.kinetic=readbackArray[22];
+					statsCache.thermal.heatIn=heatIn;
+					statsCache.thermal.heatOut=heatOut;
 				}
 				readPool.statsRead.unmap();
 			}catch(e){
@@ -249,6 +267,7 @@
 			statsView.cntNeg=statsCache.cntNeg;
 			statsView.cntOver=statsCache.cntOver;
 			statsView.motion=statsCache.motion;
+			statsView.thermal=statsCache.thermal;
 			statsView.ledger=ledger;
 			return statsView;
 		}

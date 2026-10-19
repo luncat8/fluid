@@ -8,6 +8,7 @@
 		gravityX:16,gravityY:17,rhoRef:18,beta:19,TRef:20,mouseX:21,mouseY:22,mouseStrength:23,
 		mouseVX:24,mouseVY:25,mouseR:26,rhoMean:27,
 		pressureIters:32,fctLimiter:33,viscosity:34,conductivity:35,SMax:36,tauPhase:37,vClamp:38,
+		heatPower:39,coolTop:40,wallCool:41,heatBand:42,thermalOn:43,
 		cSol:48,cLiq:49,cGas:50,Lf:51,Lv:52,TMelt:53,TBoil:54,rhoLiq:55,rhoGas0:56,rhoVac:57,mEps:58,
 		viewMode:80,TMin:81,TMax:82,PMin:83,PMax:84,VMax:85,overlay:86,colorGain:87,
 		buoyX0:88,buoyY0:89,buoyW:90,buoyH:91,buoySub:92,buoyShow:93,
@@ -25,7 +26,7 @@
 		gravityX:0,
 		gravityY:300,
 		rhoRef:1.0,
-		beta:0.0004,
+		beta:0.002,
 		TRef:293,
 		TAmb:293,
 		mouseX:0,
@@ -38,6 +39,14 @@
 		fctLimiter:1,
 		viscosity:0.0,
 		conductivity:0.2,
+		// thermal sources (0.4.0): fixed power per bottom-band cell, cold plate
+		// relaxation per top-band cell, wall exchange coefficient. only applied
+		// while cfg.thermalSources is on (the convection scenario turns it on).
+		heatPower:30,
+		coolTop:0.5,
+		wallCool:0,
+		heatBand:2,
+		thermalSources:0,
 		SMax:30,
 		tauPhase:0.05,
 		vClamp:480,
@@ -102,7 +111,7 @@
 		phase:7
 	};
 	const viewModeNames=["color","temperature","pressure","velocity","divergence","flags","thermal","phase"];
-	const scenarioNames=["blobs","dam","still"];
+	const scenarioNames=["blobs","dam","still","convection"];
 	const paintModeNames=["dye","wall","erase"];
 	const keyMap={
 		"0":"color","1":"temperature","2":"pressure","3":"velocity","4":"divergence","5":"flags",
@@ -162,6 +171,11 @@
 		a[paramsOff.SMax]=cfg.SMax;
 		a[paramsOff.tauPhase]=cfg.tauPhase;
 		a[paramsOff.vClamp]=cfg.vClamp;
+		a[paramsOff.heatPower]=cfg.heatPower;
+		a[paramsOff.coolTop]=cfg.coolTop;
+		a[paramsOff.wallCool]=cfg.wallCool;
+		a[paramsOff.heatBand]=cfg.heatBand;
+		a[paramsOff.thermalOn]=cfg.thermalSources||0;
 		a[paramsOff.cSol]=cfg.cSol;
 		a[paramsOff.cLiq]=cfg.cLiq;
 		a[paramsOff.cGas]=cfg.cGas;

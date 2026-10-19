@@ -7,8 +7,10 @@ Currently implemented: full velocity solver (forces, semi-Lagrangian advection,
 variable-density red-black Gauss-Seidel projection), donor-cell mass/energy transport,
 Zalesak FCT for RGB dye tracers, ledger-accounted dye and wall painting, conservation
 meters, eight view modes, a diagnostic floating body that reads the field without touching
-it (dam scenario), an optional auto-CFL substep policy, and a CPU reference solver with a
-conformance suite. GPU FCT pipelines are implemented; browser parity/performance
+it (dam scenario), an optional auto-CFL substep policy, thermal conduction with
+ledger-accounted heater/cold-plate sources and Boussinesq buoyancy (convection
+scenario: bottom heated box with a cold top), and a CPU reference solver with a
+conformance suite. GPU thermal pipelines mirror the CPU ones; browser parity/performance
 measurements remain pending.
 
 ## Run
@@ -18,7 +20,7 @@ measurements remain pending.
   `http://127.0.0.1:8000/index.html`.
 
 Keys: `0-7` view modes · `space` pause · `.` step · `r` reset · `n` scenario
-(blobs / dam / still) · `b` paint dye/wall/erase · `c` dye color · `f` toggle dye FCT
+(blobs / dam / still / convection) · `b` paint dye/wall/erase · `c` dye color · `f` toggle dye FCT
 · drag to stir and paint · `g` gravity · `u` auto-substep policy (off = the fixed step
 count from the panel, 4 by default) · `y` buoy · `+/-` pressure iterations · `[ ]` grid
 size · `s` dump stats · `h` help.
@@ -38,7 +40,9 @@ the scheme in `0.0.0-plan.md` section 5) through: stats-reduction error, FCT dye
 sharpness/bounds, still box, stirred closed box, dam break, wall integrity, emitter
 accounting, and a draw stroke that guards the per-cell flux outflow limiter. Run
 `node experiments/sharpness.js` for the isolated upwind-versus-FCT front measurement,
-`node experiments/buoy.js` for the floating body (float line versus dye level and versus
+`node experiments/convection.js` for the thermal plan (derive_T, clamped conduction
+conservation/monotonicity, source ledger closure, convection onset and buoyancy sign,
+10x stability sweep), `node experiments/buoy.js` for the floating body (float line versus dye level and versus
 the sample refresh interval), `node experiments/gpu-mock.js` for the GPU plumbing (a
 recording mock device drives real app frames and lints the WGSL param indices), and
 `node experiments/ui.js` for the view-mode row contract (a small DOM stub; it checks the

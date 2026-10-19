@@ -344,3 +344,29 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 - skill: a ~100 line DOM stub is enough to test this contract in node. it needs radio
 	group semantics (checking one unchecks the group), bubbled events, `label.control`,
 	and a `window` alias. see experiments/ui.js; no jsdom dependency.
+
+## 2026-10-19 thermal (0.4.0)
+
+- skill: carry cumulative source sums in unused field channels (therm.b/a).
+  donor transport is conservative for any scalar, so the field totals of the
+  accumulators are the exact source ledger after any amount of advection —
+  the GPU gets exact heater accounting from its normal stats reduction, no
+  atomics or extra readback. the JS ledger is snapshot-corrected by the
+  readback delta, like the paint ledger. [verified in experiments/convection.js
+  on cpu; gpu side is plumbing-checked only]
+- pitfall: therm.g (T) must be derived, never transported. advecting T as a
+  scalar and also transporting E double-counts the thermodynamics: after one
+  step T and E disagree and buoyancy/conduction read a stale field. derive
+  after transport and after sources; the extra ping-pong is cheap.
+- note: conduction by the plan formula (coef*dT*dt of energy against capacity
+  m*c) has diffusion time L^2*C/coef — ~5000 s across 32 cells at coef=0.2.
+  it is a local smoother at game scales; advection does the heat transport.
+  test relaxation with a large coefficient and test the clamp separately.
+- note: beta=4e-4 with g=300 gives ~0.1 cells/s^2 per 10 K — convection took
+  ~9 s to reach 2 cells/s. beta=2e-3 onsets in ~0.4 s and peaks ~8 cells/s.
+  beta only bites where T actually varies, so raising the default was safe
+  for every pre-thermal scenario (all uniform T_amb).
+- pitfall: f32 field-store rounding under sustained boundary jets is biased,
+  not a random walk: mass drift grew ~linearly at 2e-9/step over 5000 steps
+  (1.1e-5) while the ledger-accounted E stayed at 3e-7. do not chase this as
+  a conservation bug without first running the conduction-off control (4e-8).
