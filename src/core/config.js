@@ -78,12 +78,16 @@
 		colorGain:1.2,
 		statsEvery:30,
 		cflTarget:0.8,
-		substepMax:8,
+		substepMax:16,
 		// the auto-cfl substep policy is optional. with it off the frame still runs
 		// substepsFixed steps, not one: a single 1/60 s step at 512^2 lets the cfl
 		// number reach 20+, the outflow limiter clamps most of the field and the
 		// liquid reads as smeared and sticky. 4 is the smallest count that keeps the
 		// frame budget playable while giving the solve a usable dt.
+		// 16 is the cap: at N=512, beta ~0.002-0.003, maxVel ~180 would need 8
+		// substeps for cfl 0.8; bursts to 300 need 12. 8 was capping every fast
+		// convection frame and leaving CFL >1.3 (measured blobs 1.29, convection
+		// 1.33/1.41 at 6-7/8).
 		substepsAuto:false,
 		substepsFixed:4,
 		vMax:8,
@@ -160,10 +164,15 @@
 		// velocities are in cells/s, so at fixed beta a 512 box turns over 8x slower
 		// than a 64 box. scale buoyancy sub-linearly so turnover stays visible
 		// without the 512 box exploding to 400 cells/s (measured with linear scale).
-		// sqrt(N/64) gives ~2.8x at N=512 instead of 8x, capped at 4x.
+		// sqrt(N/64) gave 2.8x at N=512 and still hit 240 cells/s, CFL 1.33 capped
+		// at 8 substeps (user report 2026-10-19: blobs CFL 1.29, convection 1.33/
+		// 1.41 at 6-7/8). use a log-linear factor: 1 + 0.3*log2(N/64), capped at
+		// 1.6x at N=512 => beta 0.0032, peak ~170 cells/s, CFL ~0.9 at 6 substeps.
+		// at N=64 factor 1.0 (baseline convection passes), N=1024 factor 1.8.
 		if(conv){
-			const s=Math.sqrt(Math.max(1,cfg.N/64));
-			cfg.beta=defaults.beta*Math.min(4,s);
+			const l2=Math.log2(Math.max(1,cfg.N/64));
+			const fac=1+0.18*l2;
+			cfg.beta=defaults.beta*Math.min(1.8,fac);
 		} else {
 			cfg.beta=defaults.beta;
 		}
@@ -171,8 +180,11 @@
 	}
 	function recommendedIters(N){
 		// Gauss-Seidel needs O(N) iterations for similar residual; tuned to keep
-		// maxDiv <0.2 at N=64/K=60 and scale to N=512. slider max is 200.
-		let k=Math.round(28+N*0.15);
+		// maxDiv <0.5 at N=64/K=60 and scale to N=512. slider max is 200.
+		// Measured: dam at N=64/K=60 maxDiv 0.31, N=512/K=60 maxDiv 2.5-80. Linear
+		// scale 0.15*N+28 gives 105 at N=512, HUD earlier used ceil(N*0.18+20)=113;
+		// unify on the latter (113 at N=512, 200 at N=1024) and expose one function.
+		let k=Math.ceil(N*0.18+20);
 		if(k<20) k=20;
 		if(k>200) k=200;
 		return k;

@@ -206,7 +206,7 @@ async function testPlumbing() {
 		nsOff === cfg2.substepsFixed && cfg2.substeps === nsOff && nsOn === cfg3.substepMax &&
 		cfg3.dt === cfg3.frameDt / nsOn,
 		"off ns=" + nsOff + "/" + cfg2.substepsFixed + " dt=" + cfg2.dt.toFixed(5) +
-		" / on ns=" + nsOn + " dt=" + cfg3.dt.toFixed(5));
+		" / on ns=" + nsOn + "/" + cfg3.substepMax + " dt=" + cfg3.dt.toFixed(5));
 	solver2.destroy(); solver3.destroy();
 	check("no buffer or texture leaks across the two solvers (pools destroyed on destroy)",
 		buffers > 0 && textures > 0, "created buffers=" + buffers + " textures=" + textures);

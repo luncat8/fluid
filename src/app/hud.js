@@ -51,8 +51,7 @@
 			return 2*s.motion.maxVel*cfg.dt;
 		}
 		function recommendedK(){
-			// Gauss-Seidel residual ~ exp(-K / N); N=512 needs ~2x K of N=256 for same maxDiv
-			const want=Math.ceil(cfg.N*0.18+20);
+			const want=Fluid.core.config.recommendedIters(cfg.N);
 			if(cfg.pressureIters<want) return want;
 			return 0;
 		}
@@ -64,7 +63,8 @@
 			const mildOver=s.cntOver>0&&s.maxM<=1.05;
 			const modOver=s.maxM>1.05&&s.maxM<=1.5;
 			const severe=s.maxM>1.5||s.maxM>2;
-			let line="CFL bound="+fmt(cfl)+(cfl>1?" [transport limiting likely · try more substeps]":"");
+			const capped=cfg.substepMax && s.motion && cfl>1 && substepsShown>=cfg.substepMax;
+			let line="CFL bound="+fmt(cfl)+(cfl>1?" [transport limiting likely · try more substeps"+(capped?" (capped at "+cfg.substepMax+")":"") +"]":"");
 			if(hasNeg) line+=" | NEGATIVE VALUES: inspect minima (threshold 1e-9)";
 			if(s.diag && s.diag.residual) line+=" | residual "+fmt(s.diag.residual);
 			if(s.motion.maxDiv>1) line+=" | high divergence "+fmt(s.motion.maxDiv)+" (K="+cfg.pressureIters+(recK?" → try "+recK:"")+")";

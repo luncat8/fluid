@@ -3,14 +3,6 @@
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.core=Fluid.core||{};
 	const grid=Fluid.core.grid;
-	// 2-level V-cycle for the variable-coefficient pressure Poisson.
-	// This is the CPU prototype for 0.6.0 t4. It reuses the same faceW
-	// as src/core/solver.js (harmonic mean density) so the residual is
-	// computed with the identical operator that the fine RB uses. Coarse
-	// solves are RB Gauss-Seidel on the restricted residual. The cycle
-	// is intentionally simple: 2 pre, coarse 16, 2 post — the point is to
-	// measure residual reduction per unit time versus plain RB, not to
-	// tune a production solver yet.
 	function create(cfg,texW,texH,refs){
 		const N=cfg.N;
 		const Nc=Math.floor(N/2);
@@ -25,10 +17,6 @@
 			if(x<1||x>texW-2||y<1||y>texH-2) return true;
 			return refs.flags[(x+y*texW)*4]>0;
 		}
-		function isWallCoarse(x,y){
-			if(x<1||x>texWc-2||y<1||y>texHc-2) return true;
-			return flagsC[(x+y*texWc)*4]>0;
-		}
 		function faceW(massArr,texW_,x,y,nx,ny,flagsArr){
 			if(nx<1||nx>texW_-2||ny<1||ny>texW_-2) return 0;
 			if(flagsArr[(nx+ny*texW_)*4]>0) return 0;
@@ -37,7 +25,6 @@
 			return 1/(2*ra*rb/(ra+rb));
 		}
 		function restrictMassAndFlags(){
-			// average 2x2 fine blocks into coarse; flags = any wall in block
 			for(let yc=1; yc<texHc-1; yc++){
 				for(let xc=1; xc<texWc-1; xc++){
 					let sum=0, anyWall=0;
@@ -49,13 +36,14 @@
 					}
 					const ic=(xc+yc*texWc)*4;
 					massC[ic+3]=sum/4;
+					massC[ic]=refs.massCur()[((2*xc-1)+(2*yc-1)*texW)*4]||0;
+					massC[ic+1]=refs.massCur()[((2*xc-1)+(2*yc-1)*texW)*4+1]||0;
+					massC[ic+2]=refs.massCur()[((2*xc-1)+(2*yc-1)*texW)*4+2]||0;
 					flagsC[ic]=anyWall?255:0;
 				}
 			}
-			// ghost ring remains 0
 		}
 		function smooth(pressPP,divArr,massArr,flagsArr,texW_,texH_,iters){
-			const ms=massArr;
 			for(let k=0;k<iters;k++){
 				for(let color=0;color<2;color++){
 					const src=grid.curBuf(pressPP), dst=grid.nxtBuf(pressPP);
@@ -82,7 +70,6 @@
 			}
 		}
 		function computeResidual(pressArr,divArr,massArr,flagsArr,texW_,texH_,out){
-			// r = b - A p, with A = sum w(p_nb)-wsum p_c
 			for(let y=1;y<texH_-1;y++){
 				for(let x=1;x<texW_-1;x++){
 					const i=x+y*texW_;
@@ -112,17 +99,30 @@
 					divC[xc+yc*texWc]=sum/4;
 				}
 			}
-			// ghost zero
 			for(let x=0;x<texWc;x++){ divC[x]=0; divC[x+(texHc-1)*texWc]=0; }
 			for(let y=0;y<texHc;y++){ divC[y*texWc]=0; divC[texWc-1+y*texWc]=0; }
 		}
 		function prolongAndCorrect(){
 			const pressFine=grid.curBuf(refs.press);
+			const coarse=grid.curBuf(pressC);
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
-					const xc=Math.floor((x+1)/2), yc=Math.floor((y+1)/2);
-					const e=grid.curBuf(pressC)[xc+yc*texWc];
-					corrFine[x+y*texW]=e;
+					const xf=(x+0.5)/2;
+					const yf=(y+0.5)/2;
+					const xc=Math.floor(xf);
+					const yc=Math.floor(yf);
+					const fx=xf-xc, fy=yf-yc;
+					const x0=Math.max(1,Math.min(Nc,xc));
+					const x1=Math.max(1,Math.min(Nc,xc+1));
+					const y0=Math.max(1,Math.min(Nc,yc));
+					const y1=Math.max(1,Math.min(Nc,yc+1));
+					const v00=coarse[x0+y0*texWc];
+					const v10=coarse[x1+y0*texWc];
+					const v01=coarse[x0+y1*texWc];
+					const v11=coarse[x1+y1*texWc];
+					const v0=v00*(1-fx)+v10*fx;
+					const v1=v01*(1-fx)+v11*fx;
+					corrFine[x+y*texW]=v0*(1-fy)+v1*fy;
 				}
 			}
 			for(let y=1;y<texH-1;y++){
@@ -133,12 +133,10 @@
 			}
 		}
 		function vcycle(preSmooth,coarseIters,postSmooth){
-			// fine pre-smooth (operates on refs.press using refs.divsrc and refs.mass)
 			restrictMassAndFlags();
 			smooth(refs.press,refs.divsrc,refs.massCur(),refs.flags,texW,texH,preSmooth);
 			computeResidual(grid.curBuf(refs.press),refs.divsrc,refs.massCur(),refs.flags,texW,texH,resFine);
 			restrictResidual();
-			// coarse solve: zero initial error
 			for(let i=0;i<pressC.a.length;i++) pressC.a[i]=0, pressC.b[i]=0;
 			pressC.cur=0;
 			smooth(pressC,divC,massC,flagsC,texWc,texHc,coarseIters);
@@ -158,5 +156,5 @@
 		return {vcycle,residualNorm,pressC,divC,massC,flagsC,Nc,texWc,texHc};
 	}
 	Fluid.core.multigrid={create};
-	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.multigrid;
+	if(typeof module!==undefined&&module.exports)module.exports=Fluid.core.multigrid;
 })(globalThis);
