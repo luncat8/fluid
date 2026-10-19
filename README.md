@@ -24,7 +24,8 @@ count from the panel, 4 by default) · `y` buoy · `+/-` pressure iterations · 
 size · `s` dump stats · `h` help.
 
 The view modes also switch from the radio row under the canvas: click a mode, or hover
-one on a mouse/trackpad. Touch and pen-only devices stay click-only.
+one on a mouse/trackpad. Touch and pen stay click-only, including on hybrid devices.
+Shortcuts leave focused form controls alone; click the canvas to return keyboard control to the simulation.
 
 The HUD shows drift of all five conserved invariants against the source ledger
 (green < 1e-6, yellow < 1e-3, red above), min-value watchdogs, negative/overpack
@@ -41,7 +42,10 @@ accounting, and a draw stroke that guards the per-cell flux outflow limiter. Run
 the sample refresh interval), `node experiments/gpu-mock.js` for the GPU plumbing (a
 recording mock device drives real app frames and lints the WGSL param indices), and
 `node experiments/ui.js` for the view-mode row contract (a small DOM stub; it checks the
-single writer, click, keyboard, hover gating and radio state). The mock runs no shader,
+single writer, click, keyboard, hover gating and radio state). Run
+`node experiments/input.js` for canvas pointer ownership, cancellation and keyboard
+focus handling, and `node experiments/controls.js` for slider drag ownership and
+configuration synchronization. The mock runs no shader,
 so it is plumbing only, not a numeric oracle.
 Keep conformance output in `experiments/logs/<date>-conformance.log`.
 

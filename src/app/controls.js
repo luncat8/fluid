@@ -105,8 +105,11 @@
 			el.addEventListener("pointerdown",()=>{dragging.add(el);});
 			el.addEventListener("pointerup",release);
 			el.addEventListener("pointercancel",release);
+			el.addEventListener("lostpointercapture",release);
 			el.addEventListener("blur",release);
 			window.addEventListener("pointerup",release);
+			window.addEventListener("pointercancel",release);
+			window.addEventListener("blur",release);
 		}
 		function syncSlider(el,out,value){
 			if(!el||dragging.has(el))return;

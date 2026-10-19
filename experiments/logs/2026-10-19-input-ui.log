@@ -1,0 +1,100 @@
+ok   right button does not paint or capture
+ok   primary down captures and focuses the canvas
+ok   primary down sets brush and coordinates
+ok   second pointer cannot steal, move or end a stroke
+ok   owning pointer moves in simulation coordinates
+ok   flick velocity remains clamped and smoothed
+ok   captured stroke survives leaving the canvas
+ok   one paint per flush uses the latest point
+ok   a flushed request is not replayed
+ok   paint requests reuse preallocated storage
+ok   captured movement outside the canvas is clamped
+ok   release clears capture and stirring
+ok   normal release preserves the final queued paint
+ok   lost capture ends stirring and drops pending paint
+ok   pointer cancellation ends stirring and drops pending paint
+ok   window blur ends an active stroke
+ok   window blur drops unflushed paint and clears held keys
+ok   unfocused numeric shortcut routes to the mode writer
+ok   form controls and links keep their native shortcuts
+ok   editable content keeps its keys
+ok   browser shortcuts, composition and handled events are ignored
+ok   holding space toggles pause only once
+ok   holding reset does not repeatedly rebuild the scenario
+ok   plain reset still works
+ok   pressure adjustment still allows key repeat
+ok   minimum-grid shortcut does not rebuild an unchanged grid
+ok   maximum-grid shortcut does not rebuild an unchanged grid
+ok   grid shortcut still resizes within bounds
+
+all 28 checks pass
+ok   grid and readout initialize from config
+ok   sync cannot snap a held grid thumb back
+ok   input previews the grid without reallocating textures
+ok   release commits one resize
+ok   same grid change does not rebuild twice
+ok   external grid changes sync when no drag owns the thumb
+ok   slider ownership is released on pointercancel
+ok   slider ownership is released on lostpointercapture
+ok   slider ownership is released on blur
+ok   slider ownership is released on window pointerup
+ok   slider ownership is released on window pointercancel
+ok   slider ownership is released on window blur
+ok   cancelled slider gestures do not commit a resize
+ok   fixed-step slider updates the shared policy immediately
+ok   fixed-step slider feeds the solver substep policy
+ok   pressure slider applies on input
+ok   keyboard pressure changes sync back to the slider
+
+all 17 checks pass
+ok   one label per mode
+ok   every label wraps a radio
+ok   group name and values
+ok   exactly one checked at boot
+ok   label text follows the input
+ok   change sets the mode
+ok   change marks the view dirty
+ok   one checked after click
+ok   setMode on the active mode returns before dirtying
+ok   setMode ignores unknown ids
+ok   key 5 routes through setMode
+ok   keyboard checks the radio
+ok   touch/stylus pointerover does not switch
+ok   touch/stylus leaves the checked radio alone
+ok   fine-pointer hover switches
+ok   hover checks exactly one radio
+ok   hybrid touch cannot trigger hover switching
+ok   hybrid pen cannot trigger hover switching
+ok   dragging over the view row does not switch modes
+ok   hover from the label text finds the radio
+ok   pointerover outside a label does not switch
+ok   change from a foreign input is ignored
+
+all 22 checks pass
+PASS the buoy rectangle reaches the uniform block at the slots the wgsl reads  [151,373,16,64,0.5,1]
+PASS the uniform block holds every declared slot: 128 floats, 512 bytes
+PASS the 16x64 reference rectangle is exact on the reference grid  {"w":16,"h":64}
+PASS wgsl: 18 sources have balanced braces, parens and brackets
+PASS wgsl: every params.values[i] index is a declared slot in config.paramsOff  all indices resolve
+PASS wgsl: buoy_sample reads the mass texture, the velocity texture and one storage buffer
+PASS wgsl: buoy_sample is a single workgroup with a workgroup reduction
+PASS wgsl: the display overlay reads the body rectangle through the same slots
+PASS cpu sampler: sums the rectangle the gpu kernel walks, half of it blue  blue=4 count=16 uSum=32
+PASS cpu sampler: half a footprint of blue gives half submersion and neutral lift  sub=0.500 blue=0.250 aY=0
+PASS cpu sampler: the body follows the flow horizontally by drag, not by teleport  mean u=2
+PASS gpu pool has the buoy sample buffer and its readback twin  buoy=128B usage=140 read usage=9
+PASS the buoySample compute pipeline is compiled with the params struct prefix
+PASS the buoy field sample is requested every cfg.buoySampleEvery frames only  sample copies=4 over 16 frames, expected 4
+PASS the body marched every frame and ingested one readback per request  marches=16 samples=4
+PASS the readback reaches the body: half a footprint of blue reads as sub=0.5, neutral lift  sub=0.500 blue=0.250 ux=1.000 aY=0
+PASS every dispatch set a bind group, and the sample pass binds four resources  dispatches=8278 bindGroup calls=8278
+PASS the buoy sample buffer is copied back 24 bytes (6 floats) at a time  copies=4 sizes=24
+PASS the field sample runs after the sim steps and before the display pass  order=limiterPrepare>limiterApply>buoySample>toDisplay
+PASS the uniform buffer holds the live rect and substep count, not just cfg  substeps=4 rect=[17,44,4,8] show=1
+PASS paused redraw pushes params too, so toggles show without a sim step
+PASS resize reuses the compiled pipelines and swaps the pool  modules +0 N=128 flags=67600 canvas=128
+PASS no body outside the dam scenario, and the overlay switch follows  show=0
+PASS app frame loop: fixed steps when the policy is off, capped substeps when on  off ns=4/4 dt=0.00417 / on ns=8 dt=0.00208
+PASS no buffer or texture leaks across the two solvers (pools destroyed on destroy)  created buffers=28 textures=72
+ALL GPU-MOCK CHECKS PASSED
+All JavaScript syntax checks passed

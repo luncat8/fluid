@@ -50,11 +50,11 @@ class El{
 	addEventListener(type,fn){
 		(this.listeners[type]||(this.listeners[type]=[])).push(fn);
 	}
-	dispatch(type,target){
+	dispatch(type,target,extra={}){
 		for(let node=target;node;node=node.parentNode){
 			const ls=node.listeners[type];
 			if(!ls)continue;
-			const ev={type,target,preventDefault(){}};
+			const ev={type,target,pointerType:"mouse",buttons:0,preventDefault(){},...extra};
 			for(const fn of ls)fn.call(node,ev);
 		}
 	}
@@ -129,6 +129,14 @@ mq.matches=true;
 container.dispatch("pointerover",radios[3]);
 ok(cfg.viewMode===3,"fine-pointer hover switches");
 ok(radios[3].checked&&checkedCount()===1,"hover checks exactly one radio");
+
+// A touchscreen/pen on a mouse-capable laptop must still remain click-only.
+container.dispatch("pointerover",radios[4],{pointerType:"touch"});
+ok(cfg.viewMode===3,"hybrid touch cannot trigger hover switching");
+container.dispatch("pointerover",radios[4],{pointerType:"pen"});
+ok(cfg.viewMode===3,"hybrid pen cannot trigger hover switching");
+container.dispatch("pointerover",radios[4],{buttons:1});
+ok(cfg.viewMode===3,"dragging over the view row does not switch modes");
 
 // bubbles from the label text; the walk stops at the container for non-labels
 container.dispatch("pointerover",labels[6].children[1]);

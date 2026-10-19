@@ -4,7 +4,7 @@
 	Fluid.app=Fluid.app||{};
 	const GROUP="view-mode";
 	// one media query for the page: hover switching is for a real pointing device,
-	// touch and stylus-only sessions stay click-only. reading .matches in the
+	// touch and pen events stay click-only even on hybrid devices. reading .matches in the
 	// listener keeps a hybrid device correct if its primary pointer changes.
 	const fineHover=typeof root.matchMedia==="function"?root.matchMedia("(hover: hover) and (pointer: fine)"):null;
 	function createViewMenu(cfg){
@@ -44,7 +44,7 @@
 		// hover: pointerover bubbles from the radio or its label, so one listener
 		// covers the row. the walk allocates nothing per event.
 		container.addEventListener("pointerover",e=>{
-			if(!fineHover||!fineHover.matches)return;
+			if(!fineHover||!fineHover.matches||e.pointerType!=="mouse"||e.buttons!==0)return;
 			let node=e.target;
 			while(node&&node!==container){
 				if(node.tagName==="LABEL"){
