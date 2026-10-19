@@ -55,6 +55,10 @@
 			limiterApply:comp("limiterApply",PS+sh.limiterApply),
 			paintMass:comp("paintMass",PS+sh.paintMass),
 			paintTherm:comp("paintTherm",PS+sh.paintTherm),
+			mgCoarsen:comp("mgCoarsen",PS+sh.mgCoarsen),
+			mgRestrict:comp("mgRestrict",PS+sh.mgRestrict),
+			mgZero:comp("mgZero",PS+sh.mgZero),
+			mgProlong:comp("mgProlong",PS+sh.mgProlong),
 			statsA:comp("statsA",PS+sh.statsReduceA),
 			statsB:comp("statsB",PS+sh.statsReduceB),
 			buoySample:comp("buoySample",PS+sh.buoySample),
@@ -256,6 +260,60 @@
 				{binding:3,resource:fluxView}
 			]);
 		}
+		// multigrid coarse level (0.6.0 t4). the coarse RBGS reuses the fine
+		// project pipeline and shader; only the dimensions and the bound fields
+		// differ, so paramsC carries the coarse W/H and rhoVac.
+		const mgMassView=viewRes(pool.mgMass);
+		const mgFlagsView=viewRes(pool.mgFlags);
+		const mgDivView=viewRes(pool.mgDiv);
+		const mgP0=viewRes(pool.mgPress.tex[0]);
+		const mgP1=viewRes(pool.mgPress.tex[1]);
+		groups.mgZero=bg(device,"mgZero",pipes.mgZero.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.mgParams}},
+			{binding:1,resource:mgP0},
+			{binding:2,resource:mgP1}
+		]);
+		groups.projRedC=bg(device,"projRedC",pipes.projLayout,[
+			{binding:0,resource:{buffer:pool.mgParams}},
+			{binding:1,resource:mgP0},
+			{binding:2,resource:mgP1},
+			{binding:3,resource:mgDivView},
+			{binding:4,resource:mgMassView},
+			{binding:5,resource:mgFlagsView}
+		]);
+		groups.projBlackC=bg(device,"projBlackC",pipes.projLayout,[
+			{binding:0,resource:{buffer:pool.mgParams}},
+			{binding:1,resource:mgP1},
+			{binding:2,resource:mgP0},
+			{binding:3,resource:mgDivView},
+			{binding:4,resource:mgMassView},
+			{binding:5,resource:mgFlagsView}
+		]);
+		groups.mgCoarsen=[];
+		groups.mgRestrict=[];
+		for(let m=0;m<3;m++){
+			const mm=viewRes(pool.mass.tex[m]);
+			groups.mgCoarsen[m]=bg(device,"mgCoarsen"+m,pipes.mgCoarsen.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:mm},
+				{binding:2,resource:flagsView},
+				{binding:3,resource:mgMassView},
+				{binding:4,resource:mgFlagsView}
+			]);
+			groups.mgRestrict[m]=bg(device,"mgRestrict"+m,pipes.mgRestrict.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(p0)},
+				{binding:2,resource:viewRes(pool.divsrc)},
+				{binding:3,resource:mm},
+				{binding:4,resource:flagsView},
+				{binding:5,resource:mgDivView}
+			]);
+		}
+		groups.mgProlong=bg(device,"mgProlong",pipes.mgProlong.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.params}},
+			{binding:1,resource:mgP0},
+			{binding:2,resource:viewRes(p0)}
+		]);
 		groups.statsB=bg(device,"statsB",pipes.statsB.getBindGroupLayout(0),[
 			{binding:0,resource:{buffer:pool.statsPart}},
 			{binding:1,resource:{buffer:pool.stats}},
@@ -267,8 +325,9 @@
 		]);
 		return groups;
 	}
-	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn){
+	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
+		const mx=pool.mgWorkgroupX,my=pool.mgWorkgroupY;
 		const m=state.m,t=state.t;
 		let v=state.v;
 		cpass.setPipeline(pipes.forces);
@@ -282,13 +341,66 @@
 		cpass.setPipeline(pipes.rhs);
 		cpass.setBindGroup(0,groups.rhs[m][v]);
 		cpass.dispatchWorkgroups(wx,wy);
-		for(let k=0;k<iters;k++){
-			cpass.setPipeline(pipes.projRed);
-			cpass.setBindGroup(0,groups.projRed[m]);
-			cpass.dispatchWorkgroups(wx,wy);
-			cpass.setPipeline(pipes.projBlack);
-			cpass.setBindGroup(0,groups.projBlack[m]);
-			cpass.dispatchWorkgroups(wx,wy);
+		if(mgOn){
+			// pre-smooth the fine error, solve its long-wavelength part on the
+			// N/S grid, add the bilinear correction, post-smooth. repeat
+			// mgCycles times. the coarse RHS is the *sum* of the S^2 fine
+			// residuals (see the scaling note in src/core/multigrid.js); with
+			// the average the correction is S^2 times too small and the cycle
+			// loses to plain GS. coarsen once: mass does not change during the
+			// solve, and every cycle re-zeroes the coarse pressure.
+			const cycles=Math.max(1,Math.round(mgCycles||1));
+			cpass.setPipeline(pipes.mgCoarsen);
+			cpass.setBindGroup(0,groups.mgCoarsen[m]);
+			cpass.dispatchWorkgroups(mx,my);
+			for(let cy=0;cy<cycles;cy++){
+				for(let k=0;k<mgPre;k++){
+					cpass.setPipeline(pipes.projRed);
+					cpass.setBindGroup(0,groups.projRed[m]);
+					cpass.dispatchWorkgroups(wx,wy);
+					cpass.setPipeline(pipes.projBlack);
+					cpass.setBindGroup(0,groups.projBlack[m]);
+					cpass.dispatchWorkgroups(wx,wy);
+				}
+				cpass.setPipeline(pipes.mgZero);
+				cpass.setBindGroup(0,groups.mgZero);
+				cpass.dispatchWorkgroups(mx,my);
+				cpass.setPipeline(pipes.mgRestrict);
+				cpass.setBindGroup(0,groups.mgRestrict[m]);
+				cpass.dispatchWorkgroups(mx,my);
+				// round the coarse sweep count up to an even number: red writes
+				// mgPress1 and black mgPress0, and mgProlong reads mgPress0.
+				// an odd count would leave the correction one texture over.
+				const cIters=iters+(iters&1);
+				for(let k=0;k<cIters;k++){
+					cpass.setPipeline(pipes.projRed);
+					cpass.setBindGroup(0,groups.projRedC);
+					cpass.dispatchWorkgroups(mx,my);
+					cpass.setPipeline(pipes.projBlack);
+					cpass.setBindGroup(0,groups.projBlackC);
+					cpass.dispatchWorkgroups(mx,my);
+				}
+				cpass.setPipeline(pipes.mgProlong);
+				cpass.setBindGroup(0,groups.mgProlong);
+				cpass.dispatchWorkgroups(wx,wy);
+				for(let k=0;k<mgPost;k++){
+					cpass.setPipeline(pipes.projRed);
+					cpass.setBindGroup(0,groups.projRed[m]);
+					cpass.dispatchWorkgroups(wx,wy);
+					cpass.setPipeline(pipes.projBlack);
+					cpass.setBindGroup(0,groups.projBlack[m]);
+					cpass.dispatchWorkgroups(wx,wy);
+				}
+			}
+		} else {
+			for(let k=0;k<iters;k++){
+				cpass.setPipeline(pipes.projRed);
+				cpass.setBindGroup(0,groups.projRed[m]);
+				cpass.dispatchWorkgroups(wx,wy);
+				cpass.setPipeline(pipes.projBlack);
+				cpass.setBindGroup(0,groups.projBlack[m]);
+				cpass.dispatchWorkgroups(wx,wy);
+			}
 		}
 		cpass.setPipeline(pipes.applyGrad);
 		cpass.setBindGroup(0,groups.applyGrad[m][v]);

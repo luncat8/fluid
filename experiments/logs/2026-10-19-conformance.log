@@ -15,38 +15,41 @@ PASS FCT closed transport: all five invariants below 1e-6 after 10000 steps  wor
 PASS FCT closed transport: no negative cells or NaNs after 10000 steps  cntNeg=0 minDr=0.00e+0 maxM=32.000
 PASS still box: max|vel| below 1e-2 after 500 frames (stratified, hydrostatic)  maxVel=0.00e+0 maxDiv=0.00e+0
 PASS still box: zero mass/energy drift  drift_m=0.00e+0 drift_E=0.00e+0
-PASS stirred box: all five invariants conserved below 1e-6 relative over 1200 frames  worst_rel=4.17e-7
-PASS stirred box: no negative cell ever  negCells=0 minM=0.29668891429901123
+PASS stirred box: all five invariants conserved below 1e-6 relative over 1200 frames  worst_rel=7.61e-7
+PASS stirred box: no negative cell ever  negCells=0 minM=0.2987270653247833
 PASS stirred box: no NaN
-PASS stirred box: flux bound respected (|F| <= 1)  maxFlux=0.8126
-PASS stirred box: motion survived stirring (vortices decay slowly)  maxVel=7.949
+PASS stirred box: flux bound respected (|F| <= 1)  maxFlux=0.4030
+PASS stirred box: motion survived stirring (vortices decay slowly)  maxVel=7.686
 PASS dam break: no NaN, no negative cells  sumM=1829.400
-PASS dam break: max|div u| after projection below 1 (K=60 at 64^2, during splash)  maxDiv=3.16e-1
-PASS dam break: no overpacking (m <= rho_liq*1.001)  cntOver=0 maxM=0.9927
-PASS dam break: mass and energy conserved below 1e-7  drift_m=6.79e-9 drift_E=-2.09e-8
+PASS dam break: max|div u| after projection below 1 (K=60 at 64^2, during splash)  maxDiv=3.34e-1
+PASS dam break: no overpacking (m <= rho_liq*1.001)  cntOver=0 maxM=0.9870
+PASS dam break: mass and energy conserved below 1e-7  drift_m=1.04e-8 drift_E=-1.10e-8
 PASS dam break: block actually moved (maxVel > 0 at some point or dye spread)
 PASS substep policy off: fixed count regardless of velocity  ns=4 fixed=4 at maxVel=1e6
-PASS fixed count is clamped to [1, substepMax]  0 -> 1, 100 -> 8
-PASS substep policy on: cfl target followed, then capped  ns=4 at the cfl target, 8 at the cap 8
+PASS fixed count is clamped to [1, substepMax]  0 -> 1, 100 -> 24
+PASS substep policy on: cfl target followed, then capped  ns=4 at the cfl target, 24 at the cap 24
 PASS substep policy off: dam break stays finite and non-negative  sumM=1829.400 maxM=0.980 neg=0 maxDiv=7.90e-2
 PASS buoy spawn: rectangle scaled from the 16x64 reference, dam only  w=4 h=8 cy=48.0
 PASS buoy: sampled every 4 frames, marched every frame  samples=125 marches=500
-PASS buoy: sinks into the liquid and is lifted back out by the blue  dropped from cy=48, dipped to 5.0, rose back to 25.4 (vy=3.61)
-PASS buoy: ends partially submerged in the blue, inside the water band  sub=58.6% blue/cell=0.258 cy=25.4
-PASS buoy: inertia caps a frame of motion below one cell  max |dy| per frame=0.523 cells
-PASS buoy: stays inside the domain  cx=8.1 cy=25.4
+PASS buoy: sinks into the liquid and is lifted back out by the blue  dropped from cy=48, dipped to 5.0, rose back to 25.8 (vy=13.00)
+PASS buoy: ends partially submerged in the blue, inside the water band  sub=59.3% blue/cell=0.237 cy=25.8
+PASS buoy: inertia caps a frame of motion below one cell  max |dy| per frame=0.526 cells
+PASS buoy: stays inside the domain  cx=8.0 cy=25.8
 PASS buoy: field identical to the buoy-less run (no back-reaction on the solver)  max|dmass|=0
 PASS buoy model: [r,g,255] lifts harder than [r,g,123] and air sinks  a[blue=1]=225.0 a[blue=0.5]=75.0 a[empty]=-75.0
 PASS buoy model: sub fraction is mean blue over local peak, float line is the body density  sub=1.000/1.000 aY=75.00
 PASS buoy model: half a footprint of blue is neutral buoyancy  aY=0.00e+0 sub=0.500
 PASS buoy model: one frame of full lift moves it by well under a cell  dy=5.38e-2 vy=3.23
 PASS wall integrity: no red dye crossed a one cell wall  dyeRight=0.000e+0 dyeLeft=49.411
-PASS wall integrity: closed box conserved below 1e-6  drift_m=-2.07e-9 drift_dr=1.22e-7
-PASS emitter accounting: all conserved channels drift below 2e-7 with 50 injected patches  worst_rel=1.78e-7 m=7.39e-9 dr=1.03e-7 dg=4.45e-8 db=1.78e-7 E=-1.63e-8
-PASS draw stroke: survived paint+stir without NaN  sumM=5738.214
-PASS draw stroke: no negative conserved cells (FCT bounds, no clipping)  negCells=0 minM=2.952e-1
-PASS draw stroke: no runaway overpack  maxM=5.862
-PASS draw stroke: invariants conserved below 1e-6 with injected dye  drift_m=-2.19e-8 drift_dr=3.69e-8
-PASS draw stroke: limiter exercised (raw k_out exceeded 1)  rawOutMax=1.445
-PASS draw stroke: stored flux k_out <= 1 per cell (monotone transport)  storedOutMax=1.000
+PASS wall integrity: closed box conserved below 1e-6  drift_m=-1.17e-8 drift_dr=9.31e-8
+PASS emitter accounting: all conserved channels drift below 5e-7 with 50 injected patches  worst_rel=3.63e-7 m=-9.43e-9 dr=6.46e-9 dg=8.73e-8 db=3.63e-7 E=2.40e-8
+PASS draw stroke: survived paint+stir without NaN  sumM=5738.215
+PASS draw stroke: no negative conserved cells (FCT bounds, no clipping)  negCells=0 minM=2.823e-1
+PASS draw stroke: no runaway overpack  maxM=5.667
+PASS draw stroke: invariants conserved below 1e-6 with injected dye  drift_m=1.13e-8 drift_dr=1.02e-7
+PASS draw stroke: with the shipped cap no cell exceeds the outflow bound  rawOutMax=0.837
+PASS draw stroke: stored flux k_out <= 1 per cell (monotone transport)  storedOutMax=0.837
+PASS limiter: a forced 4-cell stir exceeds the outflow bound (limiter exercised)  rawOutMax=2.000
+PASS limiter: stored flux k_out <= 1 per cell (monotone transport)  storedOutMax=1.000
+PASS limiter: the forced stir stays finite and non-negative  negCells=0
 ALL CONFORMANCE TESTS PASSED

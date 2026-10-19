@@ -12,7 +12,7 @@
 		cSol:48,cLiq:49,cGas:50,Lf:51,Lv:52,TMelt:53,TBoil:54,rhoLiq:55,rhoGas0:56,rhoVac:57,mEps:58,
 		viewMode:80,TMin:81,TMax:82,PMin:83,PMax:84,VMax:85,overlay:86,colorGain:87,
 		buoyX0:88,buoyY0:89,buoyW:90,buoyH:91,buoySub:92,buoyShow:93,
-		emitters:96
+		mgS:94,emitters:96
 	};
 	const defaults={
 		N:512,
@@ -78,20 +78,35 @@
 		colorGain:1.2,
 		statsEvery:30,
 		cflTarget:0.8,
-		substepMax:16,
+		substepMax:24,
 		// the auto-cfl substep policy is optional. with it off the frame still runs
 		// substepsFixed steps, not one: a single 1/60 s step at 512^2 lets the cfl
 		// number reach 20+, the outflow limiter clamps most of the field and the
 		// liquid reads as smeared and sticky. 4 is the smallest count that keeps the
 		// frame budget playable while giving the solve a usable dt.
-		// 16 is the cap: at N=512, beta ~0.002-0.003, maxVel ~180 would need 8
-		// substeps for cfl 0.8; bursts to 300 need 12. 8 was capping every fast
-		// convection frame and leaving CFL >1.3 (measured blobs 1.29, convection
-		// 1.33/1.41 at 6-7/8).
-		substepsAuto:false,
+		// 24 is the cap. the cfl metric that matters is the *total* outflow of a
+		// cell, which for a divergence-free velocity field is at most 2x the
+		// largest face flux: the donor-cell update stays positive only while
+		// sum(outflow) <= 1. substepCount now targets that bound, so at N=512 a
+		// 200 cells/s burst picks 8-9 substeps and a 350 cells/s dam front 15.
+		// the old per-face target (half the bound) chosen 4-5 and left the
+		// positivity limiter clipping every fast frame - which is mass
+		// compression, not just dissipation (measured dam N=256: maxM 3.9).
+		substepsAuto:true,
 		substepsFixed:4,
 		vMax:8,
-		useMultigrid:false,
+		// multigrid: two-level V-cycle for the pressure solve (0.6.0 t4).
+		// pre/post fine red-black sweeps, coarse level at N/4 solved with
+		// pressureIters sweeps, two V-cycles. measured N=128 dam (auto policy,
+		// 60 frames): plain K=60 maxDiv 20.1 / over 741 / 23.7 s vs S=4 c=2
+		// maxDiv 0.05 / over 0 / 19.4 s. S=2 needed three cycles to reach 0.19
+		// and cost 35 s: a coarse level that is too fine also has to solve the
+		// long wavelengths it was built to remove. see src/core/multigrid.js.
+		useMultigrid:true,
+		mgPre:4,
+		mgPost:8,
+		mgCoarsen:4,
+		mgCycles:2,
 		buoyEnabled:1,
 		buoyRefW:16,
 		buoyRefH:64,
@@ -144,10 +159,26 @@
 			if(n>cfg.substepMax)n=cfg.substepMax;
 			return n;
 		}
-		let ns=Math.ceil(maxVel*cfg.frameDt/cfg.cflTarget);
+		// target the total-outflow bound, not the per-face one: donor-cell is
+		// monotone only while the four outgoing fluxes sum to <= 1, and for an
+		// incompressible field that sum is at most 2*maxVel*dt (two faces at the
+		// peak). targeting maxVel*dt = cflTarget (the old rule) leaves the
+		// positivity limiter clipping at every peak, and clipping is a local
+		// mass sink: measured dam N=256 maxM 3.9 / over 4200 cells.
+		let ns=Math.ceil(2*maxVel*cfg.frameDt/cfg.cflTarget);
 		if(!(ns>=1))ns=1;
 		if(ns>cfg.substepMax)ns=cfg.substepMax;
 		return ns;
+	}
+	// velocity cap that the step budget can actually transport. vMax is a
+	// cells-per-frame limit, but at ns substeps a face may only move
+	// 0.45 cells/substep or two outgoing faces exceed the donor-cell bound and
+	// the flux limiter starts compressing. in auto the cap rises with ns, so
+	// the physical speed is preserved once enough substeps are chosen; in a
+	// fixed low count it trades speed for conservation (no runaway maxM).
+	function velocityCap(cfg,ns){
+		const cap=Math.min(cfg.vMax,0.45*Math.max(1,ns));
+		return cap/cfg.frameDt;
 	}
 	// per-scenario presentation/physics setup, applied by both solvers on reset
 	// so cpu and gpu cannot drift. convection gets a heater band that scales
@@ -255,7 +286,8 @@
 		a[paramsOff.buoyH]=cfg.buoyH||0;
 		a[paramsOff.buoySub]=cfg.buoySub||0;
 		a[paramsOff.buoyShow]=cfg.buoyShow||0;
+		a[paramsOff.mgS]=cfg.mgCoarsen||2;
 	}
-	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,substepCount,prepareScenario,recommendedIters,makeParamsArray,writeParams};
+	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,substepCount,velocityCap,prepareScenario,recommendedIters,makeParamsArray,writeParams};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.config;
 })(globalThis);

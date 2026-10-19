@@ -370,3 +370,31 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   not a random walk: mass drift grew ~linearly at 2e-9/step over 5000 steps
   (1.1e-5) while the ledger-accounted E stayed at 3e-7. do not chase this as
   a conservation bug without first running the conduction-off control (4e-8).
+
+## 2026-10-19 pressure solve / multigrid (0.6.0 t4)
+
+- skill: the donor-cell CFL bound is the *sum* of a cell's outgoing face
+  fluxes, which for a divergence-free field is at most 2*maxVel*dt. Target
+  `2*maxVel*dt <= cflTarget` for substeps, not `maxVel*dt`: the old per-face
+  target picked half the substeps and left the positivity limiter clipping at
+  every peak, which is a local mass sink (dam N=256 maxM 3.9).
+- skill: two-level multigrid wins when the coarse level can solve the modes it
+  owns. At N=512 a coarse N/2 grid is still too fine for 60 GS sweeps and S=2
+  needs 3 cycles to barely beat S=4/2; S=4 (Nc=128) with 2 cycles had 5.9x
+  lower residual than plain K=60 at 0.53x the wall time and 300x lower maxDiv
+  end-to-end at N=128. Scale the coarse stride with N, not down to the finest
+  possible level.
+- pitfall: `mgZero` is bound to the *coarse* params, where `values[2]` is
+  already `Nc+2`. Dividing by the stride a second time zeroes only the
+  top-left quarter and leaves stale corrections elsewhere. Any kernel that
+  shares the params layout with a different grid must document which size it
+  sees.
+- pitfall: a fixed coarsening stride compiled into the shader (2x2 loops,
+  `(x-0.5)*0.5`) silently drops 3/4 of the domain when `mgCoarsen` changes.
+  Pass S in a params slot and use it in the loop bounds, the coarse extent and
+  the prolongation mapping; allocate from the same value.
+- skill: the velocity cap has to follow the substep budget, otherwise a high
+  fixed cap lets the scene move faster than the transported cells
+  (`velocityCap = min(vMax, 0.45*ns)/frameDt`). With auto substeps the cap only
+  grows after the count is chosen, so it bounds growth per frame instead of
+  fighting the sim.

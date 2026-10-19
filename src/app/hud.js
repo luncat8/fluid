@@ -45,12 +45,17 @@
 			if(!perf)return "performance: unavailable";
 			return "sim/s="+perf.simHz.toFixed(1)+" render/s="+perf.renderHz.toFixed(1)+
 				" rAF/s="+perf.rafHz.toFixed(1)+" speed="+perf.simSpeed.toFixed(2)+"x"+
-				" CPU encode="+perf.cpuMs.toFixed(2)+"ms queue="+perf.queueMs.toFixed(2)+"ms";
+				" CPU encode="+perf.cpuMs.toFixed(2)+"ms queue="+perf.queueMs.toFixed(2)+"ms"+
+				" vCap="+Math.round(cfg.vClamp);
 		}
 		function cflBound(s){
 			return 2*s.motion.maxVel*cfg.dt;
 		}
 		function recommendedK(){
+			// with multigrid, K is the coarse sweep count, not the number of fine
+			// sweeps; the plain-grid rule of thumb (0.18N+20) does not apply and
+			// the "try more K" nudge would just spend time on a cheap level.
+			if(cfg.useMultigrid) return 0;
 			const want=Fluid.core.config.recommendedIters(cfg.N);
 			if(cfg.pressureIters<want) return want;
 			return 0;
@@ -64,10 +69,12 @@
 			const modOver=s.maxM>1.05&&s.maxM<=1.5;
 			const severe=s.maxM>1.5||s.maxM>2;
 			const capped=cfg.substepMax && s.motion && cfl>1 && substepsShown>=cfg.substepMax;
+			const velCapped=cfg.vClamp>0 && s.motion.maxVel>=0.98*cfg.vClamp;
 			let line="CFL bound="+fmt(cfl)+(cfl>1?" [transport limiting likely · try more substeps"+(capped?" (capped at "+cfg.substepMax+")":"") +"]":"");
+			if(velCapped) line+=" | velocity capped at "+Math.round(cfg.vClamp)+" (substep budget)";
 			if(hasNeg) line+=" | NEGATIVE VALUES: inspect minima (threshold 1e-9)";
 			if(s.diag && s.diag.residual) line+=" | residual "+fmt(s.diag.residual);
-			if(s.motion.maxDiv>1) line+=" | high divergence "+fmt(s.motion.maxDiv)+" (K="+cfg.pressureIters+(recK?" → try "+recK:"")+")";
+			if(s.motion.maxDiv>1) line+=" | high divergence "+fmt(s.motion.maxDiv)+" (K="+cfg.pressureIters+(cfg.useMultigrid?" coarse":"")+(recK?" → try "+recK:"")+")";
 			else if(s.motion.maxDiv>0.5) line+=" | divergence "+fmt(s.motion.maxDiv);
 			if(severe) line+=" | SEVERE COMPRESSION: conservation is not stability";
 			else if(modOver) line+=" | compression maxM="+fmt(s.maxM);
@@ -88,7 +95,9 @@
 			}
 			lines.push("min m="+s.mins.m+" dr="+s.mins.dr+" dg="+s.mins.dg+" db="+s.mins.db+" E="+s.mins.E);
 			lines.push("maxM="+s.maxM+" neg="+s.cntNeg+" over="+s.cntOver+" maxDiv="+s.motion.maxDiv+" p["+s.motion.pMin+".."+s.motion.pMax+"] maxVel="+s.motion.maxVel);
-			lines.push("statsFrame#"+s.statsFrame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+
+			const solverTag=cfg.useMultigrid?"mgS"+cfg.mgCoarsen+"x"+cfg.mgCycles+"(pre"+cfg.mgPre+"/post"+cfg.mgPost+")":
+				"rb";
+			lines.push("statsFrame#"+s.statsFrame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+" "+solverTag+
 				" ns="+substepLabel()+" scenario="+cfg.scenario+" FCT="+cfg.fctLimiter+" gravity="+cfg.gravityY);
 			lines.push(performanceLine());
 			lines.push(healthLine(s));
@@ -130,7 +139,8 @@
 			const s=solver.getStats();
 			if(perfEl){
 				const txt=performanceLine()+"\nN="+cfg.N+"  dt="+cfg.dt.toFixed(4)+
-					"  K="+cfg.pressureIters+"  ns="+substepLabel()+
+					"  K="+cfg.pressureIters+(cfg.useMultigrid?" mg"+cfg.mgCoarsen+"x"+cfg.mgCycles:"")+
+					"  ns="+substepLabel()+
 					"  maxVel="+fmt(s.motion.maxVel)+"  frame#"+s.frame+" stats#"+s.statsFrame+
 					"\n"+healthLine(s);
 				if(txt!==lastPerf){

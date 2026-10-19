@@ -7,7 +7,7 @@
 		const passes=Fluid.gpu.passes;
 		const stats=Fluid.core.stats;
 		const coreSolver=Fluid.core.solver;
-		let pool=fields.createPool(device,cfg.N);
+		let pool=fields.createPool(device,cfg.N,cfg.mgCoarsen);
 		const pipes=passes.createPipelines(device,format);
 		let groups=passes.makeBindGroups(device,pipes,pool);
 		const paramsArray=Fluid.core.config.makeParamsArray();
@@ -41,7 +41,22 @@
 		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,thermal:null,ledger:null};
 		function writeParams(){
 			Fluid.core.config.writeParams(paramsArray,cfg);
+			// the pool clamps the coarsening factor on tiny grids (while
+			// floor(N/S) < 4); the kernels must use the S the textures were
+			// actually built with, not cfg.mgCoarsen.
+			paramsArray[Fluid.core.config.paramsOff.mgS]=pool.mgS;
 			device.queue.writeBuffer(pool.params,0,paramsArray);
+		}
+		// the coarse project pipeline reuses the fine shader, so it needs the
+		// coarse dimensions (and rhoVac) at the same param slots. the values are
+		// constants for a pool, written once per reset/resize.
+		const mgParamsArray=Fluid.core.config.makeParamsArray();
+		function writeMgParams(){
+			Fluid.core.config.writeParams(mgParamsArray,cfg);
+			mgParamsArray[Fluid.core.config.paramsOff.texW]=pool.mgTexW;
+			mgParamsArray[Fluid.core.config.paramsOff.texH]=pool.mgTexH;
+			mgParamsArray[Fluid.core.config.paramsOff.mgS]=pool.mgS;
+			device.queue.writeBuffer(pool.mgParams,0,mgParamsArray);
 		}
 		function reset(){
 			statsGeneration++;
@@ -83,6 +98,7 @@
 				thermal:{TMin:cfg.TAmb,TMax:cfg.TAmb,TMean:cfg.TAmb,kinetic:0,heatIn:0,heatOut:0}
 			};
 			writeParams();
+			writeMgParams();
 		}
 		// dye brush: the gpu adds exactly these floats and the ledger sums the
 		// same floats, so injection accounting is exact by construction
@@ -132,7 +148,8 @@
 			const encoder=device.createCommandEncoder({label:"frame"});
 			const cpass=encoder.beginComputePass({label:"sim"});
 			for(let s=0;s<substeps;s++){
-				passes.encodeStep(cpass,pool,pipes,groups,state,cfg.pressureIters,cfg.fctLimiter>0);
+				passes.encodeStep(cpass,pool,pipes,groups,state,cfg.pressureIters,cfg.fctLimiter>0,
+					!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1);
 			}
 			if(needStats){
 				passes.encodeStats(cpass,pool,pipes,groups,state);
@@ -276,7 +293,7 @@
 			cfg.N=newN;
 			cfg.texW=newN+2;
 			cfg.texH=newN+2;
-			pool=fields.createPool(device,newN);
+			pool=fields.createPool(device,newN,cfg.mgCoarsen);
 			// pipelines are size independent (dispatch sizes come from params), so only
 			// the pool and the bind groups are rebuilt: recompiling every wgsl module
 			// here stalled the page on each grid change

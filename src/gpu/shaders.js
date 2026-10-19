@@ -1123,6 +1123,163 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 	return textureSample(displayTex, samp, uv2);
 }
 `;
+	// ---------- multigrid coarse level (0.6.0 t4) ----------
+	// one coarse level at N/2 for the long-wavelength pressure error. the fine
+	// red-black GS cannot damp it (amplification 1-O(1/N^2) per sweep), so 60
+	// sweeps at N=512 leave maxDiv 40-110 and a warm-started null-space drift
+	// that compresses mass (measured dam N=256: maxM 3.9). the coarse solve is
+	// cheap: Nc^2 is 1/4 of the fine grid.
+	// scaling: the fine operator is sum_faces w(p_n-p). a coarse cell covers 2x2
+	// fine cells, so the raw coarse stencil is 4x the physical operator; feeding
+	// it the *sum* of the 4 fine residuals (not the average) compensates. with
+	// the average the correction is 4x too small and the cycle loses to plain GS.
+	shaders.mgCoarsen=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var massTex: texture_2d<f32>;
+@group(0) @binding(2) var flagsTex: texture_2d<u32>;
+@group(0) @binding(3) var massCDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(4) var flagsCDst: texture_storage_2d<rgba8uint,write>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	// stride S comes from params (slot 94); the coarse grid is ceil(N/S)
+	// in each direction. a fixed 2 here silently dropped most of the
+	// domain as soon as mgCoarsen moved to 4.
+	let S = max(2, i32(params.values[94]));
+	let nc = (w - 2) / S;
+	let xc = i32(gid.x);
+	let yc = i32(gid.y);
+	if (xc < 1 || xc > nc || yc < 1 || yc > nc) { return; }
+	var sum = 0.0;
+	var wall = 0u;
+	for (var oy = 0; oy < S; oy++) {
+		for (var ox = 0; ox < S; ox++) {
+			let xf = S * (xc - 1) + 1 + ox;
+			let yf = S * (yc - 1) + 1 + oy;
+			sum = sum + textureLoad(massTex, vec2<i32>(xf, yf), 0).a;
+			if (textureLoad(flagsTex, vec2<i32>(xf, yf), 0).r > 0u) { wall = 255u; }
+		}
+	}
+	let inv = 1.0 / f32(S * S);
+	textureStore(massCDst, vec2<i32>(xc, yc), vec4<f32>(0.0, 0.0, 0.0, sum * inv));
+	textureStore(flagsCDst, vec2<i32>(xc, yc), vec4<u32>(wall, 0u, 0u, 0u));
+}
+`;
+	shaders.mgRestrict=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var pressFine: texture_storage_2d<r32float,read>;
+@group(0) @binding(2) var divsrcTex: texture_2d<f32>;
+@group(0) @binding(3) var massTex: texture_2d<f32>;
+@group(0) @binding(4) var flagsTex: texture_2d<u32>;
+@group(0) @binding(5) var divCDst: texture_storage_2d<r32float,write>;
+
+fn isWallR(x: i32, y: i32, w: i32, h: i32) -> bool {
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
+	return textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;
+}
+fn faceWR(x: i32, y: i32, nx: i32, ny: i32, w: i32, h: i32, rhoVac: f32) -> f32 {
+	if (nx < 1 || nx > w - 2 || ny < 1 || ny > h - 2) { return 0.0; }
+	if (textureLoad(flagsTex, vec2<i32>(nx, ny), 0).r > 0u) { return 0.0; }
+	let ra = max(textureLoad(massTex, vec2<i32>(x, y), 0).a, rhoVac);
+	let rb = max(textureLoad(massTex, vec2<i32>(nx, ny), 0).a, rhoVac);
+	return 1.0 / (2.0 * ra * rb / (ra + rb));
+}
+fn residualAt(x: i32, y: i32, w: i32, h: i32, rhoVac: f32) -> f32 {
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return 0.0; }
+	if (textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u) { return 0.0; }
+	let p = textureLoad(pressFine, vec2<i32>(x, y)).r;
+	let b = textureLoad(divsrcTex, vec2<i32>(x, y), 0).r;
+	var wsum = 0.0;
+	var sum = 0.0;
+	var fw = faceWR(x, y, x - 1, y, w, h, rhoVac);
+	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * textureLoad(pressFine, vec2<i32>(x - 1, y)).r; }
+	fw = faceWR(x, y, x + 1, y, w, h, rhoVac);
+	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * textureLoad(pressFine, vec2<i32>(x + 1, y)).r; }
+	fw = faceWR(x, y, x, y - 1, w, h, rhoVac);
+	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * textureLoad(pressFine, vec2<i32>(x, y - 1)).r; }
+	fw = faceWR(x, y, x, y + 1, w, h, rhoVac);
+	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * textureLoad(pressFine, vec2<i32>(x, y + 1)).r; }
+	return b - (sum - wsum * p);
+}
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let rhoVac = params.values[57];
+	let S = max(2, i32(params.values[94]));
+	let nc = (w - 2) / S;
+	let xc = i32(gid.x);
+	let yc = i32(gid.y);
+	if (xc < 1 || xc > nc || yc < 1 || yc > nc) { return; }
+	var sum = 0.0;
+	for (var oy = 0; oy < S; oy++) {
+		for (var ox = 0; ox < S; ox++) {
+			sum = sum + residualAt(S * (xc - 1) + 1 + ox, S * (yc - 1) + 1 + oy, w, h, rhoVac);
+		}
+	}
+	textureStore(divCDst, vec2<i32>(xc, yc), vec4<f32>(sum, 0.0, 0.0, 0.0));
+}
+`;
+	shaders.mgZero=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var pressC0: texture_storage_2d<r32float,write>;
+@group(0) @binding(2) var pressC1: texture_storage_2d<r32float,write>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	// bound to *coarse* params: values[2] is already mgNc+2, so the usable
+	// extent is w-2. dividing by 2 again zeroed only the top-left quarter
+	// and left stale corrections in the rest of the coarse grid.
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return; }
+	textureStore(pressC0, vec2<i32>(x, y), vec4<f32>(0.0, 0.0, 0.0, 0.0));
+	textureStore(pressC1, vec2<i32>(x, y), vec4<f32>(0.0, 0.0, 0.0, 0.0));
+}
+`;
+	// read_write r32float storage is core WebGPU (the only formats with
+	// read-write support), so the correction can be added in place without
+	// flipping the fine pressure parity that applyGrad's bind groups assume.
+	shaders.mgProlong=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var pressC: texture_2d<f32>;
+@group(0) @binding(2) var pressFine: texture_storage_2d<r32float,read_write>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let S = max(2, i32(params.values[94]));
+	let nc = (w - 2) / S;
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return; }
+	let invS = 1.0 / f32(S);
+	let xf = (f32(x) - 0.5) * invS + 0.5;
+	let yf = (f32(y) - 0.5) * invS + 0.5;
+	let xc = i32(floor(xf));
+	let yc = i32(floor(yf));
+	let fx = xf - f32(xc);
+	let fy = yf - f32(yc);
+	let x0 = clamp(xc, 1, nc);
+	let x1 = clamp(xc + 1, 1, nc);
+	let y0 = clamp(yc, 1, nc);
+	let y1 = clamp(yc + 1, 1, nc);
+	let v00 = textureLoad(pressC, vec2<i32>(x0, y0), 0).r;
+	let v10 = textureLoad(pressC, vec2<i32>(x1, y0), 0).r;
+	let v01 = textureLoad(pressC, vec2<i32>(x0, y1), 0).r;
+	let v11 = textureLoad(pressC, vec2<i32>(x1, y1), 0).r;
+	let v0 = v00 + (v10 - v00) * fx;
+	let v1 = v01 + (v11 - v01) * fx;
+	let corr = v0 + (v1 - v0) * fy;
+	let p = textureLoad(pressFine, vec2<i32>(x, y)).r;
+	textureStore(pressFine, vec2<i32>(x, y), vec4<f32>(p + corr, 0.0, 0.0, 0.0));
+}
+`;
 	Fluid.gpu.shaders=shaders;
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.shaders;
 })(globalThis);

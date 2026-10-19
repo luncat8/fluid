@@ -24,6 +24,15 @@
 			return;
 		}
 		cfg=Object.assign({},Fluid.core.config.defaults);
+		// A/B overrides for the browser (no rebuild): ?mg=0 falls back to the
+		// plain red-black solve, ?s=2/8 picks another coarsening factor and
+		// ?cycles=1/3 another cycle count. the HUD prints the active solver.
+		const q=new URLSearchParams(typeof location!=="undefined"&&location.search?location.search:"");
+		if(q.has("mg"))cfg.useMultigrid=q.get("mg")!=="0";
+		if(q.has("s"))cfg.mgCoarsen=Math.max(2,Math.round(+q.get("s")||4));
+		if(q.has("cycles"))cfg.mgCycles=Math.max(1,Math.round(+q.get("cycles")||2));
+		if(q.has("pre"))cfg.mgPre=Math.max(1,Math.round(+q.get("pre")||4));
+		if(q.has("post"))cfg.mgPost=Math.max(1,Math.round(+q.get("post")||8));
 		cfg.texW=cfg.N+2;cfg.texH=cfg.N+2;
 		cfg._paused=false;cfg._stepOnce=false;cfg._dirty=true;
 		if(status)status.textContent="Running";
@@ -71,7 +80,9 @@
 				const ns=Fluid.core.config.substepCount(cfg,maxVel);
 				const dts=frameDt/ns;
 				if(hud)hud.setSubsteps(ns);
-				cfg.vClamp=cfg.vMax/frameDt;
+				// speed the chosen substep count can transport without the
+				// positivity limiter clipping outflow (config.velocityCap)
+				cfg.vClamp=Fluid.core.config.velocityCap(cfg,ns);
 				if(inputState)inputState.flushPaint();
 				const needStats=st.frame%cfg.statsEvery===0;
 				solver.frame(dts,ns,needStats);

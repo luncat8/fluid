@@ -318,9 +318,12 @@
 		}
 		function project(iters){
 			if(mg && cfg.useMultigrid){
-				// one V-cycle approximates iters fine RB steps: pre 2, coarse iters, post 2.
-				// The coarse grid is 4x cheaper, so wall time is dominated by fine smooths.
-				mg.vcycle(2,iters,2);
+				// one V-cycle: pre/post fine RB smooths plus a coarse solve of the
+				// long-wavelength residual (sum restriction, see multigrid.js).
+				// iters stays meaningful as the coarse sweep count (Nc^2 is 1/4 of
+				// the fine grid at N=512/S=2, so even 60 coarse sweeps are cheap).
+				const cycles=Math.max(1,Math.round(cfg.mgCycles||1));
+				for(let c=0;c<cycles;c++)mg.vcycle(cfg.mgPre||4,iters,cfg.mgPost||8);
 				return;
 			}
 			const ms=grid.curBuf(mass);

@@ -14,7 +14,7 @@
 			usage:texUsage()
 		});
 	}
-	function createPool(device,N){
+	function createPool(device,N,mgCoarsen){
 		const texW=N+2;
 		const texH=N+2;
 		const pool={
@@ -29,6 +29,16 @@
 			limiterB:null,
 			divsrc:null,
 			sfield:null,
+			mgMass:null,
+			mgFlags:null,
+			mgDiv:null,
+			mgPress:{tex:[],cur:0},
+			mgParams:null,
+			mgNc:0,mgS:0,
+			mgTexW:0,
+			mgTexH:0,
+			mgWorkgroupX:0,
+			mgWorkgroupY:0,
 			patchMass:null,
 			patchE:null,
 			display:null,
@@ -56,6 +66,24 @@
 		pool.limiterA=makeTexture(device,"limiterA","rgba32float",texW,texH);
 		pool.limiterB=makeTexture(device,"limiterB","rg32float",texW,texH);
 		pool.divsrc=makeTexture(device,"divsrc","r32float",texW,texH);
+		// multigrid coarse level: one level at N/2. every field the coarse RBGS
+		// and the residual restriction need, at (N/S+2)^2.
+		let mgS=Math.max(2,Math.round(mgCoarsen||2));
+		while(mgS>2&&Math.floor(N/mgS)<4)mgS=Math.floor(mgS/2);
+		const mgNc=Math.floor(N/mgS);
+		const mgTexW=mgNc+2;
+		const mgTexH=mgNc+2;
+		pool.mgNc=mgNc;pool.mgTexW=mgTexW;pool.mgTexH=mgTexH;pool.mgS=mgS;
+		pool.mgWorkgroupX=Math.ceil(mgTexW/8);pool.mgWorkgroupY=Math.ceil(mgTexH/8);
+		// mass must stay rgba32float: projectStep reads .a from it, and an
+		// r32float texture would return 1.0 in .a (the extension channels are
+		// (0,0,0,1)), silently making every coarse face weight 1/rhoVac.
+		pool.mgMass=makeTexture(device,"mgMass","rgba32float",mgTexW,mgTexH);
+		pool.mgFlags=makeTexture(device,"mgFlags","rgba8uint",mgTexW,mgTexH);
+		pool.mgDiv=makeTexture(device,"mgDiv","r32float",mgTexW,mgTexH);
+		pool.mgPress.tex[0]=makeTexture(device,"mgPress0","r32float",mgTexW,mgTexH);
+		pool.mgPress.tex[1]=makeTexture(device,"mgPress1","r32float",mgTexW,mgTexH);
+		pool.mgParams=device.createBuffer({label:"mgParams",size:512,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
 		pool.sfield=makeTexture(device,"sfield","r32float",texW,texH);
 		pool.patchMass=makeTexture(device,"patchMass","rgba32float",PATCH,PATCH);
 		pool.patchE=makeTexture(device,"patchE","r32float",PATCH,PATCH);
@@ -83,9 +111,10 @@
 	function destroyPool(pool){
 		const tex=[pool.vel.tex[0],pool.vel.tex[1],pool.mass.tex[0],pool.mass.tex[1],pool.mass.tex[2],
 			pool.therm.tex[0],pool.therm.tex[1],pool.press.tex[0],pool.press.tex[1],
-			pool.flags,pool.flux,pool.limiterA,pool.limiterB,pool.divsrc,pool.sfield,pool.patchMass,pool.patchE,pool.display];
+			pool.flags,pool.flux,pool.limiterA,pool.limiterB,pool.divsrc,pool.sfield,pool.patchMass,pool.patchE,pool.display,
+			pool.mgMass,pool.mgFlags,pool.mgDiv,pool.mgPress.tex[0],pool.mgPress.tex[1]];
 		for(const t of tex){if(t&&t.destroy)try{t.destroy();}catch(e){}}
-		for(const b of [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.dims]){
+		for(const b of [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.dims,pool.mgParams]){
 			if(b&&b.destroy)try{b.destroy();}catch(e){}
 		}
 	}

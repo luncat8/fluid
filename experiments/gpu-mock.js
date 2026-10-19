@@ -102,7 +102,7 @@ function newSink() {
 function appFrame(cfg, solver, maxVel) {
 	const frameDt = cfg.frameDt;
 	const ns = Fluid.core.config.substepCount(cfg, maxVel);
-	cfg.vClamp = cfg.vMax / frameDt;
+	cfg.vClamp = Fluid.core.config.velocityCap(cfg, ns);
 	const st = solver.getStats();
 	solver.frame(frameDt / ns, ns, st.frame % cfg.statsEvery === 0);
 	return ns;
@@ -187,6 +187,29 @@ async function testPlumbing() {
 		solver.flagsMirror.length === 130 * 130 * 4 && canvas.width === 128 && sink.pipeOrder.length > orderBefore,
 		"modules +" + (sink.modules.length - modulesBefore) + " N=" + solver.pool.N +
 		" flags=" + solver.flagsMirror.length + " canvas=" + canvas.width);
+
+	// multigrid cadence (0.6.0 t4): the coarse level must actually be encoded.
+	// one mgCoarsen per substep (mass is fixed during the solve), and the
+	// pre/restrict/coarse/prolong/post block repeated cfg.mgCycles times.
+	// this is the only runtime proof the mg branch is wired, since the mock
+	// cannot execute the shaders.
+	{
+		sink.pipeOrder.length = 0;
+		solver.frame(cfg.frameDt / 2, 2, false);
+		const order = sink.pipeOrder;
+		const count = (name) => order.filter(p => p === name).length;
+		check("multigrid: coarse passes are encoded and ordered in the step",
+			count("mgCoarsen") === 2 && count("mgRestrict") === 2 * cfg.mgCycles &&
+			count("mgProlong") === 2 * cfg.mgCycles &&
+			order.indexOf("mgCoarsen") < order.indexOf("mgRestrict") &&
+			order.indexOf("mgRestrict") < order.lastIndexOf("mgProlong"),
+			"cycles=" + cfg.mgCycles + " coarsen=" + count("mgCoarsen") +
+			" restrict=" + count("mgRestrict") + " prolong=" + count("mgProlong"));
+		check("multigrid: the coarse solve uses its own bound params and press textures",
+			solver.pool.mgS === cfg.mgCoarsen && solver.pool.mgNc === Math.floor(solver.pool.N / cfg.mgCoarsen) &&
+			new Float32Array(solver.pool.mgParams._buf)[2] === solver.pool.mgTexW,
+			"S=" + solver.pool.mgS + " Nc=" + solver.pool.mgNc + " texW=" + solver.pool.mgTexW);
+	}
 
 	// the body must go away with the scenario
 	cfg.scenario = "blobs";
