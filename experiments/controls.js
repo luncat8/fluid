@@ -15,7 +15,7 @@ class El{
 	fire(type){for(const fn of this.listeners[type]||[])fn({type,target:this});}
 }
 const ids=["controls-panel","ctrl-grid","ctrl-grid-val","ctrl-iters","ctrl-iters-val",
-	"ctrl-substeps-fixed","ctrl-substeps-fixed-val"];
+	"ctrl-substeps-fixed","ctrl-substeps-fixed-val","ctrl-fct","ctrl-gravity","ctrl-buoy"];
 const els=Object.fromEntries(ids.map(id=>[id,new El()]));
 global.document={getElementById:id=>els[id]||null,querySelectorAll:()=>[]};
 global.window=new El();
@@ -66,4 +66,20 @@ check(cfg.pressureIters===75,"pressure slider applies on input");
 cfg.pressureIters=80;
 sync();
 check(iters.value===80&&els["ctrl-iters-val"].textContent===80,"keyboard pressure changes sync back to the slider");
+
+
+const buoy=els["ctrl-buoy"];
+check(buoy.disabled,"dam float is disabled outside its scenario");
+cfg.scenario="dam";sync();
+check(!buoy.disabled,"dam scenario enables the float control");
+const fct=els["ctrl-fct"];
+fct.checked=false;fct.fire("change");
+check(cfg.fctLimiter===0,"FCT checkbox switches the actual solver configuration off");
+fct.checked=true;fct.fire("change");
+check(cfg.fctLimiter===1,"FCT checkbox switches the actual solver configuration on");
+const gravity=els["ctrl-gravity"];
+gravity.checked=false;gravity.fire("change");
+check(cfg.gravityY===0,"gravity checkbox removes applied gravity");
+gravity.checked=true;gravity.fire("change");
+check(cfg.gravityY===Fluid.core.config.defaults.gravityY,"gravity checkbox restores applied gravity");
 console.log("\nall "+checks+" checks pass");

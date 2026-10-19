@@ -90,6 +90,7 @@
 		const buoyChk=document.getElementById("ctrl-buoy");
 		if(buoyChk){
 			buoyChk.checked=cfg.buoyEnabled>0;
+			buoyChk.disabled=cfg.scenario!=="dam";
 			buoyChk.addEventListener("change",()=>{
 				cfg.buoyEnabled=buoyChk.checked?1:0;
 				if(solver&&solver.buoy)solver.buoy.reset();
@@ -169,7 +170,10 @@
 			if(fctChk)fctChk.checked=cfg.fctLimiter>0;
 			if(gravChk)gravChk.checked=cfg.gravityY!==0;
 			if(subChk)subChk.checked=!!cfg.substepsAuto;
-			if(buoyChk)buoyChk.checked=cfg.buoyEnabled>0;
+			if(buoyChk){
+				buoyChk.checked=cfg.buoyEnabled>0;
+				buoyChk.disabled=cfg.scenario!=="dam";
+			}
 			syncSlider(kSlider,kVal,cfg.pressureIters);
 			syncSlider(gridSlider,gridVal,cfg.N);
 			syncSlider(fixedSlider,fixedVal,cfg.substepsFixed);

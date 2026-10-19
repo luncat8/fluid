@@ -10,6 +10,7 @@
 	let rafId=0;
 	let lastTime=0;
 	let accumulator=0;
+	let perf=null;
 	let canvas=null;
 	async function boot(){
 		canvas=document.getElementById("c");
@@ -28,7 +29,8 @@
 		if(status)status.textContent="Running";
 		solver=Fluid.gpu.solver.create(initRes.device,canvas,initRes.context,initRes.format,cfg);
 		const viewMenu=Fluid.app.viewMenu.create(cfg);
-		hud=Fluid.app.hud.create(solver,cfg);
+		perf=Fluid.app.performance.create(initRes.device.queue);
+		hud=Fluid.app.hud.create(solver,cfg,perf.state);
 		inputState=Fluid.app.input.create(canvas,cfg,solver,viewMenu.setMode);
 		controls=Fluid.app.controls.create(cfg,solver,viewMenu.setMode);
 		canvas.width=cfg.N;
@@ -41,16 +43,23 @@
 	function frame(now){
 		let dtRaw=(now-lastTime)/1000;
 		lastTime=now;
+		const elapsed=dtRaw;
 		if(dtRaw>0.1)dtRaw=0.1;
 		if(dtRaw<=0)dtRaw=1e-6;
-		if(hud)hud.tickFrame(dtRaw);
+		perf.tick(Math.max(elapsed,1e-6));
+		if(perf.state.error){
+			const panel=document.getElementById("error-panel");
+			panel.hidden=false;panel.textContent="GPU queue failed: "+perf.state.error.message;
+			return;
+		}
+		const cpuStart=performance.now();
 		const frameDt=cfg.frameDt;
 		let didSim=false;
 		if(!cfg._paused||cfg._stepOnce){
-			accumulator+=dtRaw;
+			// Preserve fractional ticks at high refresh rates, but drop long GPU backlog.
+			accumulator=Math.min(accumulator+dtRaw,frameDt*2);
 			if(cfg._stepOnce)accumulator=frameDt;
-			if(accumulator>=frameDt){
-				if(accumulator>frameDt*4)accumulator=frameDt*4;
+			if(accumulator>=frameDt&&!perf.state.busy){
 				accumulator-=frameDt;
 				// substeps: the shared policy in config.js. auto follows the last readback
 				// maxVel (<= statsEvery frames stale) plus the live drag speed, which is
@@ -66,13 +75,16 @@
 				if(inputState)inputState.flushPaint();
 				const needStats=st.frame%cfg.statsEvery===0;
 				solver.frame(dts,ns,needStats);
+				perf.submitted(frameDt,performance.now()-cpuStart);
 				cfg._stepOnce=false;
 				cfg._dirty=false;
 				didSim=true;
 			}
 		}
-		if(!didSim&&(cfg._dirty||cfg._paused)){
+		if(cfg._paused&&!cfg._stepOnce)accumulator=0;
+		if(!didSim&&!perf.state.busy&&cfg._dirty){
 			solver.renderOnly();
+			perf.submitted(0,performance.now()-cpuStart);
 			cfg._dirty=false;
 		}
 		if(hud)hud.update(now);

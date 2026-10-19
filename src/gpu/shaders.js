@@ -329,6 +329,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let dt = params.values[4];
 	var fx = rawFx(x, y, w, h, dt);
 	var fy = rawFy(x, y, w, h, dt);
+	// Keep a 1e-6 outflow margin for f32 sum/division rounding; never clip state.
 	// monotone donor-cell needs total outflow <= 1 volume per cell per step. the
 	// +-1 face clamp alone is not enough: a diverging cell empties through up to
 	// 4 faces at once and the q'=q*(1-k)+in update then amplifies sign-alternating
@@ -338,11 +339,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	// conservation is untouched. same limiter in src/core/solver.js.
 	if (fx != 0.0) {
 		let s = select(outFlux(x, y, w, h, dt), outFlux(x - 1, y, w, h, dt), fx > 0.0);
-		if (s > 1.0) { fx = fx / s; }
+		if (s > 0.999999) { fx = fx * (0.999999 / s); }
 	}
 	if (fy != 0.0) {
 		let s = select(outFlux(x, y, w, h, dt), outFlux(x, y - 1, w, h, dt), fy > 0.0);
-		if (s > 1.0) { fy = fy / s; }
+		if (s > 0.999999) { fy = fy * (0.999999 / s); }
 	}
 	textureStore(fluxDst, vec2<i32>(x, y), vec4<f32>(fx, fy, 0.0, 0.0));
 }
@@ -373,15 +374,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let qE = textureLoad(massSrc, vec2<i32>(x + 1, y));
 	let qS = textureLoad(massSrc, vec2<i32>(x, y - 1));
 	let qN = textureLoad(massSrc, vec2<i32>(x, y + 1));
-	var out: vec4<f32>;
-	out.r = q.r + fw * select(q.r, qW.r, fw > 0.0) - fe * select(qE.r, q.r, fe > 0.0)
-		+ fs * select(q.r, qS.r, fs > 0.0) - fN * select(qN.r, q.r, fN > 0.0);
-	out.g = q.g + fw * select(q.g, qW.g, fw > 0.0) - fe * select(qE.g, q.g, fe > 0.0)
-		+ fs * select(q.g, qS.g, fs > 0.0) - fN * select(qN.g, q.g, fN > 0.0);
-	out.b = q.b + fw * select(q.b, qW.b, fw > 0.0) - fe * select(qE.b, q.b, fe > 0.0)
-		+ fs * select(q.b, qS.b, fs > 0.0) - fN * select(qN.b, q.b, fN > 0.0);
-	out.a = q.a + fw * select(q.a, qW.a, fw > 0.0) - fe * select(qE.a, q.a, fe > 0.0)
-		+ fs * select(q.a, qS.a, fs > 0.0) - fN * select(qN.a, q.a, fN > 0.0);
+	// Nonnegative weights avoid subtractive cancellation in an emptied cell.
+	let remaining = 1.0 - (max(-fw, 0.0) + max(fe, 0.0) + max(-fs, 0.0) + max(fN, 0.0));
+	let out = q * remaining + qW * max(fw, 0.0) + qE * max(-fe, 0.0)
+		+ qS * max(fs, 0.0) + qN * max(-fN, 0.0);
 	textureStore(massDst, vec2<i32>(x, y), out);
 }
 `;
@@ -407,15 +403,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let qE = textureLoad(thermSrc, vec2<i32>(x + 1, y));
 	let qS = textureLoad(thermSrc, vec2<i32>(x, y - 1));
 	let qN = textureLoad(thermSrc, vec2<i32>(x, y + 1));
-	var out: vec4<f32>;
-	out.r = q.r + fw * select(q.r, qW.r, fw > 0.0) - fe * select(qE.r, q.r, fe > 0.0)
-		+ fs * select(q.r, qS.r, fs > 0.0) - fN * select(qN.r, q.r, fN > 0.0);
-	out.g = q.g + fw * select(q.g, qW.g, fw > 0.0) - fe * select(qE.g, q.g, fe > 0.0)
-		+ fs * select(q.g, qS.g, fs > 0.0) - fN * select(qN.g, q.g, fN > 0.0);
-	out.b = q.b + fw * select(q.b, qW.b, fw > 0.0) - fe * select(qE.b, q.b, fe > 0.0)
-		+ fs * select(q.b, qS.b, fs > 0.0) - fN * select(qN.b, q.b, fN > 0.0);
-	out.a = q.a + fw * select(q.a, qW.a, fw > 0.0) - fe * select(qE.a, q.a, fe > 0.0)
-		+ fs * select(q.a, qS.a, fs > 0.0) - fN * select(qN.a, q.a, fN > 0.0);
+	// Nonnegative weights avoid subtractive cancellation in an emptied cell.
+	let remaining = 1.0 - (max(-fw, 0.0) + max(fe, 0.0) + max(-fs, 0.0) + max(fN, 0.0));
+	let out = q * remaining + qW * max(fw, 0.0) + qE * max(-fe, 0.0)
+		+ qS * max(fs, 0.0) + qN * max(-fN, 0.0);
 	textureStore(thermDst, vec2<i32>(x, y), out);
 }
 `;

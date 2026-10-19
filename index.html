@@ -19,6 +19,7 @@
 	<script defer src="src/app/viewmenu.js"></script>
 	<script defer src="src/app/input.js"></script>
 	<script defer src="src/app/controls.js"></script>
+	<script defer src="src/app/performance.js"></script>
 	<script defer src="src/app/hud.js"></script>
 	<script defer src="src/app/main.js"></script>
 </head>
@@ -43,12 +44,12 @@
 					<button id="ctrl-reset" type="button">Reset</button>
 				</div>
 				<div class="ctrl-row">
-					<label class="ctrl-check"><input type="checkbox" id="ctrl-fct"> FCT</label>
+					<label class="ctrl-check" title="Bounded anti-diffusion: preserves sharper RGB dye edges, not velocity or mass"><input type="checkbox" id="ctrl-fct"> Dye FCT</label>
 					<label class="ctrl-check"><input type="checkbox" id="ctrl-gravity"> Gravity</label>
 				</div>
 				<div class="ctrl-row">
-					<label class="ctrl-check" title="auto-cfl substepping; off runs the fixed count below"><input type="checkbox" id="ctrl-substeps"> Substeps</label>
-					<label class="ctrl-check" title="diagnostic floating body, dam scenario only"><input type="checkbox" id="ctrl-buoy"> Buoy</label>
+					<label class="ctrl-check" title="auto-cfl substepping; off runs the fixed count below"><input type="checkbox" id="ctrl-substeps"> Auto CFL</label>
+					<label class="ctrl-check" title="diagnostic floating body, dam scenario only"><input type="checkbox" id="ctrl-buoy"> Dam float</label>
 				</div>
 				<div class="ctrl-row">
 					<label for="ctrl-substeps-fixed" title="steps per frame while auto substeps is off">Fixed steps</label>
@@ -90,6 +91,8 @@
 				<p>Drag to stir and paint. Dye painting is ledger-accounted: drift stays green. Walls block flow and are visible in view 5.</p>
 				<p>Pick the convection scenario (or press <code>n</code> until it appears) for heated-from-below rolls: it starts hot at the bottom and cold at the top and switches to the temperature view. Other scenarios start at uniform ambient temperature, so their temperature map is flat by construction.</p>
 				<p>The dam scenario drops a buoy: an outlined rectangle lifted by the blue inside it, so it rides the water surface. It only reads the field, so nothing is added to the ledger. <code>u</code> switches between auto-cfl substeps and the fixed step count in the panel.</p>
+				<p>Dye FCT (flux-corrected transport) keeps moving color edges sharper than donor-cell transport. Compare separate reset runs in color view; toggling it cannot undo mixing already accumulated. It does not affect mass, energy, or velocity. Gravity changes density sorting and thermal convection, not existing momentum. The dam float is a read-only marker, not a force on the fluid.</p>
+				<p>Performance: sim/s counts submitted simulation frames (target 60); render/s includes view-only redraws; rAF/s is browser callback frequency, not solver throughput. Speed is simulated seconds per wall second. Queue ms is last submission-to-completion latency, not pure GPU time. Only one application frame is in flight.</p>
 				<p>Drift thresholds: green &lt; 1e-6, yellow &lt; 1e-3, red above. min values are the monotonicity watchdog.</p>
 			</div>
 		</section>

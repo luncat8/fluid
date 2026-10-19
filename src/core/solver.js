@@ -393,11 +393,11 @@
 					// flux and conservation is untouched. same limiter in the wgsl.
 					if(fx!==0){
 						const s=fx>0?outFlux(vv,dt,x-1,y):outFlux(vv,dt,x,y);
-						if(s>1)fx/=s;
+						if(s>0.999999)fx*=0.999999/s;
 					}
 					if(fy!==0){
 						const s=fy>0?outFlux(vv,dt,x,y-1):outFlux(vv,dt,x,y);
-						if(s>1)fy/=s;
+						if(s>0.999999)fy*=0.999999/s;
 					}
 					flux[i2]=fx;flux[i2+1]=fy;
 				}
@@ -484,14 +484,13 @@
 					const i2=(x+y*texW)*2;
 					const fw=flux[i2],fe=flux[i2+2];
 					const fs=flux[i2+1],fn=flux[i2+texW*2+1];
+					const remaining=1-(Math.max(-fw,0)+Math.max(fe,0)+Math.max(-fs,0)+Math.max(fn,0));
 					for(let c=0;c<4;c++){
 						const qm=mS[i4+c],qt=tS[i4+c];
 						const qmW=mS[i4-4+c],qmE=mS[i4+4+c],qmS=mS[i4-texW*4+c],qmN=mS[i4+texW*4+c];
 						const qtW=tS[i4-4+c],qtE=tS[i4+4+c],qtS=tS[i4-texW*4+c],qtN=tS[i4+texW*4+c];
-						const dm=fw*(fw>0?qmW:qm)-fe*(fe>0?qm:qmE)+fs*(fs>0?qmS:qm)-fn*(fn>0?qm:qmN);
-						mD[i4+c]=qm+dm;
-						const dtn=fw*(fw>0?qtW:qt)-fe*(fe>0?qt:qtE)+fs*(fs>0?qtS:qt)-fn*(fn>0?qt:qtN);
-						tD[i4+c]=qt+dtn;
+						mD[i4+c]=qm*remaining+qmW*Math.max(fw,0)+qmE*Math.max(-fe,0)+qmS*Math.max(fs,0)+qmN*Math.max(-fn,0);
+						tD[i4+c]=qt*remaining+qtW*Math.max(fw,0)+qtE*Math.max(-fe,0)+qtS*Math.max(fs,0)+qtN*Math.max(-fn,0);
 					}
 				}
 			}

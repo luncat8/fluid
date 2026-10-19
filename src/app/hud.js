@@ -2,7 +2,7 @@
 	"use strict";
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.app=Fluid.app||{};
-	function createHud(solver,cfg){
+	function createHud(solver,cfg,perf){
 		const perfEl=document.getElementById("perf");
 		const consEl=document.getElementById("conservation");
 		const stateEl=document.getElementById("state");
@@ -10,7 +10,6 @@
 		const copyBtn=document.getElementById("copyBtn");
 		const copyFeedback=document.getElementById("copyFeedback");
 		let lastText=0;
-		let fpsEma=60;
 		let substepsShown=1;
 		// cache last rendered strings to avoid DOM thrash
 		let lastPerf="", lastCons="", lastState="", lastStatus="";
@@ -24,7 +23,7 @@
 		function buoyLine(){
 			const b=solver&&solver.buoy?solver.buoy.state:null;
 			if(!b)return "buoy: no solver";
-			if(!b.active)return "buoy: off (dam scenario only, y to enable)";
+			if(!b.active)return cfg.scenario==="dam"?"dam float: disabled (y to enable)":"dam float: inactive (dam scenario only)";
 			return "buoy  y="+b.cy.toFixed(1)+"  vy="+b.vy.toFixed(2)+"  submerged="+(b.sub*100).toFixed(0)+
 				"%  blue/cell="+b.blue.toFixed(3)+"  sample#"+b.samples;
 		}
@@ -35,16 +34,27 @@
 			if(a<1e-3||a>=1e6)return v.toExponential(2);
 			return v.toFixed(4);
 		}
-		function tickFrame(dtRaw){
-			const fps=1/Math.max(dtRaw,1e-6);
-			fpsEma=fpsEma*0.9+fps*0.1;
-		}
 		function setSubsteps(ns){
 			substepsShown=ns;
 		}
 		// fixed mode still runs substepsFixed steps; only auto has a live maximum
 		function substepLabel(){
 			return cfg.substepsAuto?substepsShown+"/"+cfg.substepMax+" auto":substepsShown+" fixed";
+		}
+		function performanceLine(){
+			if(!perf)return "performance: unavailable";
+			return "sim/s="+perf.simHz.toFixed(1)+" render/s="+perf.renderHz.toFixed(1)+
+				" rAF/s="+perf.rafHz.toFixed(1)+" speed="+perf.simSpeed.toFixed(2)+"x"+
+				" CPU encode="+perf.cpuMs.toFixed(2)+"ms queue="+perf.queueMs.toFixed(2)+"ms";
+		}
+		function cflBound(s){
+			return 2*s.motion.maxVel*cfg.dt;
+		}
+		function healthLine(s){
+			const cfl=cflBound(s);
+			return "CFL bound="+fmt(cfl)+(cfl>1?" [transport limiting likely]":"")+
+				(s.cntNeg>0?" | NEGATIVE VALUES: inspect minima":"")+
+				(s.maxM>2?" | SEVERE COMPRESSION: conservation is not stability":"");
 		}
 		// build a copyable diagnostics snapshot (used by button and 's' key)
 		function buildSnapshot(){
@@ -58,9 +68,12 @@
 				const drift=Fluid.core.stats.driftRel(totals[i],expects[i]);
 				lines.push(kinds[i]+": total="+totals[i]+" exp="+expects[i]+" drift="+drift+" ["+driftClass(drift)+"]");
 			}
+			lines.push("min m="+s.mins.m+" dr="+s.mins.dr+" dg="+s.mins.dg+" db="+s.mins.db+" E="+s.mins.E);
 			lines.push("maxM="+s.maxM+" neg="+s.cntNeg+" over="+s.cntOver+" maxDiv="+s.motion.maxDiv+" p["+s.motion.pMin+".."+s.motion.pMax+"] maxVel="+s.motion.maxVel);
 			lines.push("statsFrame#"+s.statsFrame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+
-				" ns="+substepLabel()+" fps~"+Math.round(fpsEma));
+				" ns="+substepLabel()+" scenario="+cfg.scenario+" FCT="+cfg.fctLimiter+" gravity="+cfg.gravityY);
+			lines.push(performanceLine());
+			lines.push(healthLine(s));
 			lines.push(buoyLine());
 			return lines.join("\n");
 		}
@@ -98,9 +111,10 @@
 			if(!solver) return;
 			const s=solver.getStats();
 			if(perfEl){
-				const txt="fps "+Math.round(fpsEma)+"  N="+cfg.N+"  dt="+cfg.dt.toFixed(4)+
+				const txt=performanceLine()+"\nN="+cfg.N+"  dt="+cfg.dt.toFixed(4)+
 					"  K="+cfg.pressureIters+"  ns="+substepLabel()+
-					"  maxVel="+fmt(s.motion.maxVel)+"  frame#"+s.frame;
+					"  maxVel="+fmt(s.motion.maxVel)+"  frame#"+s.frame+" stats#"+s.statsFrame+
+					"\n"+healthLine(s);
 				if(txt!==lastPerf){
 					perfEl.textContent=txt;
 					lastPerf=txt;
@@ -148,7 +162,7 @@
 				}
 			}
 		}
-		return {update,tickFrame,setSubsteps,copyToClipboard};
+		return {update,setSubsteps,copyToClipboard,buildSnapshot};
 	}
 	Fluid.app.hud={create:createHud};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.app.hud;

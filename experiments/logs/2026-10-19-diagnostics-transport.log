@@ -1,0 +1,79 @@
+CPU conformance after transport-roundoff correction
+PASS pressure solver removes the closed-box checkerboard mode in one red-black sweep  max_neighbor_jump=0.00e+0 press_slot=0
+PASS stats snapshot: expected totals stay paired with their readback  old=10/2/50 live=15/3/75
+PASS stats snapshot: next readback captures new ledger values
+PASS reduction m sequential-f32 error is the old hud warn  seq_err=-1.06e-1 kahan_err=-3.46e-4 total=2.1440e+4
+PASS reduction m kahan-f32 error below 1e-7 relative  rel=1.62e-8
+PASS reduction E sequential-f32 error is the old hud warn  seq_err=2.68e+2 kahan_err=-1.91e-1 total=2.6384e+7
+PASS reduction E kahan-f32 error below 1e-7 relative  rel=7.25e-9
+PASS FCT dye front: at least 3x narrower after 240 steps  upwind=26 FCT=8 ratio=3.25
+PASS FCT dye front: stays within low-order local bounds  min=0.00e+0 max=0.800000 violations=0
+PASS FCT dye front: fluid mass is unchanged versus upwind-only  upwind=65536.0007 FCT=65536.0007
+PASS FCT dye front: tracer sum is conserved to 1e-6 versus upwind-only  upwind=42188.8576 FCT=42188.8579 rel=6.31e-9
+PASS FCT random 2D field: nonnegative and locally bounded  min=1.41e-7 local_bound_violations=0
+PASS FCT random 2D field: correction is conservative below 1e-6  correction_drift=3.13e-10
+PASS FCT closed transport: all five invariants below 1e-6 after 10000 steps  worst_rel=5.96e-7 m=-5.96e-7 dr=-5.30e-7
+PASS FCT closed transport: no negative cells or NaNs after 10000 steps  cntNeg=0 minDr=0.00e+0 maxM=32.000
+PASS still box: max|vel| below 1e-2 after 500 frames (stratified, hydrostatic)  maxVel=0.00e+0 maxDiv=0.00e+0
+PASS still box: zero mass/energy drift  drift_m=0.00e+0 drift_E=0.00e+0
+PASS stirred box: all five invariants conserved below 1e-6 relative over 1200 frames  worst_rel=4.74e-7
+PASS stirred box: no negative cell ever  negCells=0 minM=0.2966894209384918
+PASS stirred box: no NaN
+PASS stirred box: flux bound respected (|F| <= 1)  maxFlux=0.8126
+PASS stirred box: motion survived stirring (vortices decay slowly)  maxVel=7.949
+PASS dam break: no NaN, no negative cells  sumM=1829.400
+PASS dam break: max|div u| after projection below 1 (K=60 at 64^2, during splash)  maxDiv=3.16e-1
+PASS dam break: no overpacking (m <= rho_liq*1.001)  cntOver=0 maxM=0.9927
+PASS dam break: mass and energy conserved below 1e-7  drift_m=2.62e-8 drift_E=-1.09e-8
+PASS dam break: block actually moved (maxVel > 0 at some point or dye spread)
+PASS substep policy off: fixed count regardless of velocity  ns=4 fixed=4 at maxVel=1e6
+PASS fixed count is clamped to [1, substepMax]  0 -> 1, 100 -> 8
+PASS substep policy on: cfl target followed, then capped  ns=4 at the cfl target, 8 at the cap 8
+PASS substep policy off: dam break stays finite and non-negative  sumM=1829.400 maxM=0.980 neg=0 maxDiv=7.90e-2
+PASS buoy spawn: rectangle scaled from the 16x64 reference, dam only  w=4 h=8 cy=48.0
+PASS buoy: sampled every 4 frames, marched every frame  samples=125 marches=500
+PASS buoy: sinks into the liquid and is lifted back out by the blue  dropped from cy=48, dipped to 5.0, rose back to 25.4 (vy=3.61)
+PASS buoy: ends partially submerged in the blue, inside the water band  sub=58.6% blue/cell=0.258 cy=25.4
+PASS buoy: inertia caps a frame of motion below one cell  max |dy| per frame=0.523 cells
+PASS buoy: stays inside the domain  cx=8.1 cy=25.4
+PASS buoy: field identical to the buoy-less run (no back-reaction on the solver)  max|dmass|=0
+PASS buoy model: [r,g,255] lifts harder than [r,g,123] and air sinks  a[blue=1]=225.0 a[blue=0.5]=75.0 a[empty]=-75.0
+PASS buoy model: sub fraction is mean blue over local peak, float line is the body density  sub=1.000/1.000 aY=75.00
+PASS buoy model: half a footprint of blue is neutral buoyancy  aY=0.00e+0 sub=0.500
+PASS buoy model: one frame of full lift moves it by well under a cell  dy=5.38e-2 vy=3.23
+PASS wall integrity: no red dye crossed a one cell wall  dyeRight=0.000e+0 dyeLeft=49.411
+PASS wall integrity: closed box conserved below 1e-6  drift_m=6.68e-9 drift_dr=6.68e-8
+PASS emitter accounting: all conserved channels drift below 2e-7 with 50 injected patches  worst_rel=1.00e-7 m=-4.56e-9 dr=8.00e-8 dg=-2.73e-8 db=1.00e-7 E=3.63e-10
+PASS draw stroke: survived paint+stir without NaN  sumM=5738.214
+PASS draw stroke: no negative conserved cells (FCT bounds, no clipping)  negCells=0 minM=2.952e-1
+PASS draw stroke: no runaway overpack  maxM=5.862
+PASS draw stroke: invariants conserved below 1e-6 with injected dye  drift_m=-8.99e-9 drift_dr=1.19e-7
+PASS draw stroke: limiter exercised (raw k_out exceeded 1)  rawOutMax=1.445
+PASS draw stroke: stored flux k_out <= 1 per cell (monotone transport)  storedOutMax=1.000
+ALL CONFORMANCE TESTS PASSED
+
+Convection after correction
+PASS presentation: convection starts stratified over most of the view range  T=[293.0..343.0] view=[293..343]
+PASS presentation: heater/cold-plate band scales with N  heatBand=16 at N=512
+PASS presentation: rolls underway within 2 s  maxVel=8.13 T=[293.1..343.0]
+PASS derive_T: T = E/(m c) with substance, T_amb in vacuum, monotone in E  T_sub=350.000 T_vac=293
+PASS conduction: E conserved below 1e-7 over 4000 f32 exchanges (ping-pong)  drift_rel=2.34e-8
+PASS conduction: no overshoot, field relaxed toward the 310 mean  T range after= [308.21..311.79]
+PASS conduction: absurd coefficient is clamped, monotone and reported, not explosive  clamped faces=1984 T range=[308.21..311.79]
+PASS heat sources: injected and removed energy both reached the ledger  in=482.5 out=315.6
+PASS heat sources: heaters change E only (m drift below 1e-9, E drift below 1e-6)  drift_m=0.00e+0 drift_E=3.10e-7
+PASS energy budget: stored E + kinetic closes below 1e-3 with gravity off  closure_rel=3.10e-7 kinetic=0.00e+0
+PASS heat sources: bottom hotter than top after 600 steps  T range=[293.2..343.0] mean=318.0
+PASS convection: motion onsets and reaches roll speeds  onset=1.17s peak|v|=36.88
+PASS convection: hot fluid rises on average (buoyancy sign)  mean v in hot cells=3.182 over 126 cells
+PASS convection: bottom stays warmer than the cold plate  bottom=321.4 top=313.9 T range=[297.9..341.7]
+PASS convection: m and E at the f32 floor with heater and cold plate running  drift_m=9.48e-6 drift_E=1.01e-8 neg=0
+INFO convection after 5000 steps (20.8s): maxVel=19.98 heatIn=60645 heatOut=71282 clampedFaces/step=0
+PASS stability: finite at 10x beta and 10x conductivity  maxVel=54.10 Tmax=343.0
+ALL CONVECTION TESTS PASSED
+
+Numeric GPU parity attempt (unavailable backend)
+Warning: Couldn't load Vulkan: libvulkan.so.1: cannot open shared object file: No such file or directory
+    at operator() (/home/runner/work/node-webgpu/node-webgpu/third_party/dawn/src/dawn/native/vulkan/BackendVk.cpp:368)
+
+No WebGPU adapter. Select an installed hardware or software Vulkan backend.
