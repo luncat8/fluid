@@ -1,0 +1,45 @@
+=== dam, N=64, 600 frames, buoy rect {"w":4,"h":8} ===
+  sample every 1         sub=52.9% [11..93] cy=12.3 vy=-2.23 maxStep=0.539 meanStep=0.126 settled@f=598 samples=599
+  sample every 2         sub=52.9% [11..93] cy=12.2 vy=-2.33 maxStep=0.543 meanStep=0.126 settled@f=597 samples=300
+  sample every 4 (defaul sub=47.6% [9..95] cy=13.4 vy=-6.07 maxStep=0.513 meanStep=0.144 settled@f=597 samples=150
+  sample every 8         sub=51.1% [5..96] cy=12.2 vy=-6.20 maxStep=0.491 meanStep=0.170 settled@f=593 samples=75
+  sample every 16        sub=56.4% [4..97] cy=12.4 vy=-7.13 maxStep=0.433 meanStep=0.160 settled@f=593 samples=38
+  sample every 32        sub=64.7% [0..77] cy=11.7 vy=2.92 maxStep=0.475 meanStep=0.151 settled@f=577 samples=19
+  blue x0.25 ([r,g,64])  sub=97.7% [9..100] cy=5.0 vy=0.00 maxStep=0.513 meanStep=0.091 settled@f=349 samples=150
+  blue x0.5 ([r,g,128])  sub=81.6% [9..99] cy=9.8 vy=-4.47 maxStep=0.615 meanStep=0.185 settled@f=597 samples=150
+  blue x1 ([r,g,255])    sub=47.6% [9..95] cy=13.4 vy=-6.07 maxStep=0.513 meanStep=0.144 settled@f=597 samples=150
+  blue x2                sub=85.0% [9..87] cy=19.3 vy=11.21 maxStep=0.692 meanStep=0.176 settled@f=597 samples=150
+  rho 0.1 (lighter hull) sub=32.6% [6..74] cy=15.1 vy=-4.76 maxStep=0.329 meanStep=0.135 settled@f=597 samples=150
+  rho 0.4 (heavier hull) sub=81.6% [11..99] cy=10.2 vy=-4.41 maxStep=0.745 meanStep=0.182 settled@f=597 samples=150
+  drag tau 0.04 (loose)  sub=48.8% [9..73] cy=13.1 vy=-4.64 maxStep=0.338 meanStep=0.159 settled@f=597 samples=150
+  drag tau 0.5 (stiff)   sub=58.0% [7..100] cy=12.1 vy=6.55 maxStep=0.872 meanStep=0.228 settled@f=597 samples=150
+--- float trace, default variant (sub = mean blue in the rect / local peak) ---
+    f=0 cy=48.00 vy=0.00 sub=0.0% blue/cell=0.000
+    f=50 cy=33.27 vy=-30.24 sub=15.5% blue/cell=0.000
+    f=100 cy=13.47 vy=-17.89 sub=38.5% blue/cell=0.000
+    f=150 cy=6.01 vy=1.68 sub=51.6% blue/cell=0.261
+    f=200 cy=16.94 vy=15.70 sub=82.7% blue/cell=0.416
+    f=250 cy=18.94 vy=-2.17 sub=53.2% blue/cell=0.215
+    f=300 cy=20.10 vy=2.50 sub=42.2% blue/cell=0.129
+    f=350 cy=18.67 vy=-8.81 sub=16.8% blue/cell=0.029
+    f=400 cy=9.11 vy=-7.21 sub=25.4% blue/cell=0.084
+    f=450 cy=10.64 vy=8.28 sub=59.3% blue/cell=0.292
+    f=500 cy=17.26 vy=4.47 sub=80.7% blue/cell=0.389
+    f=550 cy=16.94 vy=-2.88 sub=62.3% blue/cell=0.300
+    f=599 cy=13.44 vy=-6.07 sub=47.6% blue/cell=0.225
+=== same on N=128 (rect {"w":4,"h":16}), 400 frames ===
+  sample every 4 (defaul sub=11.3% [0..50] cy=61.7 vy=31.04 maxStep=0.604 meanStep=0.287 settled@f=397 samples=100
+  blue x0.25 ([r,g,64])  sub=7.1% [0..50] cy=60.5 vy=30.92 maxStep=0.603 meanStep=0.287 settled@f=397 samples=100
+  blue x0.5 ([r,g,128])  sub=7.1% [0..50] cy=60.9 vy=30.95 maxStep=0.603 meanStep=0.287 settled@f=397 samples=100
+  blue x1 ([r,g,255])    sub=11.3% [0..50] cy=61.7 vy=31.04 maxStep=0.604 meanStep=0.287 settled@f=397 samples=100
+  blue x2                sub=6.8% [0..50] cy=63.1 vy=31.07 maxStep=0.604 meanStep=0.287 settled@f=397 samples=100
+--- float trace, default variant, N=128 ---
+    f=0 cy=96.00 vy=0.00 sub=0.0% blue/cell=0.000
+    f=50 cy=82.84 vy=-24.49 sub=0.0% blue/cell=0.000
+    f=100 cy=59.49 vy=-23.03 sub=6.7% blue/cell=0.000
+    f=150 cy=44.42 vy=-15.68 sub=13.9% blue/cell=0.000
+    f=200 cy=34.33 vy=-7.80 sub=29.9% blue/cell=0.000
+    f=250 cy=36.75 vy=21.09 sub=50.5% blue/cell=0.000
+    f=300 cy=50.39 vy=-22.09 sub=21.0% blue/cell=0.030
+    f=350 cy=43.49 vy=10.12 sub=24.6% blue/cell=0.002
+    f=399 cy=61.68 vy=31.04 sub=11.3% blue/cell=0.003

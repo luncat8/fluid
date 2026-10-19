@@ -3,6 +3,7 @@
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.core=Fluid.core||{};
 	const grid=Fluid.core.grid;
+	const f32=Math.fround;
 
 	// layout (0.0.0 section 4/7): cell (x,y) spans [x-1,x] x [y-1,y] in cell units,
 	// interior x,y in 1..N, one ghost ring around. texel (x,y) of vel/flux holds the
@@ -293,24 +294,27 @@
 		function project(iters){
 			const ms=grid.curBuf(mass);
 			for(let k=0;k<iters;k++){
-				const src=grid.curBuf(press),dst=grid.nxtBuf(press);
-				for(let y=1;y<texH-1;y++){
-					for(let x=1;x<texW-1;x++){
-						const i=x+y*texW;
-						if(isWall(x,y)){dst[i]=0;continue;}
-						let wsum=0,sum=0;
-						let w=faceW(ms,x,y,x-1,y);
-						if(w>0){wsum+=w;sum+=w*src[i-1];}
-						w=faceW(ms,x,y,x+1,y);
-						if(w>0){wsum+=w;sum+=w*src[i+1];}
-						w=faceW(ms,x,y,x,y-1);
-						if(w>0){wsum+=w;sum+=w*src[i-texW];}
-						w=faceW(ms,x,y,x,y+1);
-						if(w>0){wsum+=w;sum+=w*src[i+texW];}
-						dst[i]=wsum>0?(sum-divsrc[i])/wsum:0;
+				for(let color=0;color<2;color++){
+					const src=grid.curBuf(press),dst=grid.nxtBuf(press);
+					for(let y=1;y<texH-1;y++){
+						for(let x=1;x<texW-1;x++){
+							const i=x+y*texW;
+							if(((x+y)&1)!==color){dst[i]=src[i];continue;}
+							if(isWall(x,y)){dst[i]=0;continue;}
+							let wsum=0,sum=0;
+							let w=faceW(ms,x,y,x-1,y);
+							if(w>0){wsum+=w;sum+=w*src[i-1];}
+							w=faceW(ms,x,y,x+1,y);
+							if(w>0){wsum+=w;sum+=w*src[i+1];}
+							w=faceW(ms,x,y,x,y-1);
+							if(w>0){wsum+=w;sum+=w*src[i-texW];}
+							w=faceW(ms,x,y,x,y+1);
+							if(w>0){wsum+=w;sum+=w*src[i+texW];}
+							dst[i]=wsum>0?(sum-divsrc[i])/wsum:0;
+						}
 					}
+					grid.swap(press);
 				}
-				grid.swap(press);
 			}
 		}
 		// w = 1/rho_f (harmonic mean); 0 drops the face: wall neighbour or domain edge
@@ -494,13 +498,14 @@
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
 					const i=(x+y*texW)*4;
-					ts[i+1]=ms[i+3]>=cfg.mEps?ts[i]/(ms[i+3]*cfg.cLiq):cfg.TAmb;
+					const m=ms[i+3];
+					ts[i+1]=m>=cfg.mEps?f32(ts[i]/f32(m*cfg.cLiq)):cfg.TAmb;
 				}
 			}
 		}
-		// clamped pairwise exchange (0.0.0 5.7). ping-pong is mandatory: both
-		// cells read the same pre-update state, so the two face writes are exact
-		// opposites and conduction cannot create or destroy energy.
+		// clamped pairwise exchange (0.0.0 5.7). Ping-pong is mandatory: both
+		// cells read the same pre-update state and compute opposite f32 face fluxes;
+		// summing four fluxes into each f32 cell leaves only a small rounding floor.
 		function conduction(dt){
 			const ms=grid.curBuf(mass);
 			const src=grid.curBuf(therm),dst=grid.nxtBuf(therm);
@@ -510,12 +515,15 @@
 					const i=(x+y*texW)*4;
 					let E=src[i];
 					if(ms[i+3]>=cfg.mEps&&!isWall(x,y)){
-						const T=src[i+1],C=ms[i+3]*cfg.cLiq;
-						E+=faceExchange(ms,src,x,y,x-1,y,T,dt)+faceExchange(ms,src,x,y,x+1,y,T,dt)
-							+faceExchange(ms,src,x,y,x,y-1,T,dt)+faceExchange(ms,src,x,y,x,y+1,T,dt);
+						const T=src[i+1],C=f32(ms[i+3]*cfg.cLiq);
+						E=f32(E+faceExchange(ms,src,x,y,x-1,y,T,dt));
+						E=f32(E+faceExchange(ms,src,x,y,x+1,y,T,dt));
+						E=f32(E+faceExchange(ms,src,x,y,x,y-1,T,dt));
+						E=f32(E+faceExchange(ms,src,x,y,x,y+1,T,dt));
 						if(cfg.wallCool>0&&(isWall(x-1,y)||isWall(x+1,y)||isWall(x,y-1)||isWall(x,y+1))){
-							const dE=-cfg.wallCool*(T-cfg.TAmb)*C*dt;
-							E+=dE;
+							const dT=f32(T-cfg.TAmb);
+							const dE=f32(f32(f32(f32(-cfg.wallCool)*dT)*C)*dt);
+							E=f32(E+dE);
 							if(dE>0)ledger.heatInE+=dE;else ledger.heatOutE-=dE;
 							dst[i+2]=src[i+2]+(dE>0?dE:0);
 							dst[i+3]=src[i+3]+(dE<0?-dE:0);
@@ -526,7 +534,7 @@
 						dst[i+2]=src[i+2];dst[i+3]=src[i+3];
 					}
 					dst[i]=E;
-					dst[i+1]=ms[i+3]>=cfg.mEps?E/(ms[i+3]*cfg.cLiq):cfg.TAmb;
+					dst[i+1]=ms[i+3]>=cfg.mEps?f32(E/f32(ms[i+3]*cfg.cLiq)):cfg.TAmb;
 				}
 			}
 			grid.swap(therm);
@@ -540,12 +548,12 @@
 				return 0; // wall faces exchange through wallCool above, not pairwise
 			}
 			if(ms[j+3]<cfg.mEps)return 0; // vacuum does not conduct
-			const dT=ts[j+1]-T;
+			const dT=f32(ts[j+1]-T);
 			if(dT===0)return 0;
-			const CL=ms[(x+y*texW)*4+3]*cfg.cLiq,CR=ms[j+3]*cfg.cLiq;
-			const Ch=(CL*CR)/(CL+CR);
-			let dE=cfg.conductivity*dT*dt;
-			const limit=0.5*Ch*Math.abs(dT);
+			const CL=f32(ms[(x+y*texW)*4+3]*cfg.cLiq),CR=f32(ms[j+3]*cfg.cLiq);
+			const Ch=f32(f32(CL*CR)/f32(CL+CR));
+			let dE=f32(f32(cfg.conductivity*dT)*dt);
+			const limit=f32(f32(f32(0.5)*Ch)*Math.abs(dT));
 			if(Math.abs(dE)>limit){dE=dE>0?limit:-limit;thermDiag.clamped++;}
 			return dE;
 		}
@@ -562,14 +570,16 @@
 					if(ms[(x+y*texW)*4+3]<cfg.mEps||isWall(x,y))continue;
 					const i=(x+y*texW)*4;
 					let dE=0;
-					if(y<=band)dE+=cfg.heatPower*dt;
+					if(y<=band)dE=f32(dE+f32(cfg.heatPower*dt));
 					if(y>N-band){
-						const C=ms[i+3]*cfg.cLiq;
-						dE-=cfg.coolTop*(ts[i+1]-cfg.TAmb)*C*dt;
+						const C=f32(ms[i+3]*cfg.cLiq);
+						const dT=f32(ts[i+1]-cfg.TAmb);
+						const cooling=f32(f32(f32(cfg.coolTop*dT)*C)*dt);
+						dE=f32(dE-cooling);
 					}
 					if(dE===0)continue;
-					ts[i]+=dE;
-					ts[i+1]=ts[i]/(ms[i+3]*cfg.cLiq);
+					ts[i]=f32(ts[i]+dE);
+					ts[i+1]=f32(ts[i]/f32(ms[i+3]*cfg.cLiq));
 					if(dE>0){ledger.heatInE+=dE;ts[i+2]+=dE;}
 					else{ledger.heatOutE-=dE;ts[i+3]-=dE;}
 				}

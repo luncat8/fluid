@@ -40,8 +40,8 @@ function testDerive() {
 		"T_sub=" + therm[i + 1].toFixed(3) + " T_vac=" + therm[j + 1]);
 }
 
-// 2. conduction: hot half against cold half, no flow. pairwise exchange must
-// conserve E exactly, never overshoot, and relax to the mean temperature.
+// 2. conduction: hot half against cold half, no flow. Pairwise exchange must
+// conserve E to the f32 accumulation floor, never overshoot, and relax to the mean.
 function testConduction() {
 	// the plan exchange is coef*dT*dt of energy against capacity m*c, so the
 	// diffusion time over L cells is L^2*C/coef: at the 0.2 default that is
@@ -73,8 +73,8 @@ function testConduction() {
 	}
 	const E1 = totals(sim, cfg).sumE;
 	const drift = Math.abs(E1 - E0) / E0;
-	check("conduction: E conserved below 1e-9 over 4000 exchanges (ping-pong)",
-		drift < 1e-9, "drift_rel=" + drift.toExponential(2));
+	check("conduction: E conserved below 1e-7 over 4000 f32 exchanges (ping-pong)",
+		drift < 1e-7, "drift_rel=" + drift.toExponential(2));
 	check("conduction: no overshoot, field relaxed toward the 310 mean",
 		!overshoot && maxT < 315 && minT > 305,
 		"T range after= [" + minT.toFixed(2) + ".." + maxT.toFixed(2) + "]");

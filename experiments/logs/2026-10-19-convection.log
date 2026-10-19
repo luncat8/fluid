@@ -1,15 +1,15 @@
 PASS derive_T: T = E/(m c) with substance, T_amb in vacuum, monotone in E  T_sub=350.000 T_vac=293
-PASS conduction: E conserved below 1e-9 over 4000 exchanges (ping-pong)  drift_rel=0.00e+0
-PASS conduction: no overshoot, field relaxed toward the 310 mean  T range after= [308.20..311.80]
+PASS conduction: E conserved below 1e-7 over 4000 f32 exchanges (ping-pong)  drift_rel=2.34e-8
+PASS conduction: no overshoot, field relaxed toward the 310 mean  T range after= [308.21..311.79]
 PASS conduction: absurd coefficient is clamped, monotone and reported, not explosive  clamped faces=1984 T range=[308.21..311.79]
 PASS heat sources: injected and removed energy both reached the ledger  in=4818.9 out=18.9
-PASS heat sources: heaters change E only (m drift below 1e-9, E drift below 1e-6)  drift_m=0.00e+0 drift_E=1.48e-7
-PASS energy budget: stored E + kinetic closes below 1e-3 with gravity off  closure_rel=1.48e-7 kinetic=0.00e+0
+PASS heat sources: heaters change E only (m drift below 1e-9, E drift below 1e-6)  drift_m=0.00e+0 drift_E=6.48e-8
+PASS energy budget: stored E + kinetic closes below 1e-3 with gravity off  closure_rel=6.48e-8 kinetic=0.00e+0
 PASS heat sources: bottom hotter than top after 600 steps  T range=[290.0..311.0] mean=294.1
-PASS convection: motion onsets and reaches roll speeds  onset=1.75s peak|v|=8.37
-PASS convection: hot fluid rises on average (buoyancy sign)  mean v in hot cells=0.036 over 424 cells
-PASS convection: bottom stays warmer than the cold plate  bottom=312.6 top=292.4 T range=[290.7..417.4]
-PASS convection: m and E at the f32 floor with heater and cold plate running  drift_m=1.13e-5 drift_E=3.14e-7 neg=0
-INFO convection after 5000 steps (20.8s): maxVel=5.95 heatIn=81568 heatOut=24 clampedFaces/step=0
+PASS convection: motion onsets and reaches roll speeds  onset=1.75s peak|v|=8.32
+PASS convection: hot fluid rises on average (buoyancy sign)  mean v in hot cells=0.037 over 424 cells
+PASS convection: bottom stays warmer than the cold plate  bottom=312.6 top=292.4 T range=[290.7..417.5]
+PASS convection: m and E at the f32 floor with heater and cold plate running  drift_m=4.67e-8 drift_E=4.07e-7 neg=0
+INFO convection after 5000 steps (20.8s): maxVel=5.91 heatIn=81572 heatOut=25 clampedFaces/step=0
 PASS stability: finite at 10x beta and 10x conductivity  maxVel=12.85 Tmax=301.7
 ALL CONVECTION TESTS PASSED

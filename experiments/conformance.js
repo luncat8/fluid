@@ -29,6 +29,29 @@ function makeCfg(over) {
 	if (over === undefined || over.substepsAuto === undefined) c.substepsAuto = true;
 	return c;
 }
+function testPressureColoring() {
+	const cfg = makeCfg({ N: 16, scenario: "still", gravityY: 0, pressureIters: 1 });
+	const sim = solverMod.create(cfg);
+	const p = Fluid.core.grid.curBuf(sim.press);
+	const next = Fluid.core.grid.nxtBuf(sim.press);
+	p.fill(0); next.fill(0); sim.divsrc.fill(0);
+	for (let y = 1; y <= cfg.N; y++) {
+		for (let x = 1; x <= cfg.N; x++) p[x + y * cfg.texW] = ((x + y) & 1) ? -1 : 1;
+	}
+	sim.project(1);
+	const solved = Fluid.core.grid.curBuf(sim.press);
+	let maxNeighborJump = 0;
+	for (let y = 1; y <= cfg.N; y++) {
+		for (let x = 1; x <= cfg.N; x++) {
+			const i = x + y * cfg.texW;
+			if (x < cfg.N) maxNeighborJump = Math.max(maxNeighborJump, Math.abs(solved[i] - solved[i + 1]));
+			if (y < cfg.N) maxNeighborJump = Math.max(maxNeighborJump, Math.abs(solved[i] - solved[i + cfg.texW]));
+		}
+	}
+	check("pressure solver removes the closed-box checkerboard mode in one red-black sweep",
+		maxNeighborJump < 1e-6 && sim.press.cur === 0,
+		"max_neighbor_jump=" + maxNeighborJump.toExponential(2) + " press_slot=" + sim.press.cur);
+}
 // the app, the core experiments and this suite share one rule (config.js)
 const substepCount = Fluid.core.config.substepCount;
 function runFrames(sim, cfg, frames, onFrame, onFrameEnd) {
@@ -291,6 +314,7 @@ function testSubstepPolicy() {
 // conserved totals exactly where the buoy-less run leaves them.
 function testBuoy() {
 	const cfg = makeCfg({ N: 64, scenario: "dam" });
+	const frames = 500; // include the dam's descent and return toward its partial-float level.
 	const sim = solverMod.create(cfg);
 	const buoy = buoyMod.create(cfg);
 	check("buoy spawn: rectangle scaled from the 16x64 reference, dam only",
@@ -299,7 +323,7 @@ function testBuoy() {
 	const step = makeBuoyRunner(cfg, buoy);
 	let maxStep = 0, minCy = Infinity, escaped = false;
 	let prevY = buoy.state.cy;
-	runFrames(sim, cfg, 400, null, (f, sm, c) => {
+	runFrames(sim, cfg, frames, null, (f, sm, c) => {
 		step(sm, f);
 		const d = Math.abs(buoy.state.cy - prevY); prevY = buoy.state.cy;
 		if (f > 8 && d > maxStep) maxStep = d;
@@ -308,8 +332,10 @@ function testBuoy() {
 		if (buoy.state.cy < 1 || buoy.state.cy > c.N + 1) escaped = true;
 	});
 	const st = buoy.state;
+	const expectedSamples = Math.ceil(frames / Math.max(1, cfg.buoySampleEvery));
 	check("buoy: sampled every 4 frames, marched every frame",
-		st.samples === 100 && st.frames === 400, "samples=" + st.samples + " marches=" + st.frames);
+		st.samples === expectedSamples && st.frames === frames,
+		"samples=" + st.samples + " marches=" + st.frames);
 	check("buoy: sinks into the liquid and is lifted back out by the blue",
 		minCy < 20 && st.cy > minCy + 2, "dropped from cy=48, dipped to " + minCy.toFixed(1) +
 		", rose back to " + st.cy.toFixed(1) + " (vy=" + st.vy.toFixed(2) + ")");
@@ -325,7 +351,7 @@ function testBuoy() {
 	// read-only claim: the same run without the body must give the same field
 	const cfg2 = makeCfg({ N: 64, scenario: "dam", buoyEnabled: 0 });
 	const sim2 = solverMod.create(cfg2);
-	runFrames(sim2, cfg2, 400);
+	runFrames(sim2, cfg2, frames);
 	const m1 = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
 	const m2 = sim2.mass.cur === 0 ? sim2.mass.a : sim2.mass.b;
 	let diff = 0;
@@ -406,10 +432,13 @@ function testEmitter() {
 	}
 	runFrames(sim, cfg, 200);
 	const r = driftLine(sim);
-	const worst = Math.max(Math.abs(r.drift.m), Math.abs(r.drift.dr), Math.abs(r.drift.E));
-	check("emitter accounting: drift below 1e-7 relative with 50 injected patches",
-		worst < 1e-7, "worst_rel=" + worst.toExponential(2) +
-		" injected_m=" + sim.ledger.injectedM.toFixed(6));
+	const worst = Math.max(Math.abs(r.drift.m), Math.abs(r.drift.dr), Math.abs(r.drift.dg),
+		Math.abs(r.drift.db), Math.abs(r.drift.E));
+	check("emitter accounting: all conserved channels drift below 2e-7 with 50 injected patches",
+		worst < 2e-7, "worst_rel=" + worst.toExponential(2) +
+		" m=" + r.drift.m.toExponential(2) + " dr=" + r.drift.dr.toExponential(2) +
+		" dg=" + r.drift.dg.toExponential(2) + " db=" + r.drift.db.toExponential(2) +
+		" E=" + r.drift.E.toExponential(2));
 }
 
 // 10. draw stroke (user report 2026-10-18): dye paint + drag stir blows up when
@@ -492,6 +521,7 @@ function testDraw() {
 		"storedOutMax=" + storedOutMax.toFixed(3));
 }
 
+testPressureColoring();
 testLedgerSnapshot();
 testReduction();
 testFctSharpness();

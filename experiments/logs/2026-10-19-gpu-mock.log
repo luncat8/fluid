@@ -11,6 +11,7 @@ PASS cpu sampler: half a footprint of blue gives half submersion and neutral lif
 PASS cpu sampler: the body follows the flow horizontally by drag, not by teleport  mean u=2
 PASS gpu pool has the buoy sample buffer and its readback twin  buoy=128B usage=140 read usage=9
 PASS the buoySample compute pipeline is compiled with the params struct prefix
+PASS WGSL pressure kernel retains opposite-color values between red/black sweeps  color gate and source-copy initialization are both present
 PASS the buoy field sample is requested every cfg.buoySampleEvery frames only  sample copies=4 over 16 frames, expected 4
 PASS the body marched every frame and ingested one readback per request  marches=16 samples=4
 PASS the readback reaches the body: half a footprint of blue reads as sub=0.5, neutral lift  sub=0.500 blue=0.250 ux=1.000 aY=0
@@ -18,6 +19,7 @@ PASS every dispatch set a bind group, and the sample pass binds four resources  
 PASS the buoy sample buffer is copied back 24 bytes (6 floats) at a time  copies=4 sizes=24
 PASS the field sample runs after the sim steps and before the display pass  order=heatSources>deriveT>buoySample>toDisplay
 PASS the uniform buffer holds the live rect and substep count, not just cfg  substeps=4 rect=[17,44,4,8] show=1
+PASS the force kernel receives the live mean density in params slot 27  uniform=0.4466308653354645 cfg=0.4466308687988203
 PASS paused redraw pushes params too, so toggles show without a sim step
 PASS resize reuses the compiled pipelines and swaps the pool  modules +0 N=128 flags=67600 canvas=128
 PASS no body outside the dam scenario, and the overlay switch follows  show=0

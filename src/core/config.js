@@ -161,6 +161,7 @@
 		a[paramsOff.mouseX]=cfg.mouseX;
 		a[paramsOff.mouseY]=cfg.mouseY;
 		a[paramsOff.mouseStrength]=cfg.mouseStrength;
+		a[paramsOff.rhoMean]=cfg.rhoMean||0;
 		a[paramsOff.mouseVX]=cfg.mouseVX||0;
 		a[paramsOff.mouseVY]=cfg.mouseVY||0;
 		a[paramsOff.mouseR]=cfg.mouseR;

@@ -123,6 +123,10 @@ async function testPlumbing() {
 		"buoy=" + pool.buoy.size + "B usage=" + pool.buoy.usage + " read usage=" + pool.buoyRead.usage);
 	check("the buoySample compute pipeline is compiled with the params struct prefix",
 		sink.modules.some(m => m.label === "buoySample-mod" && /struct Params/.test(m.code) && /@workgroup_size\(64\)/.test(m.code)));
+	const projectCode = sink.modules.find(m => m.label === "project-mod").code;
+	check("WGSL pressure kernel retains opposite-color values between red/black sweeps",
+		/var p = src;/.test(projectCode) && /\(u32\(x \+ y\) & 1u\) == COLOR/.test(projectCode),
+		"color gate and source-copy initialization are both present");
 
 	const buoyEvery = cfg.buoySampleEvery;
 	const frames = 4 * buoyEvery;
@@ -161,6 +165,9 @@ async function testPlumbing() {
 		uni[5] === cfg.substeps && uni[88] === cfg.buoyX0 && uni[90] === cfg.buoyW &&
 		uni[93] === 1 && Math.abs(uni[92] - cfg.buoySub) < 1e-6,
 		"substeps=" + uni[5] + " rect=[" + [uni[88], uni[89], uni[90], uni[91]].join(",") + "] show=" + uni[93]);
+	check("the force kernel receives the live mean density in params slot 27",
+		uni[27] === Math.fround(cfg.rhoMean) && cfg.rhoMean > 0,
+		"uniform=" + uni[27] + " cfg=" + cfg.rhoMean);
 	check("paused redraw pushes params too, so toggles show without a sim step",
 		(() => {
 			const n = sink.writes.filter(w => w === "params").length;

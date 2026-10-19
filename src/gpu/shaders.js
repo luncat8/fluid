@@ -441,8 +441,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 	// ---------- conduction (0.4.0): clamped pairwise exchange, ping-pong ----------
-	// each cell sums its four face exchanges from the pre-update state; the
-	// neighbour computes the exact negation, so E is conserved by construction.
+	// each cell sums four face exchanges from the pre-update state; neighbours
+	// compute equal-and-opposite f32 fluxes, with only per-cell sum rounding left.
 	shaders.conduction=`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;

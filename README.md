@@ -53,8 +53,26 @@ configuration synchronization. The mock runs no shader,
 so it is plumbing only, not a numeric oracle.
 Keep conformance output in `experiments/logs/<date>-conformance.log`.
 
-No build, no dependencies, no modules, no network. All WGSL is inline as JS
-template strings; `file://` works.
+For numeric CPU/GPU parity, the optional `node experiments/gpu-parity.mjs` runner
+executes the actual compute shaders and compares mass, thermal fields, velocity,
+pressure, flux, divergence source, and flags at selected steps. It uses the optional
+Node `webgpu` package and requires a working hardware or software WebGPU backend (a
+null backend is not a numeric oracle). Install it outside the repo and run, for example:
+
+```sh
+npm install --prefix /tmp/fluid-webgpu webgpu@0.6.2
+FLUID_WEBGPU_MODULE=/tmp/fluid-webgpu/node_modules/webgpu/index.js \
+  FLUID_WEBGPU_BACKEND=vulkan node experiments/gpu-parity.mjs
+```
+
+The measured 500-step heated-box results are recorded in
+`experiments/logs/2026-10-19-gpu-parity.log`. Per the clarified t8 criterion, aggregate
+total-E and mean-T are required below 2e-6; this run meets it. Pointwise E/T drift is
+reported separately in the log. Browser/hardware GPU performance is still pending.
+
+The app has no build-time or runtime dependencies. All WGSL is inline as JS
+template strings; `file://` works. The optional numeric parity experiment is the one
+exception and keeps its Node dependency outside the repository.
 
 Start with `0.0.0-plan.md` for the architecture and the scheme spec. Development
 records are in `archive/*-worklog.md`.
