@@ -82,6 +82,7 @@
 		overlay:1,
 		colorGain:1.2,
 		statsEvery:30,
+		gpuTiming:0,
 		cflTarget:0.8,
 		substepMax:24,
 		substepsAuto:true,

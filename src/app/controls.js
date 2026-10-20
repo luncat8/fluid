@@ -91,6 +91,11 @@
 			subChk.checked=!!cfg.substepsAuto;
 			subChk.addEventListener("change",()=>{cfg.substepsAuto=subChk.checked;});
 		}
+		const timingChk=document.getElementById("ctrl-gputiming");
+		if(timingChk){
+			timingChk.checked=cfg.gpuTiming>0;
+			timingChk.addEventListener("change",()=>{cfg.gpuTiming=timingChk.checked?1:0;});
+		}
 		// the body spawns from the scenario, so toggling it respawns instead of reset
 		const buoyChk=document.getElementById("ctrl-buoy");
 		if(buoyChk){

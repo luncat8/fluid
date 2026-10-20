@@ -471,3 +471,55 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   `TCeil`, `gravityY`, `heatPower`, `coolTop`) only when `cfg._prevScenario !==
   cfg.scenario`, or explicit overrides passed to `solver.create(cfg)` on a fresh
   config object get wiped on initial reset.
+
+## 2026-10-20 Ampere hardware sign-off of the phase scenarios (0.5.0 a10)
+
+- pitfall: `fMom=0` in a browser capture is most likely correct, not a dead counter.
+  `frozenMomentum` charges only on the freeze *transition* (`frozen && prev frozen
+  flag == 0`), sampling pre-zeroing cell velocity, and the current scenarios freeze
+  quasi-statically: every transition happens at init (velocity exactly 0) and the
+  solid inventory only shrinks afterwards (verified on the CPU oracle, rain/cycle,
+  10 s sim; at N=512 rain ends with 42436 solid cells vs 42496 initialized cold
+  rows). A capture can show 42k solid cells and still legitimately read `fMom=0`.
+  Check sol-vs-initialized-rows arithmetic before suspecting the stats path; note
+  the GPU fMom path has never carried a nonzero value end-to-end — `gpu-parity.mjs`
+  compares phaseCounts + latentChargedE only, and latE sharing the accum texture +
+  reduction is currently the only live proof of that plumbing.
+- skill: per-substep cost `queue_wait / ns` is ~2.1-2.6 ms at 512^2 (MG, K=60) on
+  Ampere across all five phase scenarios, so frame rate is driven by the
+  auto-substep count (ns=12-15 in boiling scenarios), not by CPU encode
+  (<= 0.29 ms) or per-pass overhead. For performance work use `jet` as the watch
+  case (33.3 fps, closest to the a10 bar) and quote cost per substep, not per
+  frame, when comparing captures with different CFL histories.
+
+## 2026-10-20 solver-work studies (0.6.0 t3) and timestamp profiling (t1)
+
+- pitfall: `diag.divAfter` / sampled `maxDiv` cannot judge projection quality in
+  boiling scenarios: the projection targets `div u = S`, so post-projection
+  divergence floors at `max|S|` (~19/s in jet) and every solver setting from
+  RB K20 to the full default reads the same. Use the true Poisson residual
+  `mg.residualNorm()/divBefore` on the oracle, or an S=0 scenario (dam), to
+  compare solver variants (experiments/mg-work.js vs mg-work2.js).
+- skill: count GPU solver work two ways before arguing about it: fine-sweep
+  equivalents (cells) and dispatch count. The shipping default (2 cycles,
+  pre4/post8, K=60 coarse) is 36.5 feq but 295 dispatches per projection, 240
+  of them tiny coarse red/black dispatches (129^2) — dispatch-bound, not
+  cell-bound. Coarse K is therefore the first knob: at 2 cycles K60->20 keeps
+  dam div at 0.29 vs 0.17 (round 2) while cutting 160 dispatches; at 1 cycle
+  K is free (fine-level error dominates). The second V-cycle is worth ~20x
+  residual on dam but indistinguishable on jet/cycle (trueRes 3.3e-2/4.0e-2 for
+  cur, c2K20 and c1K20 alike) — cycle count is a quality knob for liquid-only
+  flow, a pure cost in boiling flow.
+- pitfall: under-smoothed multigrid is *unstable*, not just inaccurate:
+  1 cycle with pre2/post4 blows up to NaN in `cycle` (step 40 at N=128,
+  dt=1/240); NaN fields read as maxM=0/div=0 because NaN loses every max
+  reduction, so check finiteness of totals, not the divergence line. The
+  coarse correction injects a component that post-smoothing must damp at
+  coefficient jumps: pre2/post8, pre3/post6 and 2 cycles are all stable.
+  Keep pre+post >= 10 sweeps around the correction at 1 cycle.
+- skill: timestampQueries only exist at pass boundaries, so per-group GPU
+  timing means splitting the frame's single compute pass at group boundaries.
+  Keep the split encode *dispatch-identical* to the fast path (same segment
+  functions) and verify mechanically: diff the ordered setPipeline/setBindGroup/
+  dispatch sequence against git; profiled fps is then only mildly pessimistic
+  and group proportions are trustworthy.

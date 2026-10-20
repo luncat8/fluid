@@ -1,7 +1,7 @@
 # Fluid
 
-A conservative 2D WebGPU fluid engine for interactive games. One substance, three
-conserved color tracers, conserved internal energy; aggregate phases later. The default
+A conservative 2D WebGPU fluid engine for interactive games. One substance across
+solid/liquid/gas phases, three conserved color tracers, conserved internal energy. The default
 grid is 512×512; 1024×1024 runs about four times as many cells per pass.
 Currently implemented: full velocity solver (forces, semi-Lagrangian advection,
 variable-density red-black Gauss-Seidel projection), donor-cell mass/energy transport,
@@ -12,10 +12,11 @@ ledger-accounted heater/cold-plate sources and Boussinesq buoyancy (convection
 scenario: an unstably stratified box, hot at the bottom and cold at the top,
 sustained by a thermostat-capped heater band and a cold plate; selecting it
 switches to the temperature view, whose range matches the stratification), and a CPU reference solver with a
-conformance suite. GPU thermal pipelines mirror the CPU ones; browser parity/performance
-measurements remain pending. The CPU reference additionally carries the 0.5.0 phase core
+conformance suite. GPU thermal pipelines mirror the CPU ones. The 0.5.0 phase core
 (caloric EOS with latent plateaus, freeze/melt masks, expansion source S, phase-aware
-conduction with an enthalpy budget); its WGSL port is pending.
+conduction with an enthalpy budget) is implemented in both the CPU reference and WGSL
+with CPU/GPU parity, and is signed off on Ampere hardware at 33-134 fps across the five
+phase scenarios (ice / cycle / jet / rain / arch).
 
 ## Run
 

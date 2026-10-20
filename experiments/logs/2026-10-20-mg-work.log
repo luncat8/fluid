@@ -1,0 +1,31 @@
+mg-work study · dt=0.004166666666666667 · warm-started pressure, S=4 coarse level
+feq = fine sweep equivalents per projection (GPU encodeStep shape), disp = dispatches per projection
+== jet N=128 (180 warmup + 90 measured steps) ==
+  cur c2 pre4 post8 K60    | relRes med=2.83e-1 | div med=1.89e+1 | div p95=1.93e+1 | cpu 112.3 ms/step | work=36.5 feq | disp=295 | maxM=0.1992 | neg=0
+  c1 pre4 post8 K60        | relRes med=2.83e-1 | div med=1.89e+1 | div p95=1.92e+1 | cpu 83.2 ms/step | work=18.8 feq | disp=148 | maxM=0.1992 | neg=0
+  c1 pre2 post4 K60        | relRes med=2.85e-1 | div med=1.89e+1 | div p95=1.94e+1 | cpu 93.4 ms/step | work=12.8 feq | disp=136 | maxM=0.1992 | neg=0
+  c1 pre4 post8 K20        | relRes med=2.83e-1 | div med=1.88e+1 | div p95=1.93e+1 | cpu 84.2 ms/step | work=16.3 feq | disp=68 | maxM=0.1992 | neg=0
+  c1 pre2 post4 K20        | relRes med=2.85e-1 | div med=1.89e+1 | div p95=1.94e+1 | cpu 78.7 ms/step | work=10.3 feq | disp=56 | maxM=0.1992 | neg=0
+  RB K60                   | relRes med=2.87e-1 | div med=1.88e+1 | div p95=1.97e+1 | cpu 209.7 ms/step | work=60.0 feq | disp=120 | maxM=0.1990 | neg=0
+  RB K20                   | relRes med=2.97e-1 | div med=1.99e+1 | div p95=2.09e+1 | cpu 107.5 ms/step | work=20.0 feq | disp=40 | maxM=0.1986 | neg=0
+== cycle N=128 (180 warmup + 90 measured steps) ==
+  cur c2 pre4 post8 K60    | relRes med=4.28e-1 | div med=1.75e+1 | div p95=1.78e+1 | cpu 151.1 ms/step | work=36.5 feq | disp=295 | maxM=1.0004 | neg=0
+  c1 pre4 post8 K60        | relRes med=4.30e-1 | div med=1.76e+1 | div p95=2.62e+1 | cpu 93.5 ms/step | work=18.8 feq | disp=148 | maxM=1.0005 | neg=0
+  c1 pre2 post4 K60        | relRes med=0.00e+0 | div med=0.00e+0 | div p95=0.00e+0 | cpu 58.6 ms/step | work=12.8 feq | disp=136 | maxM=0.0000 | neg=0
+  c1 pre4 post8 K20        | relRes med=4.30e-1 | div med=1.76e+1 | div p95=2.20e+1 | cpu 100.9 ms/step | work=16.3 feq | disp=68 | maxM=1.0005 | neg=0
+  c1 pre2 post4 K20        | relRes med=0.00e+0 | div med=0.00e+0 | div p95=0.00e+0 | cpu 44.6 ms/step | work=10.3 feq | disp=56 | maxM=0.0000 | neg=0
+  RB K60                   | relRes med=4.29e-1 | div med=1.75e+1 | div p95=1.78e+1 | cpu 219.0 ms/step | work=60.0 feq | disp=120 | maxM=1.0011 | neg=0
+  RB K20                   | relRes med=4.37e-1 | div med=1.78e+1 | div p95=2.74e+1 | cpu 108.3 ms/step | work=20.0 feq | disp=40 | maxM=1.0029 | neg=0
+== dam N=128 (180 warmup + 90 measured steps) ==
+  cur c2 pre4 post8 K60    | relRes med=4.56e-4 | div med=1.67e-1 | div p95=2.75e-1 | cpu 117.3 ms/step | work=36.5 feq | disp=295 | maxM=1.0000 | neg=0
+  c1 pre4 post8 K60        | relRes med=9.23e-3 | div med=3.30e+0 | div p95=7.29e+0 | cpu 94.3 ms/step | work=18.8 feq | disp=148 | maxM=1.0001 | neg=0
+  c1 pre2 post4 K60        | relRes med=2.21e-2 | div med=7.93e+0 | div p95=2.74e+1 | cpu 75.8 ms/step | work=12.8 feq | disp=136 | maxM=1.0001 | neg=0
+  c1 pre4 post8 K20        | relRes med=9.00e-3 | div med=3.33e+0 | div p95=7.08e+0 | cpu 84.7 ms/step | work=16.3 feq | disp=68 | maxM=1.0005 | neg=0
+  c1 pre2 post4 K20        | relRes med=2.20e-2 | div med=7.83e+0 | div p95=2.72e+1 | cpu 71.3 ms/step | work=10.3 feq | disp=56 | maxM=1.0005 | neg=0
+  RB K60                   | relRes med=3.81e-2 | div med=1.85e+1 | div p95=2.48e+1 | cpu 233.9 ms/step | work=60.0 feq | disp=120 | maxM=1.0053 | neg=0
+  RB K20                   | relRes med=1.47e-1 | div med=6.09e+1 | div p95=1.10e+2 | cpu 118.0 ms/step | work=20.0 feq | disp=40 | maxM=1.0179 | neg=0
+== jet N=256 scaling check (120 warmup + 60 measured steps) ==
+  cur c2 pre4 post8 K60    | relRes med=1.68e-1 | div med=1.86e+1 | div p95=1.88e+1 | cpu 509.6 ms/step | work=36.5 feq | disp=295 | maxM=0.2079 | neg=0
+  c1 pre2 post4 K20        | relRes med=1.66e-1 | div med=1.87e+1 | div p95=1.96e+1 | cpu 322.3 ms/step | work=10.3 feq | disp=56 | maxM=0.2078 | neg=0
+  RB K60                   | relRes med=1.87e-1 | div med=1.99e+1 | div p95=2.16e+1 | cpu 950.1 ms/step | work=60.0 feq | disp=120 | maxM=0.2077 | neg=0
+done

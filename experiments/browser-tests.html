@@ -66,7 +66,7 @@
 			<pre id="out">No run yet.</pre>
 		</div>
 	</div>
-	<p class="note">Each run resets between scenarios and uses the app's auto-CFL policy, FCT, gravity, pressure iteration count and multigrid settings. Stats are sampled every 30 frames and at the end. Queue wait includes driver/scheduling overhead; it is not a GPU timestamp. Keep the tab visible during a run. <code>?n=512&amp;frames=600&amp;scenarios=blobs,draw</code> selects the blob and scripted draw cases; append <code>&amp;mg=0</code> for the RB A/B and <code>&amp;auto=0&amp;ns=4</code> for fixed four-substep runs.</p>
+	<p class="note">Each run resets between scenarios and uses the app's auto-CFL policy, FCT, gravity, pressure iteration count and multigrid settings. Stats are sampled every 30 frames and at the end. Queue wait includes driver/scheduling overhead; it is not a GPU timestamp. Keep the tab visible during a run. <code>?n=512&amp;frames=600&amp;scenarios=blobs,draw</code> selects the blob and scripted draw cases; append <code>&amp;mg=0</code> for the RB A/B and <code>&amp;auto=0&amp;ns=4</code> for fixed four-substep runs. <code>&amp;k=</code>, <code>&amp;cycles=</code>, <code>&amp;pre=</code>, <code>&amp;post=</code>, <code>&amp;s=</code> tune the pressure solve, and <code>&amp;profile=1</code> adds per-group GPU timestamps where the adapter supports them.</p>
 
 	<script src="../src/core/config.js"></script>
 	<script src="../src/core/grid.js"></script>
@@ -77,6 +77,7 @@
 	<script src="../src/gpu/device.js"></script>
 	<script src="../src/gpu/shaders.js"></script>
 	<script src="../src/gpu/fields.js"></script>
+	<script src="../src/gpu/profiler.js"></script>
 	<script src="../src/gpu/passes.js"></script>
 	<script src="../src/gpu/solver.js"></script>
 	<script>
@@ -248,6 +249,8 @@
 			if (query.has("cycles")) cfg.mgCycles = Math.max(1, Math.round(Number(query.get("cycles")) || 2));
 			if (query.has("pre")) cfg.mgPre = Math.max(1, Math.round(Number(query.get("pre")) || 4));
 			if (query.has("post")) cfg.mgPost = Math.max(1, Math.round(Number(query.get("post")) || 8));
+			if (query.has("k")) cfg.pressureIters = Math.max(1, Math.round(Number(query.get("k")) || 60));
+			if (query.has("profile")) cfg.gpuTiming = query.get("profile") !== "0" ? 1 : 0;
 			return cfg;
 		}
 		async function waitForProgress() {
@@ -265,6 +268,16 @@
 			let queueMs = 0;
 			let lastNs = 1;
 			const sampled = { maxDiv: 0, maxM: 0, maxOver: 0 };
+			const GROUP_COUNT = 8;
+			const profAcc = { samples: 0, substeps: 0, ms: new Float64Array(GROUP_COUNT), lastFrame: -1 };
+			function takeProfile() {
+				const p = solver.getProfile ? solver.getProfile() : null;
+				if (!p || !p.valid || p.frame === profAcc.lastFrame) return;
+				profAcc.lastFrame = p.frame;
+				profAcc.samples++;
+				profAcc.substeps += p.substeps;
+				for (let i = 0; i < GROUP_COUNT; i++) profAcc.ms[i] += p.ms[i];
+			}
 			const started = performance.now();
 			const progressEvery = Math.max(1, Math.ceil(frames / 20));
 			const drawFrames = Math.max(1, Math.floor(frames * 0.4));
@@ -302,6 +315,7 @@
 				queueMs += performance.now() - submittedAt;
 				if (needStats) {
 					await solver.pollReadback();
+					takeProfile();
 					const stats = solver.getStats();
 					sampled.maxDiv = Math.max(sampled.maxDiv, stats.motion.maxDiv);
 					sampled.maxM = Math.max(sampled.maxM, stats.maxM);
@@ -316,6 +330,25 @@
 			}
 			const elapsedMs = performance.now() - started;
 			captureScenario(scenario, cfg, solver, frames, elapsedMs, encodeMs, queueMs, lastNs, sampled);
+			if (cfg.gpuTiming > 0) {
+				if (profAcc.samples > 0 && profAcc.substeps > 0) {
+					const names = Fluid.gpu.profiler.GROUP_NAMES;
+					const parts = [];
+					let stepSum = 0;
+					for (let i = 0; i < 5; i++) {
+						const v = profAcc.ms[i] / profAcc.substeps;
+						stepSum += v;
+						parts.push(names[i] + "=" + v.toFixed(3));
+					}
+					log("gpu timing (" + profAcc.samples + " samples): " + parts.join(" ") +
+						" ms/substep · step sum=" + stepSum.toFixed(3) +
+						" · disp=" + (profAcc.ms[6] / profAcc.samples).toFixed(3) +
+						" render=" + (profAcc.ms[7] / profAcc.samples).toFixed(3) +
+						" ms/frame · stats=" + (profAcc.ms[5] / profAcc.samples).toFixed(3) + " ms/sampled frame");
+				} else {
+					log("gpu timing: no samples (timestamp-query unavailable or readback starved)");
+				}
+			}
 		}
 		function setBusy(value) {
 			running = value;
@@ -364,6 +397,12 @@
 					" substeps=" + (cfg.substepsAuto ? "auto" : cfg.substepsFixed + " fixed") +
 					" FCT=" + cfg.fctLimiter + " gravity=" + cfg.gravityY + " scenarios=" + settings.scenarios.join(","));
 				log("timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.");
+				if (cfg.gpuTiming > 0) {
+					const tsOk = !!(gpu.features && gpu.features.has("timestamp-query"));
+					log("gpu timestamps: " + (tsOk
+						? "on (profiled frames split compute passes; read group proportions, fps is slightly pessimistic)"
+						: "requested but unavailable on this adapter"));
+				}
 				if (settings.scenarios.includes("draw")) {
 					log("draw input: scripted red dye stroke + 240/-120 cells/s mouse sweep over blobs for 40% of the frames.");
 				}

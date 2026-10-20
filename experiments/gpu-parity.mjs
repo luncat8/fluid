@@ -18,6 +18,7 @@ const modules = [
 	"src/core/buoy.js",
 	"src/gpu/shaders.js",
 	"src/gpu/fields.js",
+	"src/gpu/profiler.js",
 	"src/gpu/passes.js",
 	"src/gpu/solver.js",
 	"src/gpu/view.js"

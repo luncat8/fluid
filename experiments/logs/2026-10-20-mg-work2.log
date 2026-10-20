@@ -1,0 +1,22 @@
+mg-work2 · true Poisson residual (residualNorm/divBefore) + K sweep + stability bisect · dt=0.004166666666666667
+== K sweep at c2 pre4 post8, dam N=128 ==
+  cur c2 pre4 post8 K60    | trueRes med=7.69e-2 | div med=1.67e-1 | cpu 82.6 ms/step | work=36.5 feq | disp=295
+  c2 pre4 post8 K20        | trueRes med=7.70e-2 | div med=2.93e-1 | cpu 82.6 ms/step | work=31.5 feq | disp=135
+  c2 pre4 post8 K12        | trueRes med=7.72e-2 | div med=5.54e-1 | cpu 81.3 ms/step | work=30.5 feq | disp=103
+  c2 pre4 post8 K8         | trueRes med=7.75e-2 | div med=1.06e+0 | cpu 89.2 ms/step | work=30.0 feq | disp=87
+== true residual on boiling scenarios, N=128 ==
+-- jet --
+  cur c2 pre4 post8 K60    | trueRes med=3.32e-2 | div med=1.89e+1 | cpu 93.8 ms/step | work=36.5 feq | disp=295
+  c2 pre4 post8 K20        | trueRes med=3.29e-2 | div med=1.89e+1 | cpu 92.1 ms/step | work=31.5 feq | disp=135
+  c1 pre4 post8 K20        | trueRes med=3.35e-2 | div med=1.88e+1 | cpu 74.0 ms/step | work=16.3 feq | disp=68
+-- cycle --
+  cur c2 pre4 post8 K60    | trueRes med=4.03e-2 | div med=1.75e+1 | cpu 93.4 ms/step | work=36.5 feq | disp=295
+  c2 pre4 post8 K20        | trueRes med=4.00e-2 | div med=1.75e+1 | cpu 87.7 ms/step | work=31.5 feq | disp=135
+  c1 pre4 post8 K20        | trueRes med=4.16e-2 | div med=1.76e+1 | cpu 75.9 ms/step | work=16.3 feq | disp=68
+== cycle stability bisect, 480 steps (2 s), N=128 ==
+  c1 pre2 post4 K20       BLOWUP at step 40
+  c1 pre2 post8 K20       stable over 480 steps
+  c1 pre3 post6 K20       stable over 480 steps
+  c2 pre2 post4 K20       stable over 480 steps
+  c1 pre4 post8 K20       stable over 480 steps
+done

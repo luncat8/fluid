@@ -14,6 +14,7 @@
 	<script defer src="src/gpu/device.js"></script>
 	<script defer src="src/gpu/shaders.js"></script>
 	<script defer src="src/gpu/fields.js"></script>
+	<script defer src="src/gpu/profiler.js"></script>
 	<script defer src="src/gpu/passes.js"></script>
 	<script defer src="src/gpu/solver.js"></script>
 	<script defer src="src/gpu/view.js"></script>
@@ -52,6 +53,7 @@
 				<div class="ctrl-row">
 					<label class="ctrl-check" title="auto-cfl substepping; off runs the fixed count below"><input type="checkbox" id="ctrl-substeps"> Auto CFL</label>
 					<label class="ctrl-check" title="diagnostic floating body, dam scenario only"><input type="checkbox" id="ctrl-buoy"> Dam float</label>
+					<label class="ctrl-check" title="per-group GPU timestamps in the HUD; needs the timestamp-query feature"><input type="checkbox" id="ctrl-gputiming"> GPU times</label>
 				</div>
 				<div class="ctrl-row">
 					<label for="ctrl-substeps-fixed" title="steps per frame while auto substeps is off">Fixed steps</label>

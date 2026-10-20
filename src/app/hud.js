@@ -57,6 +57,20 @@
 				" CPU encode="+perf.cpuMs.toFixed(2)+"ms queue="+perf.queueMs.toFixed(2)+"ms"+
 				" vCap="+Math.round(cfg.vClamp);
 		}
+		// per-group GPU timestamps (0.6.0 t1); empty while the toggle is off
+		function gpuTimingLine(){
+			if(!cfg.gpuTiming)return "";
+			const p=solver&&solver.getProfile?solver.getProfile():null;
+			if(!p)return "gpu timing: unavailable (no timestamp-query)";
+			if(!p.valid)return "gpu timing: waiting for a sample";
+			const names=Fluid.gpu.profiler.GROUP_NAMES;
+			const ns=Math.max(1,p.substeps);
+			let line="gpu ms/substep";
+			for(let i=0;i<5;i++)line+=" "+names[i]+"="+(p.ms[i]/ns).toFixed(2);
+			line+=" | ms/frame disp="+p.ms[6].toFixed(2)+" render="+p.ms[7].toFixed(2)+
+				" stats="+p.ms[5].toFixed(2)+" (frame#"+p.frame+" ns="+p.substeps+")";
+			return line;
+		}
 		function cflBound(s){
 			return 2*s.motion.maxVel*cfg.dt;
 		}
@@ -111,6 +125,8 @@
 			lines.push("statsFrame#"+s.statsFrame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+" "+solverTag+
 				" ns="+substepLabel()+" scenario="+cfg.scenario+" FCT="+cfg.fctLimiter+" gravity="+cfg.gravityY);
 			lines.push(performanceLine());
+			const gtl=gpuTimingLine();
+			if(gtl)lines.push(gtl);
 			lines.push(healthLine(s));
 			lines.push(buoyLine());
 			return lines.join("\n");
@@ -147,7 +163,8 @@
 			if(!solver)return;
 			const s=solver.getStats();
 			if(perfEl){
-				const txt=performanceLine()+"\nN="+cfg.N+"  dt="+cfg.dt.toFixed(4)+
+				const gtl=gpuTimingLine();
+				const txt=performanceLine()+(gtl?"\n"+gtl:"")+"\nN="+cfg.N+"  dt="+cfg.dt.toFixed(4)+
 					"  K="+cfg.pressureIters+(cfg.useMultigrid?" mg"+cfg.mgCoarsen+"x"+cfg.mgCycles:"")+
 					"  ns="+substepLabel()+
 					"  maxVel="+fmt(s.motion.maxVel)+"  frame#"+s.frame+" stats#"+s.statsFrame+

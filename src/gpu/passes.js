@@ -392,22 +392,30 @@
 		state.t=t;
 		state.v=1-v;
 	}
-	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles){
+	// one substep in five segments; io threads the ping-pong indices through
+	// them so encodeStepProfiled can split passes at the segment boundaries
+	// (0.6.0 t1) without changing the dispatch sequence.
+	const stepIo={m:0,t:0,v:0};
+	function encodeVelAdv(cpass,pool,pipes,groups,io){
+		const wx=pool.workgroupX,wy=pool.workgroupY;
+		cpass.setPipeline(pipes.forces);
+		cpass.setBindGroup(0,groups.forces[io.m][io.t][io.v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		io.v=1-io.v;
+		cpass.setPipeline(pipes.advectVel);
+		cpass.setBindGroup(0,groups.advectVel[io.v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		io.v=1-io.v;
+	}
+	function encodeRhs(cpass,pool,pipes,groups,io){
+		cpass.setPipeline(pipes.rhs);
+		cpass.setBindGroup(0,groups.rhs[io.v]);
+		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
+	}
+	function encodePressure(cpass,pool,pipes,groups,io,iters,mgOn,mgPre,mgPost,mgCycles){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
 		const mx=pool.mgWorkgroupX,my=pool.mgWorkgroupY;
-		const m=state.m,t=state.t;
-		let v=state.v;
-		cpass.setPipeline(pipes.forces);
-		cpass.setBindGroup(0,groups.forces[m][t][v]);
-		cpass.dispatchWorkgroups(wx,wy);
-		v=1-v;
-		cpass.setPipeline(pipes.advectVel);
-		cpass.setBindGroup(0,groups.advectVel[v]);
-		cpass.dispatchWorkgroups(wx,wy);
-		v=1-v;
-		cpass.setPipeline(pipes.rhs);
-		cpass.setBindGroup(0,groups.rhs[v]);
-		cpass.dispatchWorkgroups(wx,wy);
+		const m=io.m;
 		if(mgOn){
 			const cycles=Math.max(1,Math.round(mgCycles||1));
 			cpass.setPipeline(pipes.mgCoarsen);
@@ -460,19 +468,22 @@
 			}
 		}
 		cpass.setPipeline(pipes.applyGrad);
-		cpass.setBindGroup(0,groups.applyGrad[m][v]);
+		cpass.setBindGroup(0,groups.applyGrad[m][io.v]);
 		cpass.dispatchWorkgroups(wx,wy);
-		v=1-v;
+		io.v=1-io.v;
+	}
+	function encodeTransport(cpass,pool,pipes,groups,state,io,fctOn){
+		const wx=pool.workgroupX,wy=pool.workgroupY;
+		const m=io.m;
 		cpass.setPipeline(pipes.flux);
-		cpass.setBindGroup(0,groups.flux[v]);
+		cpass.setBindGroup(0,groups.flux[io.v]);
 		cpass.dispatchWorkgroups(wx,wy);
 		cpass.setPipeline(pipes.advectMass);
 		cpass.setBindGroup(0,groups.advectMass[m]);
 		cpass.dispatchWorkgroups(wx,wy);
 		cpass.setPipeline(pipes.advectTherm);
-		cpass.setBindGroup(0,groups.advectTherm[t]);
+		cpass.setBindGroup(0,groups.advectTherm[io.t]);
 		cpass.dispatchWorkgroups(wx,wy);
-		let nextM=(m+1)%3;
 		if(fctOn){
 			cpass.setPipeline(pipes.limiterPrepare);
 			cpass.setBindGroup(0,groups.limiterPrepare[m]);
@@ -482,13 +493,18 @@
 			cpass.dispatchWorkgroups(wx,wy);
 			state.m=(m+2)%3;
 		}else{
-			state.m=nextM;
+			state.m=(m+1)%3;
 		}
+		io.m=state.m;
+	}
+	function encodePhaseChain(cpass,pool,pipes,groups,state,io){
 		// 0.5.0 phase + thermal chain: phaseEos + freezeVel -> conduction ->
 		// heatSources -> phaseEos + freezeVel. double flip keeps flags/sfield/accum
 		// in their canonical textures and preserves therm/vel ping-pong parity.
-		const mf=state.m;
-		let ts=1-t;
+		const wx=pool.workgroupX,wy=pool.workgroupY;
+		const mf=io.m;
+		let v=io.v;
+		let ts=1-io.t;
 		cpass.setPipeline(pipes.phaseEos);
 		cpass.setBindGroup(0,groups.phaseA[mf][ts][v]);
 		cpass.dispatchWorkgroups(wx,wy);
@@ -515,6 +531,25 @@
 		v=1-v;
 		state.t=ts;
 		state.v=v;
+		io.t=ts;
+		io.v=v;
+	}
+	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles){
+		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
+		encodeVelAdv(cpass,pool,pipes,groups,stepIo);
+		encodeRhs(cpass,pool,pipes,groups,stepIo);
+		encodePressure(cpass,pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles);
+		encodeTransport(cpass,pool,pipes,groups,state,stepIo,fctOn);
+		encodePhaseChain(cpass,pool,pipes,groups,state,stepIo);
+	}
+	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles){
+		const G=Fluid.gpu.profiler.GROUP;
+		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
+		encodeVelAdv(prof.pass(encoder,G.vel,"vel"),pool,pipes,groups,stepIo);
+		encodeRhs(prof.pass(encoder,G.rhs,"rhs"),pool,pipes,groups,stepIo);
+		encodePressure(prof.pass(encoder,G.press,"press"),pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles);
+		encodeTransport(prof.pass(encoder,G.trans,"trans"),pool,pipes,groups,state,stepIo,fctOn);
+		encodePhaseChain(prof.pass(encoder,G.phase,"phase"),pool,pipes,groups,state,stepIo);
 	}
 	function encodeStats(cpass,pool,pipes,groups,state){
 		cpass.setPipeline(pipes.statsA);
@@ -550,6 +585,6 @@
 		rpass.setBindGroup(0,groups.render);
 		rpass.draw(3);
 	}
-	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeStep,encodeStats,encodeBuoySample,encodeDisplay,encodePaint,encodeRender};
+	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeStep,encodeStepProfiled,encodeStats,encodeBuoySample,encodeDisplay,encodePaint,encodeRender};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.passes;
 })(globalThis);

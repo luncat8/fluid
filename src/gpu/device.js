@@ -29,7 +29,10 @@
 		}
 		let device=null;
 		try{
-			device=await adapter.requestDevice({requiredFeatures:[],requiredLimits:{}});
+			// timestamp-query is optional (0.6.0 t1): request it when offered so
+			// the profiler can run, never require it.
+			const wantTimestamps=!!(adapter.features&&adapter.features.has("timestamp-query"));
+			device=await adapter.requestDevice({requiredFeatures:wantTimestamps?["timestamp-query"]:[],requiredLimits:{}});
 		}catch(e){
 			showError(errors,errorPanel,"requestDevice failed: "+e.message);
 			return null;
@@ -53,7 +56,8 @@
 			showError(errors,errorPanel,"context.configure failed: "+e.message);
 			return null;
 		}
-		return {adapter,device,context,format,errors};
+		const timestamps=!!(device.features&&device.features.has("timestamp-query"));
+		return {adapter,device,context,format,errors,timestamps};
 	}
 	Fluid.gpu.device={init};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.device;

@@ -10,6 +10,9 @@
 		let pool=fields.createPool(device,cfg.N,cfg.mgCoarsen);
 		const pipes=passes.createPipelines(device,format);
 		let groups=passes.makeBindGroups(device,pipes,pool);
+		// null when the module is absent or the device lacks timestamp-query
+		const prof=Fluid.gpu.profiler?Fluid.gpu.profiler.create(device):null;
+		const PROFILE_GROUP=Fluid.gpu.profiler?Fluid.gpu.profiler.GROUP:null;
 		const paramsArray=Fluid.core.config.makeParamsArray();
 		const buoy=Fluid.core.buoy.create(cfg);
 		const buoyRaw=new Float32Array(Fluid.core.buoy.SAMPLE_LEN);
@@ -61,6 +64,7 @@
 		}
 		function reset(){
 			statsGeneration++;
+			if(prof)prof.invalidate();
 			pendingRead=false;
 			buoyPending=false;
 			buoyGeneration=statsGeneration;
@@ -160,20 +164,38 @@
 			cfg.chargeLatent=1;
 			cfg.rhoMean=(ledger.initialM+ledger.injectedM-ledger.removedM)/(cfg.N*cfg.N);
 			writeParams();
+			// profiling splits the one compute pass at timing-group boundaries;
+			// the dispatch sequence is identical either way (0.6.0 t1).
+			const profiling=!!(prof&&cfg.gpuTiming>0);
 			const encoder=device.createCommandEncoder({label:"frame"});
-			const cpass=encoder.beginComputePass({label:"sim"});
-			for(let s=0;s<substeps;s++){
-				passes.encodeStep(cpass,pool,pipes,groups,state,cfg.pressureIters,cfg.fctLimiter>0,
-					!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1);
+			if(profiling){
+				prof.beginFrame(substeps,frameCount+1);
+				for(let s=0;s<substeps;s++){
+					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,cfg.pressureIters,cfg.fctLimiter>0,
+						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1);
+				}
+				if(needStats||needBuoy){
+					const cp=prof.pass(encoder,PROFILE_GROUP.stats,"stats");
+					if(needStats)passes.encodeStats(cp,pool,pipes,groups,state);
+					if(needBuoy)passes.encodeBuoySample(cp,pool,pipes,groups,state);
+				}
+				passes.encodeDisplay(prof.pass(encoder,PROFILE_GROUP.disp,"display"),pool,pipes,groups,state);
+				prof.closePass();
+			}else{
+				const cpass=encoder.beginComputePass({label:"sim"});
+				for(let s=0;s<substeps;s++){
+					passes.encodeStep(cpass,pool,pipes,groups,state,cfg.pressureIters,cfg.fctLimiter>0,
+						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1);
+				}
+				if(needStats){
+					passes.encodeStats(cpass,pool,pipes,groups,state);
+				}
+				if(needBuoy){
+					passes.encodeBuoySample(cpass,pool,pipes,groups,state);
+				}
+				passes.encodeDisplay(cpass,pool,pipes,groups,state);
+				cpass.end();
 			}
-			if(needStats){
-				passes.encodeStats(cpass,pool,pipes,groups,state);
-			}
-			if(needBuoy){
-				passes.encodeBuoySample(cpass,pool,pipes,groups,state);
-			}
-			passes.encodeDisplay(cpass,pool,pipes,groups,state);
-			cpass.end();
 			if(needStats&&!readbackInFlight){
 				encoder.copyBufferToBuffer(pool.stats,0,pool.statsRead,0,128);
 				stats.writeExpectedTotals(pendingExpected,ledger);
@@ -188,12 +210,15 @@
 				buoyPending=true;
 			}
 			const view=context.getCurrentTexture().createView();
-			const rpass=encoder.beginRenderPass({
+			const rdesc={
 				label:"render",
 				colorAttachments:[{view,loadOp:"clear",clearValue:{r:0.02,g:0.03,b:0.04,a:1},storeOp:"store"}]
-			});
+			};
+			if(profiling)rdesc.timestampWrites=prof.tsWrites(PROFILE_GROUP.render);
+			const rpass=encoder.beginRenderPass(rdesc);
 			passes.encodeRender(rpass,pipes,groups);
 			rpass.end();
+			if(profiling)prof.finish(encoder);
 			device.queue.submit([encoder.finish()]);
 			frameCount++;
 			timeAcc+=dts*substeps;
@@ -216,6 +241,10 @@
 		async function pollReadback(){
 			await pollStats();
 			await pollBuoy();
+			if(prof)await prof.poll();
+		}
+		function getProfile(){
+			return prof?prof.results:null;
 		}
 		async function pollBuoy(){
 			if(!buoyPending||buoyInFlight)return;
@@ -331,9 +360,10 @@
 		}
 		function destroy(){
 			fields.destroyPool(pool);
+			if(prof)prof.destroy();
 		}
 		reset();
-		const api={pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollReadback,getStats,buoy,resize,destroy,flagsMirror};
+		const api={pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollReadback,getStats,getProfile,buoy,resize,destroy,flagsMirror};
 		return api;
 	}
 	Fluid.gpu.solver={create:createSolver};
