@@ -15,7 +15,7 @@ class El{
 	fire(type){for(const fn of this.listeners[type]||[])fn({type,target:this});}
 }
 const ids=["controls-panel","ctrl-grid","ctrl-grid-val","ctrl-iters","ctrl-iters-val",
-	"ctrl-substeps-fixed","ctrl-substeps-fixed-val","ctrl-fct","ctrl-gravity","ctrl-buoy"];
+	"ctrl-substeps","ctrl-substeps-fixed","ctrl-substeps-fixed-val","ctrl-fct","ctrl-gravity","ctrl-buoy"];
 const els=Object.fromEntries(ids.map(id=>[id,new El()]));
 global.document={getElementById:id=>els[id]||null,querySelectorAll:()=>[]};
 global.window=new El();
@@ -51,6 +51,11 @@ for(const [target,type] of [[grid,"pointercancel"],[grid,"lostpointercapture"],[
 	check(grid.value===640&&out.textContent===640,"slider ownership is released on "+(target===window?"window ":"")+type);
 }
 check(resizes===1,"cancelled slider gestures do not commit a resize");
+const auto=els["ctrl-substeps"];
+check(auto.checked,"auto-CFL checkbox initializes from the config");
+auto.checked=false;
+auto.fire("change");
+check(cfg.substepsAuto===false,"auto-CFL checkbox switches to fixed steps");
 const fixed=els["ctrl-substeps-fixed"];
 fixed.fire("pointerdown");
 fixed.value="6";

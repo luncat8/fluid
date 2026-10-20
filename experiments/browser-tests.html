@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Fluid · browser GPU diagnostics</title>
+	<style>
+		:root { color-scheme: dark; font: 14px/1.5 ui-monospace, monospace; background: #10161c; color: #d5e3ed; }
+		body { margin: 0 auto; max-width: 1100px; padding: 24px; }
+		h1 { font-size: 22px; margin: 0 0 6px; }
+		p { color: #9dafbe; max-width: 90ch; }
+		code { background: #182630; padding: 1px 5px; }
+		.layout { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.3fr); gap: 20px; align-items: start; }
+		canvas { width: 100%; max-width: 512px; aspect-ratio: 1; background: #080d12; border: 1px solid #354450; image-rendering: pixelated; }
+		.panel { min-width: 0; }
+		.controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 10px 0; }
+		label { color: #9dafbe; }
+		input[type=number] { width: 82px; padding: 5px 7px; background: #131a22; color: #d5e3ed; border: 1px solid #3a5569; }
+		input[type=checkbox] { accent-color: #7fd8d0; }
+		button { font: inherit; padding: 7px 12px; color: #d5e3ed; background: #23333f; border: 1px solid #526977; cursor: pointer; }
+		button.primary { background: #1d6fe0; color: white; border-color: #1d6fe0; }
+		button:disabled { opacity: .5; cursor: wait; }
+		#status { min-height: 1.5em; margin: 10px 0; color: #7fd8d0; }
+		#copy-feedback { color: #7fd8d0; }
+		pre { overflow: auto; max-height: 65vh; padding: 14px; background: #080d12; border: 1px solid #263043; white-space: pre-wrap; word-break: break-word; }
+		#error-panel { display: none; white-space: pre-wrap; color: #ff9b91; border-left: 3px solid #ff6f61; padding: 8px 12px; background: #352123; }
+		.note { font-size: 12px; }
+		@media (max-width: 700px) { body { padding: 14px; } .layout { grid-template-columns: 1fr; } }
+	</style>
+</head>
+<body>
+	<h1>Fluid · browser GPU diagnostics</h1>
+	<p>Runs the same WebGPU solver as <code>index.html</code> through the selected scenarios with fixed, serial frames. It records conservation, positivity, divergence, substeps and queue wait in one copyable report. The scripted draw/stir case repeats a dye stroke and mouse-force sweep over the blobs scene. Divergence and compression are measurements, not pass/fail gates. This is the real-device complement to <code>node experiments/run-all.js</code>.</p>
+	<p>For the browser's finer <code>performance.now()</code> resolution, serve this page with <code>python3 run_index.py --page experiments/browser-tests.html</code>. The server sets COOP/COEP; the report shows whether the page is cross-origin isolated. For the red-black baseline, open the same page with <code>?mg=0</code>; grid, frame count and scenarios are otherwise identical.</p>
+	<div class="layout">
+		<div>
+			<canvas id="c" width="512" height="512" aria-label="WebGPU test render"></canvas>
+			<div id="error-panel" role="alert"></div>
+		</div>
+		<div class="panel">
+			<div class="controls">
+				<label for="grid">Grid N</label>
+				<input id="grid" type="number" min="64" max="1024" step="64" value="512">
+				<label for="frames">Frames / scenario</label>
+				<input id="frames" type="number" min="1" max="3600" step="30" value="300">
+			</div>
+			<div class="controls" role="group" aria-label="Scenarios">
+				<label><input type="checkbox" id="case-blobs" checked> blobs</label>
+				<label><input type="checkbox" id="case-dam" checked> dam</label>
+				<label><input type="checkbox" id="case-still" checked> still</label>
+				<label><input type="checkbox" id="case-convection" checked> convection</label>
+				<label><input type="checkbox" id="case-draw" checked> scripted draw/stir</label>
+			</div>
+			<div class="controls">
+				<button id="run" class="primary" type="button">Run selected scenarios</button>
+				<button id="copy" type="button" disabled>Copy report</button>
+				<button id="save" type="button" disabled>Save report</button>
+				<span id="copy-feedback" aria-live="polite"></span>
+			</div>
+			<div id="status" role="status">Ready. GPU initializes when the run starts.</div>
+			<pre id="out">No run yet.</pre>
+		</div>
+	</div>
+	<p class="note">Each run resets between scenarios and uses the app's auto-CFL policy, FCT, gravity, pressure iteration count and multigrid settings. Stats are sampled every 30 frames and at the end. Queue wait includes driver/scheduling overhead; it is not a GPU timestamp. Keep the tab visible during a run. <code>?n=512&amp;frames=600&amp;scenarios=blobs,draw</code> selects the blob and scripted draw cases; append <code>&amp;mg=0</code> for the RB A/B and <code>&amp;auto=0&amp;ns=4</code> for fixed four-substep runs.</p>
+
+	<script src="../src/core/config.js"></script>
+	<script src="../src/core/grid.js"></script>
+	<script src="../src/core/stats.js"></script>
+	<script src="../src/core/multigrid.js"></script>
+	<script src="../src/core/solver.js"></script>
+	<script src="../src/core/buoy.js"></script>
+	<script src="../src/gpu/device.js"></script>
+	<script src="../src/gpu/shaders.js"></script>
+	<script src="../src/gpu/fields.js"></script>
+	<script src="../src/gpu/passes.js"></script>
+	<script src="../src/gpu/solver.js"></script>
+	<script>
+		"use strict";
+		const byId = id => document.getElementById(id);
+		const out = byId("out");
+		const statusEl = byId("status");
+		const runBtn = byId("run");
+		const copyBtn = byId("copy");
+		const saveBtn = byId("save");
+		const canvas = byId("c");
+		const errorPanel = byId("error-panel");
+		const lines = [];
+		const query = new URLSearchParams(location.search);
+		let gpu = null;
+		let adapter = null;
+		let context = null;
+		let format = null;
+		let running = false;
+		let gpuErrors = [];
+
+		if (query.has("n")) byId("grid").value = query.get("n");
+		if (query.has("frames")) byId("frames").value = query.get("frames");
+		if (query.has("scenarios")) {
+			const selected = new Set(query.get("scenarios").split(",").map(name => name.trim()));
+			for (const name of ["blobs", "dam", "still", "convection", "draw"]) {
+				byId("case-" + name).checked = selected.has(name);
+			}
+		}
+
+		function log(line) {
+			lines.push(line);
+			out.textContent = lines.join("\n");
+			out.scrollTop = out.scrollHeight;
+			console.log(line);
+		}
+		function setStatus(text) {
+			statusEl.textContent = text;
+		}
+		function timerQuantumMs() {
+			let previous = performance.now();
+			let smallest = Infinity;
+			for (let i = 0; i < 10000; i++) {
+				const current = performance.now();
+				const delta = current - previous;
+				if (delta > 0 && delta < smallest) smallest = delta;
+				previous = current;
+			}
+			return smallest;
+		}
+		function solverTag(cfg, pool) {
+			return cfg.useMultigrid ? "mgS" + pool.mgS + "x" + cfg.mgCycles +
+				"(pre" + cfg.mgPre + "/post" + cfg.mgPost + ")" : "rb";
+		}
+		function driftLabel(value) {
+			const amount = Math.abs(value);
+			return amount < 1e-6 ? "ok" : amount < 1e-3 ? "warn" : "bad";
+		}
+		function finiteSnapshot(stats) {
+			const values = [
+				stats.totals.m, stats.totals.dr, stats.totals.dg, stats.totals.db, stats.totals.E,
+				stats.expected.m, stats.expected.dr, stats.expected.dg, stats.expected.db, stats.expected.E,
+				stats.mins.m, stats.mins.dr, stats.mins.dg, stats.mins.db, stats.mins.E,
+				stats.maxM, stats.motion.maxVel, stats.motion.maxDiv, stats.motion.pMin, stats.motion.pMax
+			];
+			return values.every(Number.isFinite);
+		}
+		function captureScenario(scenario, cfg, solver, frames, elapsedMs, encodeMs, queueMs, lastNs, sampled) {
+			const stats = solver.getStats();
+			const names = ["m", "dr", "dg", "db", "E"];
+			let worstDrift = 0;
+			const driftValues = names.map(name => {
+				const drift = Fluid.core.stats.driftRel(stats.totals[name], stats.expected[name]);
+				worstDrift = Math.max(worstDrift, Math.abs(drift));
+				return { name, drift };
+			});
+			const finite = finiteSnapshot(stats);
+			const negative = stats.cntNeg > 0 || Math.min(stats.mins.m, stats.mins.dr, stats.mins.dg,
+				stats.mins.db, stats.mins.E) < -1e-8;
+			const basicOk = finite && !negative && worstDrift < 1e-3;
+			const label = solverTag(cfg, solver.pool);
+			const simHz = elapsedMs > 0 ? frames * 1000 / elapsedMs : 0;
+			const simSpeed = simHz * cfg.frameDt;
+			const cfl = 2 * stats.motion.maxVel * cfg.dt;
+			log("--- " + scenario + " · " + (basicOk ? "OK" : "REVIEW") + " ---");
+			for (const item of driftValues) {
+				log(item.name + ": total=" + stats.totals[item.name] + " exp=" + stats.expected[item.name] +
+					" drift=" + item.drift + " [" + driftLabel(item.drift) + "]");
+			}
+			log("min m=" + stats.mins.m + " dr=" + stats.mins.dr + " dg=" + stats.mins.dg +
+				" db=" + stats.mins.db + " E=" + stats.mins.E);
+			log("maxM=" + stats.maxM + " neg=" + stats.cntNeg + " over=" + stats.cntOver +
+				" maxDiv=" + stats.motion.maxDiv + " p[" + stats.motion.pMin + ".." + stats.motion.pMax +
+				"] maxVel=" + stats.motion.maxVel);
+			log("statsFrame#" + stats.statsFrame + " frame#" + stats.frame + " N=" + cfg.N +
+				" dt=" + cfg.dt + " K=" + cfg.pressureIters + " " + label + " ns=" + lastNs +
+				"/" + cfg.substepMax + " " + (cfg.substepsAuto ? "auto" : "fixed") +
+				" scenario=" + scenario + (scenario === "draw" ? " (base=blobs)" : "") +
+				" FCT=" + cfg.fctLimiter + " gravity=" + cfg.gravityY);
+			log("frames/s=" + simHz.toFixed(1) + " speed=" + simSpeed.toFixed(2) + "x" +
+				" CPU encode=" + (encodeMs / frames).toFixed(2) + "ms queue wait=" + (queueMs / frames).toFixed(2) +
+				"ms vCap=" + Math.round(cfg.vClamp) + " CFL bound=" + cfl.toFixed(4));
+			log("sampled peaks: maxDiv=" + sampled.maxDiv + " maxM=" + sampled.maxM + " over=" + sampled.maxOver +
+				" · divergence/compression are reported, not pass/fail gates");
+		}
+		function readSettings() {
+			const n = Number(byId("grid").value);
+			const frames = Number(byId("frames").value);
+			if (!Number.isInteger(n) || n < 64 || n > 1024 || n % 64 !== 0) {
+				throw new Error("Grid N must be a multiple of 64 from 64 to 1024.");
+			}
+			if (!Number.isInteger(frames) || frames < 1 || frames > 3600) {
+				throw new Error("Frames per scenario must be an integer from 1 to 3600.");
+			}
+			const scenarios = ["blobs", "dam", "still", "convection", "draw"]
+				.filter(name => byId("case-" + name).checked);
+			if (!scenarios.length) throw new Error("Select at least one scenario.");
+			return { n, frames, scenarios };
+		}
+		async function ensureGpu() {
+			if (gpu) return;
+			const result = await Fluid.gpu.device.init(canvas, errorPanel);
+			if (!result) throw new Error(errorPanel.textContent || "WebGPU initialization failed.");
+			gpu = result.device;
+			adapter = result.adapter;
+			context = result.context;
+			format = result.format;
+			gpu.onuncapturederror = event => {
+				const message = "uncaptured WebGPU error: " + event.error.message;
+				gpuErrors.push(message);
+				errorPanel.style.display = "block";
+				errorPanel.textContent = message;
+				log("ERROR " + message);
+			};
+			gpu.lost.then(info => {
+				if (info.reason === "destroyed") return;
+				const message = "WebGPU device lost: " + info.reason + " " + info.message;
+				gpuErrors.push(message);
+				log("ERROR " + message);
+			});
+		}
+		function makeConfig(n, scenario) {
+			const baseScenario = scenario === "draw" ? "blobs" : scenario;
+			const cfg = Object.assign({}, Fluid.core.config.defaults, {
+				N: n,
+				texW: n + 2,
+				texH: n + 2,
+				scenario: baseScenario,
+				substepsAuto: true,
+				statsEvery: 30,
+				buoyEnabled: 0
+			});
+			if (query.has("mg")) cfg.useMultigrid = query.get("mg") !== "0";
+			if (query.has("auto")) cfg.substepsAuto = query.get("auto") !== "0";
+			if (query.has("ns")) cfg.substepsFixed = Math.max(1, Math.min(cfg.substepMax,
+				Math.round(Number(query.get("ns")) || cfg.substepsFixed)));
+			if (query.has("s")) cfg.mgCoarsen = Math.max(2, Math.round(Number(query.get("s")) || 4));
+			if (query.has("cycles")) cfg.mgCycles = Math.max(1, Math.round(Number(query.get("cycles")) || 2));
+			if (query.has("pre")) cfg.mgPre = Math.max(1, Math.round(Number(query.get("pre")) || 4));
+			if (query.has("post")) cfg.mgPost = Math.max(1, Math.round(Number(query.get("post")) || 8));
+			return cfg;
+		}
+		async function waitForProgress() {
+			await new Promise(resolve => setTimeout(resolve, 0));
+		}
+		async function runScenario(solver, cfg, scenario, frames, caseIndex, caseCount) {
+			const drawStress = scenario === "draw";
+			cfg.scenario = drawStress ? "blobs" : scenario;
+			cfg.mouseStrength = 0;
+			cfg.mouseVX = 0;
+			cfg.mouseVY = 0;
+			solver.reset();
+			await gpu.queue.onSubmittedWorkDone();
+			let encodeMs = 0;
+			let queueMs = 0;
+			let lastNs = 1;
+			const sampled = { maxDiv: 0, maxM: 0, maxOver: 0 };
+			const started = performance.now();
+			const progressEvery = Math.max(1, Math.ceil(frames / 20));
+			const drawFrames = Math.max(1, Math.floor(frames * 0.4));
+			const paintEvery = Math.max(1, Math.floor(drawFrames / 20));
+			for (let frame = 0; frame < frames; frame++) {
+				if (drawStress && frame < drawFrames) {
+					const sweep = frame / Math.max(1, drawFrames - 1);
+					const paintX = 0.32 + 0.36 * sweep;
+					cfg.mouseStrength = 1;
+					cfg.mouseX = paintX * cfg.N;
+					cfg.mouseY = (0.52 - 0.08 * sweep) * cfg.N;
+					cfg.mouseVX = 240;
+					cfg.mouseVY = -120;
+					if (frame % paintEvery === 0) {
+						const paintStarted = performance.now();
+						solver.paintDye(paintX, 0.5, [1, 0, 0]);
+						encodeMs += performance.now() - paintStarted;
+					}
+				} else if (drawStress) {
+					cfg.mouseStrength = 0;
+					cfg.mouseVX = 0;
+					cfg.mouseVY = 0;
+				}
+				const currentStats = solver.getStats();
+				const maxVel = Math.max(currentStats.motion.maxVel, Math.abs(cfg.mouseVX), Math.abs(cfg.mouseVY));
+				lastNs = Fluid.core.config.substepCount(cfg, maxVel);
+				cfg.vClamp = Fluid.core.config.velocityCap(cfg, lastNs);
+				const dt = cfg.frameDt / lastNs;
+				const needStats = currentStats.frame % cfg.statsEvery === 0 || frame === frames - 1;
+				const encodeStarted = performance.now();
+				solver.frame(dt, lastNs, needStats);
+				const submittedAt = performance.now();
+				encodeMs += submittedAt - encodeStarted;
+				await gpu.queue.onSubmittedWorkDone();
+				queueMs += performance.now() - submittedAt;
+				if (needStats) {
+					await solver.pollReadback();
+					const stats = solver.getStats();
+					sampled.maxDiv = Math.max(sampled.maxDiv, stats.motion.maxDiv);
+					sampled.maxM = Math.max(sampled.maxM, stats.maxM);
+					sampled.maxOver = Math.max(sampled.maxOver, stats.cntOver);
+				}
+				if (gpuErrors.length) throw new Error(gpuErrors.join("\n"));
+				if ((frame + 1) % progressEvery === 0 || frame === frames - 1) {
+					setStatus("Running " + scenario + " " + (caseIndex + 1) + "/" + caseCount +
+						" · frame " + (frame + 1) + "/" + frames);
+					await waitForProgress();
+				}
+			}
+			const elapsedMs = performance.now() - started;
+			captureScenario(scenario, cfg, solver, frames, elapsedMs, encodeMs, queueMs, lastNs, sampled);
+		}
+		function setBusy(value) {
+			running = value;
+			runBtn.disabled = value;
+			byId("grid").disabled = value;
+			byId("frames").disabled = value;
+			for (const id of ["case-blobs", "case-dam", "case-still", "case-convection", "case-draw"]) byId(id).disabled = value;
+			copyBtn.disabled = value || !lines.length;
+			saveBtn.disabled = value || !lines.length;
+		}
+		async function runSuite() {
+			if (running) return;
+			let settings;
+			try {
+				settings = readSettings();
+			} catch (error) {
+				setStatus(error.message);
+				return;
+			}
+			lines.length = 0;
+			out.textContent = "";
+			gpuErrors = [];
+			errorPanel.style.display = "none";
+			setBusy(true);
+			let solver = null;
+			let suiteStarted = 0;
+			try {
+				setStatus("Initializing WebGPU…");
+				canvas.width = settings.n;
+				canvas.height = settings.n;
+				await ensureGpu();
+				suiteStarted = performance.now();
+				const cfg = makeConfig(settings.n, settings.scenarios[0]);
+				const timerQuantum = timerQuantumMs();
+				const info = adapter && adapter.info ? adapter.info : {};
+				const gpuName = [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(" ") || "adapter details unavailable";
+				log("Fluid browser diagnostics · " + new Date().toISOString());
+				log("timer: performance.now() · crossOriginIsolated=" + String(globalThis.crossOriginIsolated === true) +
+					" · observed quantum=" + (Number.isFinite(timerQuantum) ? timerQuantum.toFixed(6) + "ms" : "unavailable"));
+				log("gpu: " + gpuName);
+				log("grid N=" + cfg.N + " frames/scenario=" + settings.frames + " frameDt=" + cfg.frameDt +
+					" pressureK=" + cfg.pressureIters + " solver=" + (cfg.useMultigrid ? "MG" : "RB") +
+					" substeps=" + (cfg.substepsAuto ? "auto" : cfg.substepsFixed + " fixed") +
+					" FCT=" + cfg.fctLimiter + " gravity=" + cfg.gravityY + " scenarios=" + settings.scenarios.join(","));
+				log("timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.");
+				if (settings.scenarios.includes("draw")) {
+					log("draw input: scripted red dye stroke + 240/-120 cells/s mouse sweep over blobs for 40% of the frames.");
+				}
+				gpu.pushErrorScope("validation");
+				try {
+					solver = Fluid.gpu.solver.create(gpu, canvas, context, format, cfg);
+				} catch (error) {
+					await gpu.popErrorScope();
+					throw error;
+				}
+				const setupError = await gpu.popErrorScope();
+				if (setupError) throw new Error("GPU setup validation: " + setupError.message);
+				for (let i = 0; i < settings.scenarios.length; i++) {
+					await runScenario(solver, cfg, settings.scenarios[i], settings.frames, i, settings.scenarios.length);
+				}
+				log("\nFinished " + settings.scenarios.length + " scenarios · " +
+					((performance.now() - suiteStarted) / 1000).toFixed(2) + " s total.");
+				setStatus("Finished " + settings.scenarios.length + " scenarios. Copy or save the report.");
+			} catch (error) {
+				const message = String(error && error.stack || error);
+				errorPanel.style.display = "block";
+				errorPanel.textContent = message;
+				log("\nFAIL browser run · " + message);
+				setStatus("Run failed · see report and GPU error panel.");
+			} finally {
+				if (solver) solver.destroy();
+				setBusy(false);
+				copyBtn.disabled = !lines.length;
+				saveBtn.disabled = !lines.length;
+			}
+		}
+		async function copyReport() {
+			const text = lines.join("\n");
+			if (!text) return;
+			let copied = false;
+			try {
+				if (navigator.clipboard && navigator.clipboard.writeText) {
+					await navigator.clipboard.writeText(text);
+					copied = true;
+				} else {
+					const textarea = document.createElement("textarea");
+					textarea.value = text;
+					textarea.style.position = "fixed";
+					textarea.style.opacity = "0";
+					document.body.appendChild(textarea);
+					textarea.select();
+					copied = document.execCommand("copy");
+					textarea.remove();
+				}
+			} catch (error) {
+				copied = false;
+			}
+			byId("copy-feedback").textContent = copied ? "copied" : "copy failed — select report text";
+		}
+		function saveReport() {
+			if (!lines.length) return;
+			const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+			const link = document.createElement("a");
+			const url = URL.createObjectURL(blob);
+			link.href = url;
+			link.download =  new Date().toISOString().slice(0, 16).replace("T", "-") +  "-GPU-browser-tests.log";
+			link.click();
+			setTimeout(() => URL.revokeObjectURL(url), 0);
+		}
+
+		runBtn.addEventListener("click", runSuite);
+		copyBtn.addEventListener("click", copyReport);
+		saveBtn.addEventListener("click", saveReport);
+	</script>
+</body>
+</html>

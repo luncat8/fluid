@@ -1,0 +1,63 @@
+Fluid browser diagnostics · 2026-10-20T00:12:04.810Z
+timer: performance.now() · crossOriginIsolated=false · observed quantum=0.100000ms
+gpu: nvidia ampere
+grid N=512 frames/scenario=300 frameDt=0.016666666666666666 pressureK=60 solver=MG substeps=auto FCT=1 gravity=300 scenarios=blobs,dam,still,convection,draw
+timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.
+draw input: scripted red dye stroke + 240/-120 cells/s mouse sweep over blobs for 40% of the frames.
+--- blobs · OK ---
+m: total=85758.6796875 exp=85758.67262041569 drift=8.240664292600742e-8 [ok]
+dr: total=3162.4306640625 exp=3162.430667476069 drift=-1.0794131267408695e-9 [ok]
+dg: total=3162.4306640625 exp=3162.430667476069 drift=-1.0794131267408695e-9 [ok]
+db: total=3162.431396484375 exp=3162.431333991326 drift=1.9761076960121076e-8 [ok]
+E: total=105534616 exp=105534617.53979492 drift=-1.4590424997696848e-8 [ok]
+min m=0.2998572587966919 dr=-1.8882307083202064e-28 dg=-1.1730173641725625e-28 db=-1.104487119332053e-28 E=369.00439453125
+maxM=0.7605299353599548 neg=0 over=0 maxDiv=0.02288818359375 p[-5687.1201171875..5082.72021484375] maxVel=163.0664825439453
+statsFrame#300 frame#300 N=512 dt=0.0016666666666666666 K=60 mgS4x2(pre4/post8) ns=10/24 auto scenario=blobs FCT=1 gravity=300
+frames/s=60.4 speed=1.01x CPU encode=0.22ms queue wait=16.30ms vCap=270 CFL bound=0.5436
+sampled peaks: maxDiv=1.4264308214187622 maxM=0.8999173641204834 over=0 · divergence/compression are reported, not pass/fail gates
+--- dam · OK ---
+m: total=117235.6015625 exp=117235.60246777534 drift=-7.721846655732987e-9 [ok]
+dr: total=0 exp=0 drift=0 [ok]
+dg: total=0 exp=0 drift=0 [ok]
+db: total=27566 exp=27566 drift=0 [ok]
+E: total=144270128 exp=144270126.49780273 drift=1.041239307188019e-8 [ok]
+min m=0.2988314628601074 dr=0 dg=0 db=-1.1321161492023677e-28 E=367.74176025390625
+maxM=1.002203345298767 neg=0 over=8876 maxDiv=0.05523204803466797 p[-6736.65966796875..18710.94140625] maxVel=184.77857971191406
+statsFrame#300 frame#300 N=512 dt=0.001851851851851852 K=60 mgS4x2(pre4/post8) ns=9/24 auto scenario=dam FCT=1 gravity=300
+frames/s=54.3 speed=0.90x CPU encode=0.21ms queue wait=18.19ms vCap=243 CFL bound=0.6844
+sampled peaks: maxDiv=5.697719573974609 maxM=1.0842115879058838 over=11204 · divergence/compression are reported, not pass/fail gates
+--- still · OK ---
+m: total=262144 exp=262144 drift=0 [ok]
+dr: total=0 exp=0 drift=0 [ok]
+dg: total=0 exp=0 drift=0 [ok]
+db: total=0 exp=0 drift=0 [ok]
+E: total=322594400 exp=322594400 drift=0 [ok]
+min m=1 dr=0 dg=0 db=0 E=1230.5999755859375
+maxM=1 neg=0 over=0 maxDiv=0 p[0..0] maxVel=0
+statsFrame#300 frame#300 N=512 dt=0.016666666666666666 K=60 mgS4x2(pre4/post8) ns=1/24 auto scenario=still FCT=1 gravity=300
+frames/s=182.0 speed=3.03x CPU encode=0.10ms queue wait=5.38ms vCap=27 CFL bound=0.0000
+sampled peaks: maxDiv=0 maxM=1 over=0 · divergence/compression are reported, not pass/fail gates
+--- convection · OK ---
+m: total=262144 exp=262144 drift=0 [ok]
+dr: total=0 exp=0 drift=0 [ok]
+dg: total=0 exp=0 drift=0 [ok]
+db: total=0 exp=0 drift=0 [ok]
+E: total=350126816 exp=350126811.5031738 drift=1.2843421366587452e-8 [ok]
+min m=0.9981030821800232 dr=0 dg=0 db=0 E=1230.667724609375
+maxM=1.0005877017974854 neg=0 over=0 maxDiv=0.017023084685206413 p[-6300.67578125..6192.111328125] maxVel=16.065723419189453
+statsFrame#300 frame#300 N=512 dt=0.016666666666666666 K=60 mgS4x2(pre4/post8) ns=1/24 auto scenario=convection FCT=1 gravity=300
+frames/s=182.0 speed=3.03x CPU encode=0.10ms queue wait=5.38ms vCap=27 CFL bound=0.5355
+sampled peaks: maxDiv=1.5030173063278198 maxM=1.001482605934143 over=4442 · divergence/compression are reported, not pass/fail gates
+--- draw · OK ---
+m: total=86491.65625 exp=86491.69333864638 drift=-4.2881165748042747e-7 [ok]
+dr: total=3895.451171875 exp=3895.4513857067604 drift=-5.489267847937755e-8 [ok]
+dg: total=3162.430908203125 exp=3162.430667476069 drift=7.612089596172628e-8 [ok]
+db: total=3162.431396484375 exp=3162.431333991326 drift=1.9761076960121076e-8 [ok]
+E: total=106436672 exp=106436672.83539805 drift=-7.848780179876394e-9 [ok]
+min m=0.29998934268951416 dr=-5.801358400856146e-29 dg=-7.926957326668406e-29 db=-8.655177318324848e-29 E=369.1668701171875
+maxM=0.6943394541740417 neg=0 over=0 maxDiv=0.02471923828125 p[-5165.244140625..3823.127197265625] maxVel=181.13677978515625
+statsFrame#300 frame#300 N=512 dt=0.001851851851851852 K=60 mgS4x2(pre4/post8) ns=9/24 auto scenario=draw (base=blobs) FCT=1 gravity=300
+frames/s=36.4 speed=0.61x CPU encode=0.29ms queue wait=27.14ms vCap=243 CFL bound=0.6709
+sampled peaks: maxDiv=4.71038818359375 maxM=1.2164721488952637 over=207 · divergence/compression are reported, not pass/fail gates
+
+Finished 5 scenarios · 22.22 s total.

@@ -18,8 +18,10 @@ measurements remain pending.
 ## Run
 
 - Directly: open `index.html` from disk (`file://`) in a WebGPU browser.
-- Or: `python3 run_index.py` (options: `port`, `--host`, `--no-open`) and open
-  `http://127.0.0.1:8000/index.html`.
+- Or: `python3 run_index.py` (options: `port`, `--host`, `--no-open`, `--page`) and open
+  `http://127.0.0.1:8000/index.html`. The server sends COOP/COEP headers for cross-origin
+  isolation and finer browser timers; for the GPU diagnostic page use
+  `python3 run_index.py --page experiments/browser-tests.html`.
 
 Keys: `0-7` view modes · `space` pause · `.` step · `r` reset · `n` scenario
 (blobs / dam / still / convection) · `b` paint dye/wall/erase · `c` dye color · `f` toggle dye FCT
@@ -55,6 +57,33 @@ reserves a 1e-6 outflow margin and transport uses nonnegative weights to avoid
 f32 cancellation in almost-emptied cells; no conserved state is clipped.
 
 ## Validation
+
+Run the portable CPU, UI-contract and recording-GPU-mock suites together with
+`node experiments/run-all.js`. This is the full profile; `--quick` runs the fast
+numerical/UI/plumbing checks without the longer numerical histories (~7 s here versus
+about 10.5 min for the full run). The runner continues
+after a suite fails, reports per-suite/total durations, and exits nonzero if any
+suite fails. To keep a single, timestamped transcript under `experiments/logs/`,
+run `python3 run_tests.py`; `python3 run_tests.py --copy` also copies the complete
+transcript to the system clipboard when a clipboard utility is installed (the saved
+log remains available otherwise; `--quick` is supported here too). The optional
+real-device Node parity experiment is not in the default suite because it needs
+the external `webgpu` package and a working backend; opt in with
+`python3 run_tests.py --gpu --copy`.
+
+For actual browser/WebGPU diagnostics, run
+`python3 run_index.py --page experiments/browser-tests.html`. It executes the
+selected scenarios (including a repeatable paint/stir stress case) at a fixed
+grid/frame count, resets between scenarios, and provides **Copy report** and
+**Save report**. Query parameters prefill comparable runs, for example
+`?n=512&frames=600&scenarios=blobs,draw` and the same URL with `&mg=0` for
+multigrid versus red-black; `&auto=0&ns=4` selects the same fixed four-substep
+policy in both.
+The report records `crossOriginIsolated` and an observed
+`performance.now()` quantum; the Python server's COOP/COEP headers enable the
+finer timer where the browser supports it. These browser measurements are a
+GPU diagnostic capture, not a substitute for the CPU acceptance suite, and
+queue wait includes driver/scheduling overhead rather than a GPU timestamp.
 
 `node experiments/conformance.js` runs the CPU reference (the numeric oracle for
 the scheme in `0.0.0-plan.md` section 5) through: stats-reduction error, FCT dye

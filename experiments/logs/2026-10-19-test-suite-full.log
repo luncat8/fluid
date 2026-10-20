@@ -1,0 +1,297 @@
+Fluid test suite · full profile · 13 suites (use --gpu for real-device parity)
+
+=== [1/13] conformance.js ===
+PASS pressure solver removes the closed-box checkerboard mode in one red-black sweep  max_neighbor_jump=0.00e+0 press_slot=0
+PASS stats snapshot: expected totals stay paired with their readback  old=10/2/50 live=15/3/75
+PASS stats snapshot: next readback captures new ledger values
+PASS reduction m sequential-f32 error is the old hud warn  seq_err=-1.06e-1 kahan_err=-3.46e-4 total=2.1440e+4
+PASS reduction m kahan-f32 error below 1e-7 relative  rel=1.62e-8
+PASS reduction E sequential-f32 error is the old hud warn  seq_err=2.68e+2 kahan_err=-1.91e-1 total=2.6384e+7
+PASS reduction E kahan-f32 error below 1e-7 relative  rel=7.25e-9
+PASS FCT dye front: at least 3x narrower after 240 steps  upwind=26 FCT=8 ratio=3.25
+PASS FCT dye front: stays within low-order local bounds  min=0.00e+0 max=0.800000 violations=0
+PASS FCT dye front: fluid mass is unchanged versus upwind-only  upwind=65536.0007 FCT=65536.0007
+PASS FCT dye front: tracer sum is conserved to 1e-6 versus upwind-only  upwind=42188.8576 FCT=42188.8579 rel=6.31e-9
+PASS FCT random 2D field: nonnegative and locally bounded  min=1.41e-7 local_bound_violations=0
+PASS FCT random 2D field: correction is conservative below 1e-6  correction_drift=3.13e-10
+PASS FCT closed transport: all five invariants below 1e-6 after 10000 steps  worst_rel=5.96e-7 m=-5.96e-7 dr=-5.30e-7
+PASS FCT closed transport: no negative cells or NaNs after 10000 steps  cntNeg=0 minDr=0.00e+0 maxM=32.000
+PASS still box: max|vel| below 1e-2 after 500 frames (stratified, hydrostatic)  maxVel=0.00e+0 maxDiv=0.00e+0
+PASS still box: zero mass/energy drift  drift_m=0.00e+0 drift_E=0.00e+0
+PASS stirred box: all five invariants conserved below 1e-6 relative over 1200 frames  worst_rel=7.61e-7
+PASS stirred box: no negative cell ever  negCells=0 minM=0.2987270653247833
+PASS stirred box: no NaN
+PASS stirred box: flux bound respected (|F| <= 1)  maxFlux=0.4030
+PASS stirred box: motion survived stirring (vortices decay slowly)  maxVel=7.686
+PASS dam break: no NaN, no negative cells  sumM=1829.400
+PASS dam break: max|div u| after projection below 1 (K=60 at 64^2, during splash)  maxDiv=3.34e-1
+PASS dam break: no overpacking (m <= rho_liq*1.001)  cntOver=0 maxM=0.9870
+PASS dam break: mass and energy conserved below 1e-7  drift_m=1.04e-8 drift_E=-1.10e-8
+PASS dam break: block actually moved (maxVel > 0 at some point or dye spread)
+PASS substep policy off: fixed count regardless of velocity  ns=4 fixed=4 at maxVel=1e6
+PASS fixed count is clamped to [1, substepMax]  0 -> 1, 100 -> 24
+PASS substep policy on: cfl target followed, then capped  ns=4 at the cfl target, 24 at the cap 24
+PASS substep policy off: dam break stays finite and non-negative  sumM=1829.400 maxM=0.980 neg=0 maxDiv=7.90e-2
+PASS buoy spawn: rectangle scaled from the 16x64 reference, dam only  w=4 h=8 cy=48.0
+PASS buoy: sampled every 4 frames, marched every frame  samples=125 marches=500
+PASS buoy: sinks into the liquid and is lifted back out by the blue  dropped from cy=48, dipped to 5.0, rose back to 25.8 (vy=13.00)
+PASS buoy: ends partially submerged in the blue, inside the water band  sub=59.3% blue/cell=0.237 cy=25.8
+PASS buoy: inertia caps a frame of motion below one cell  max |dy| per frame=0.526 cells
+PASS buoy: stays inside the domain  cx=8.0 cy=25.8
+PASS buoy: field identical to the buoy-less run (no back-reaction on the solver)  max|dmass|=0
+PASS buoy model: [r,g,255] lifts harder than [r,g,123] and air sinks  a[blue=1]=225.0 a[blue=0.5]=75.0 a[empty]=-75.0
+PASS buoy model: sub fraction is mean blue over local peak, float line is the body density  sub=1.000/1.000 aY=75.00
+PASS buoy model: half a footprint of blue is neutral buoyancy  aY=0.00e+0 sub=0.500
+PASS buoy model: one frame of full lift moves it by well under a cell  dy=5.38e-2 vy=3.23
+PASS wall integrity: no red dye crossed a one cell wall  dyeRight=0.000e+0 dyeLeft=49.411
+PASS wall integrity: closed box conserved below 1e-6  drift_m=-1.17e-8 drift_dr=9.31e-8
+PASS emitter accounting: all conserved channels drift below 5e-7 with 50 injected patches  worst_rel=3.63e-7 m=-9.43e-9 dr=6.46e-9 dg=8.73e-8 db=3.63e-7 E=2.40e-8
+PASS draw stroke: survived paint+stir without NaN  sumM=5738.215
+PASS draw stroke: no negative conserved cells (FCT bounds, no clipping)  negCells=0 minM=2.823e-1
+PASS draw stroke: no runaway overpack  maxM=5.667
+PASS draw stroke: invariants conserved below 1e-6 with injected dye  drift_m=1.13e-8 drift_dr=1.02e-7
+PASS draw stroke: with the shipped cap no cell exceeds the outflow bound  rawOutMax=0.837
+PASS draw stroke: stored flux k_out <= 1 per cell (monotone transport)  storedOutMax=0.837
+PASS limiter: a forced 4-cell stir exceeds the outflow bound (limiter exercised)  rawOutMax=2.000
+PASS limiter: stored flux k_out <= 1 per cell (monotone transport)  storedOutMax=1.000
+PASS limiter: the forced stir stays finite and non-negative  negCells=0
+ALL CONFORMANCE TESTS PASSED
+PASS conformance.js · 258.47 s
+
+=== [2/13] sharpness.js ===
+sharpness: dye front, N=256 steps=240 flux=0.5
+upwind_width=26 fct_width=8 improvement=3.25x
+fct_front_range=0.000e+0..0.800000 total_dye=42188.857860 total_mass=65536.000680 local_bound_violations=0
+fct_vs_upwind_dye_drift=6.307e-9
+random_2d: min=1.409e-7 local_bound_violations=0 correction_drift=3.127e-10
+PASS
+PASS sharpness.js · 4.88 s
+
+=== [3/13] convection.js ===
+PASS presentation: convection starts stratified over most of the view range  T=[293.0..343.0] view=[293..343]
+PASS presentation: heater/cold-plate band scales with N  heatBand=16 at N=512
+PASS presentation: rolls underway within 2 s  maxVel=4.40 T=[293.1..343.0]
+PASS derive_T: T = E/(m c) with substance, T_amb in vacuum, monotone in E  T_sub=350.000 T_vac=293
+PASS conduction: E conserved below 1e-7 over 4000 f32 exchanges (ping-pong)  drift_rel=2.34e-8
+PASS conduction: no overshoot, field relaxed toward the 310 mean  T range after= [308.21..311.79]
+PASS conduction: absurd coefficient is clamped, monotone and reported, not explosive  clamped faces=1984 T range=[308.21..311.79]
+PASS heat sources: injected and removed energy both reached the ledger  in=482.5 out=315.6
+PASS heat sources: heaters change E only (m drift below 1e-9, E drift below 1e-6)  drift_m=0.00e+0 drift_E=3.10e-7
+PASS energy budget: stored E + kinetic closes below 1e-3 with gravity off  closure_rel=3.10e-7 kinetic=0.00e+0
+PASS heat sources: bottom hotter than top after 600 steps  T range=[293.2..343.0] mean=318.0
+PASS convection: motion onsets and reaches roll speeds  onset=1.17s peak|v|=36.88
+PASS convection: hot fluid rises on average (buoyancy sign)  mean v in hot cells=3.182 over 126 cells
+PASS convection: bottom stays warmer than the cold plate  bottom=321.4 top=313.9 T range=[297.9..341.7]
+PASS convection: m and E at the f32 floor with heater and cold plate running  drift_m=9.48e-6 drift_E=1.01e-8 neg=0
+INFO convection after 5000 steps (20.8s): maxVel=19.98 heatIn=60645 heatOut=71282 clampedFaces/step=0
+PASS stability: finite at 10x beta and 10x conductivity  maxVel=54.10 Tmax=343.0
+ALL CONVECTION TESTS PASSED
+PASS convection.js · 95.58 s
+
+=== [4/13] buoy.js ===
+=== dam, N=64, 600 frames, buoy rect {"w":4,"h":8} ===
+  sample every 1         sub=64.7% [11..91] cy=14.0 vy=-1.61 maxStep=0.542 meanStep=0.140 settled@f=586 samples=599
+  sample every 2         sub=57.2% [11..93] cy=14.0 vy=-6.53 maxStep=0.546 meanStep=0.185 settled@f=599 samples=300
+  sample every 4 (defaul sub=59.3% [10..93] cy=14.0 vy=-6.55 maxStep=0.520 meanStep=0.182 settled@f=597 samples=150
+  sample every 8         sub=55.9% [9..96] cy=15.2 vy=-10.27 maxStep=0.499 meanStep=0.177 settled@f=593 samples=75
+  sample every 16        sub=49.8% [5..96] cy=15.7 vy=-12.86 maxStep=0.443 meanStep=0.180 settled@f=593 samples=38
+  sample every 32        sub=63.3% [0..95] cy=6.6 vy=5.27 maxStep=0.341 meanStep=0.158 settled@f=577 samples=19
+  blue x0.25 ([r,g,64])  sub=98.1% [10..100] cy=5.0 vy=0.00 maxStep=0.520 meanStep=0.092 settled@f=477 samples=150
+  blue x0.5 ([r,g,128])  sub=75.7% [10..98] cy=12.2 vy=-9.73 maxStep=0.659 meanStep=0.200 settled@f=597 samples=150
+  blue x1 ([r,g,255])    sub=59.3% [10..93] cy=14.0 vy=-6.55 maxStep=0.520 meanStep=0.182 settled@f=597 samples=150
+  blue x2                sub=43.2% [10..73] cy=12.8 vy=10.34 maxStep=0.660 meanStep=0.174 settled@f=593 samples=150
+  rho 0.1 (lighter hull) sub=51.2% [7..56] cy=21.3 vy=-9.65 maxStep=0.336 meanStep=0.131 settled@f=597 samples=150
+  rho 0.4 (heavier hull) sub=73.9% [11..99] cy=12.4 vy=-9.13 maxStep=0.739 meanStep=0.190 settled@f=597 samples=150
+  drag tau 0.04 (loose)  sub=60.0% [10..60] cy=18.6 vy=-8.17 maxStep=0.347 meanStep=0.137 settled@f=593 samples=150
+  drag tau 0.5 (stiff)   sub=57.7% [9..100] cy=12.2 vy=3.80 maxStep=0.874 meanStep=0.244 settled@f=597 samples=150
+--- float trace, default variant (sub = mean blue in the rect / local peak) ---
+    f=0 cy=48.00 vy=0.00 sub=0.0% blue/cell=0.000
+    f=50 cy=33.25 vy=-30.61 sub=10.8% blue/cell=0.000
+    f=100 cy=13.41 vy=-17.38 sub=38.8% blue/cell=0.000
+    f=150 cy=5.80 vy=0.53 sub=46.9% blue/cell=0.235
+    f=200 cy=15.86 vy=16.36 sub=83.8% blue/cell=0.421
+    f=250 cy=18.46 vy=-3.32 sub=57.8% blue/cell=0.245
+    f=300 cy=18.62 vy=1.35 sub=49.9% blue/cell=0.177
+    f=350 cy=17.13 vy=-10.32 sub=37.3% blue/cell=0.108
+    f=400 cy=5.00 vy=0.00 sub=34.5% blue/cell=0.137
+    f=450 cy=8.44 vy=15.15 sub=60.4% blue/cell=0.295
+    f=500 cy=25.24 vy=14.26 sub=70.7% blue/cell=0.302
+    f=550 cy=23.43 vy=-13.47 sub=45.1% blue/cell=0.172
+    f=599 cy=14.02 vy=-6.55 sub=59.3% blue/cell=0.274
+=== same on N=128 (rect {"w":4,"h":16}), 400 frames ===
+  sample every 4 (defaul sub=47.0% [0..51] cy=62.5 vy=31.78 maxStep=0.680 meanStep=0.296 settled@f=397 samples=100
+  blue x0.25 ([r,g,64])  sub=51.2% [0..51] cy=61.3 vy=31.88 maxStep=0.680 meanStep=0.297 settled@f=397 samples=100
+  blue x0.5 ([r,g,128])  sub=29.1% [0..51] cy=61.8 vy=31.79 maxStep=0.680 meanStep=0.296 settled@f=397 samples=100
+  blue x1 ([r,g,255])    sub=47.0% [0..51] cy=62.5 vy=31.78 maxStep=0.680 meanStep=0.296 settled@f=397 samples=100
+  blue x2                sub=47.3% [0..50] cy=63.4 vy=31.73 maxStep=0.681 meanStep=0.295 settled@f=397 samples=100
+--- float trace, default variant, N=128 ---
+    f=0 cy=96.00 vy=0.00 sub=0.0% blue/cell=0.000
+    f=50 cy=82.68 vy=-24.62 sub=0.0% blue/cell=0.000
+    f=100 cy=59.26 vy=-22.84 sub=4.6% blue/cell=0.000
+    f=150 cy=44.13 vy=-15.68 sub=13.8% blue/cell=0.000
+    f=200 cy=33.69 vy=-8.72 sub=32.8% blue/cell=0.000
+    f=250 cy=34.99 vy=19.56 sub=42.3% blue/cell=0.000
+    f=300 cy=53.94 vy=-15.80 sub=17.7% blue/cell=0.034
+    f=350 cy=44.36 vy=8.37 sub=25.7% blue/cell=0.001
+    f=399 cy=62.50 vy=31.78 sub=47.0% blue/cell=0.002
+PASS buoy.js · 174.46 s
+
+=== [5/13] multigrid.js ===
+--- dam  N=128 60 frames x 4 substeps ---
+plain  K=60  maxDiv(end)=23.265  worstDiv=70.440  maxM=1.0044  over=736  ms=23870
+mg     pre=4 post=8 coarse=60  maxDiv(end)=0.100  worstDiv=0.314  maxM=1.0000  over=0  ms=17439
+PASS dam: multigrid lowers the projection divergence at least 2x  worstDiv 70.440 -> 0.314 (224.4x)
+PASS dam: multigrid does not overpack more than the plain solve  maxM 1.0044 -> 1.0000, over 736 -> 0
+PASS dam: multigrid is cheaper in wall time  plain 23870ms vs mg 17439ms (1.37x)
+--- blobs  N=128 60 frames x 4 substeps ---
+plain  K=60  maxDiv(end)=1.300  worstDiv=7.330  maxM=0.6733  over=0  ms=31354
+mg     pre=4 post=8 coarse=60  maxDiv(end)=0.028  worstDiv=0.048  maxM=0.6734  over=0  ms=17438
+PASS blobs: multigrid lowers the projection divergence at least 2x  worstDiv 7.330 -> 0.048 (154.3x)
+PASS blobs: multigrid does not overpack more than the plain solve  maxM 0.6733 -> 0.6734, over 0 -> 0
+PASS blobs: multigrid is cheaper in wall time  plain 31354ms vs mg 17438ms (1.80x)
+PASS one V-cycle never increases the fine pressure residual  residual 19.026 -> 0.336
+ALL MULTIGRID TESTS PASSED
+PASS multigrid.js · 95.63 s
+
+=== [6/13] transport-roundoff.js ===
+PASS f32 outflow margin: old overshoot reproduced; 100000 bounded samples
+PASS production CPU transport positivity/conservation, FCT on/off; WGSL structure matches
+PASS transport-roundoff.js · 0.14 s
+
+=== [7/13] gpu-mock.js ===
+PASS the buoy rectangle reaches the uniform block at the slots the wgsl reads  [151,373,16,64,0.5,1]
+PASS the uniform block holds every declared slot: 128 floats, 512 bytes
+PASS the 16x64 reference rectangle is exact on the reference grid  {"w":16,"h":64}
+PASS wgsl: 25 sources have balanced braces, parens and brackets
+PASS wgsl: every params.values[i] index is a declared slot in config.paramsOff  all indices resolve
+PASS wgsl: buoy_sample reads the mass texture, the velocity texture and one storage buffer
+PASS wgsl: buoy_sample is a single workgroup with a workgroup reduction
+PASS wgsl: the display overlay reads the body rectangle through the same slots
+PASS cpu sampler: sums the rectangle the gpu kernel walks, half of it blue  blue=4 count=16 uSum=32
+PASS cpu sampler: half a footprint of blue gives half submersion and neutral lift  sub=0.500 blue=0.250 aY=0
+PASS cpu sampler: the body follows the flow horizontally by drag, not by teleport  mean u=2
+PASS gpu pool has the buoy sample buffer and its readback twin  buoy=128B usage=140 read usage=9
+PASS the buoySample compute pipeline is compiled with the params struct prefix
+PASS WGSL pressure kernel retains opposite-color values between red/black sweeps  color gate and source-copy initialization are both present
+PASS the buoy field sample is requested every cfg.buoySampleEvery frames only  sample copies=4 over 16 frames, expected 4
+PASS the body marched every frame and ingested one readback per request  marches=16 samples=4
+PASS the readback reaches the body: half a footprint of blue reads as sub=0.5, neutral lift  sub=0.500 blue=0.250 ux=1.000 aY=0
+PASS every dispatch set a bind group, and the sample pass binds four resources  dispatches=9878 bindGroup calls=9878
+PASS the buoy sample buffer is copied back 24 bytes (6 floats) at a time  copies=4 sizes=24
+PASS the field sample runs after the sim steps and before the display pass  order=heatSources>deriveT>buoySample>toDisplay
+PASS the uniform buffer holds the live rect and substep count, not just cfg  substeps=2 rect=[17,44,4,8] show=1
+PASS the force kernel receives the live mean density in params slot 27  uniform=0.4466308653354645 cfg=0.4466308687988203
+PASS paused redraw pushes params too, so toggles show without a sim step
+PASS resize reuses the compiled pipelines and swaps the pool  modules +0 N=128 flags=67600 canvas=128
+PASS multigrid: coarse passes are encoded and ordered in the step  cycles=2 coarsen=2 restrict=4 prolong=4
+PASS multigrid: the coarse solve uses its own bound params and press textures  S=4 Nc=32 texW=34
+PASS no body outside the dam scenario, and the overlay switch follows  show=0
+PASS app frame loop: fixed steps when the policy is off, capped substeps when on  off ns=4/4 dt=0.00417 / on ns=24/24 dt=0.00069
+PASS no buffer or texture leaks across the two solvers (pools destroyed on destroy)  created buffers=32 textures=92
+ALL GPU-MOCK CHECKS PASSED
+PASS gpu-mock.js · 0.10 s
+
+=== [8/13] browser-tests.js ===
+PASS browser diagnostics UI: five-case run with scripted paint, in-flight lock, report and clipboard copy
+PASS browser-tests.js · 0.05 s
+
+=== [9/13] hud.js ===
+PASS snapshot: exact minima, toggle context, honest rates, CFL/compression warnings, float applicability
+PASS hud.js · 0.04 s
+
+=== [10/13] input.js ===
+ok   right button does not paint or capture
+ok   primary down captures and focuses the canvas
+ok   primary down sets brush and coordinates
+ok   second pointer cannot steal, move or end a stroke
+ok   owning pointer moves in simulation coordinates
+ok   flick velocity remains clamped and smoothed
+ok   captured stroke survives leaving the canvas
+ok   one paint per flush uses the latest point
+ok   a flushed request is not replayed
+ok   paint requests reuse preallocated storage
+ok   captured movement outside the canvas is clamped
+ok   release clears capture and stirring
+ok   normal release preserves the final queued paint
+ok   lost capture ends stirring and drops pending paint
+ok   pointer cancellation ends stirring and drops pending paint
+ok   window blur ends an active stroke
+ok   window blur drops unflushed paint and clears held keys
+ok   unfocused numeric shortcut routes to the mode writer
+ok   form controls and links keep their native shortcuts
+ok   editable content keeps its keys
+ok   browser shortcuts, composition and handled events are ignored
+ok   holding space toggles pause only once
+ok   holding reset does not repeatedly rebuild the scenario
+ok   plain reset still works
+ok   pressure adjustment still allows key repeat
+ok   minimum-grid shortcut does not rebuild an unchanged grid
+ok   maximum-grid shortcut does not rebuild an unchanged grid
+ok   grid shortcut still resizes within bounds
+
+all 28 checks pass
+PASS input.js · 0.04 s
+
+=== [11/13] controls.js ===
+ok   grid and readout initialize from config
+ok   sync cannot snap a held grid thumb back
+ok   input previews the grid without reallocating textures
+ok   release commits one resize
+ok   same grid change does not rebuild twice
+ok   external grid changes sync when no drag owns the thumb
+ok   slider ownership is released on pointercancel
+ok   slider ownership is released on lostpointercapture
+ok   slider ownership is released on blur
+ok   slider ownership is released on window pointerup
+ok   slider ownership is released on window pointercancel
+ok   slider ownership is released on window blur
+ok   cancelled slider gestures do not commit a resize
+ok   auto-CFL checkbox initializes from the config
+ok   auto-CFL checkbox switches to fixed steps
+ok   fixed-step slider updates the shared policy immediately
+ok   fixed-step slider feeds the solver substep policy
+ok   pressure slider applies on input
+ok   keyboard pressure changes sync back to the slider
+ok   dam float is disabled outside its scenario
+ok   dam scenario enables the float control
+ok   FCT checkbox switches the actual solver configuration off
+ok   FCT checkbox switches the actual solver configuration on
+ok   gravity checkbox removes applied gravity
+ok   gravity checkbox restores applied gravity
+
+all 25 checks pass
+PASS controls.js · 0.03 s
+
+=== [12/13] ui.js ===
+ok   one label per mode
+ok   every label wraps a radio
+ok   group name and values
+ok   exactly one checked at boot
+ok   label text follows the input
+ok   change sets the mode
+ok   change marks the view dirty
+ok   one checked after click
+ok   setMode on the active mode returns before dirtying
+ok   setMode ignores unknown ids
+ok   key 5 routes through setMode
+ok   keyboard checks the radio
+ok   touch/stylus pointerover does not switch
+ok   touch/stylus leaves the checked radio alone
+ok   fine-pointer hover switches
+ok   hover checks exactly one radio
+ok   hybrid touch cannot trigger hover switching
+ok   hybrid pen cannot trigger hover switching
+ok   dragging over the view row does not switch modes
+ok   hover from the label text finds the radio
+ok   pointerover outside a label does not switch
+ok   change from a foreign input is ignored
+
+all 22 checks pass
+PASS ui.js · 0.04 s
+
+=== [13/13] performance.js ===
+PASS windowed counts, idle/paused rates, queue latency and rejection
+PASS real app loop: 144 Hz pacing, backpressure, paused redraw, single step
+PASS performance.js · 0.04 s
+
+PASS all 13 suites · 629.50 s
