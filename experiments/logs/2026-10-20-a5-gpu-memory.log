@@ -1,0 +1,27 @@
+0.6.0 a5: field-pool device footprint, from the allocation list (src/gpu/fields.js is the
+only owner of it; the page's report prints the same numbers from the same function, so a
+capture and this table cannot mean different things). 'logical' = what createTexture asked
+for; 'worst case' = an implementation that pads every row to 256 B. Not counted: canvas
+backbuffer, driver block rounding (a few % on top), transient write staging, cpu mirrors.
+the what-if line is plan 4.3's t7 candidate map priced, not adopted.
+generated: node experiments/gpu-memory.js --whatif
+field pool footprint, mgCoarsen=4 (rows padded to 256 in the worst-case column; a5 is judged on that column)
+N=256  textures 13.4 MB (27) + buffers 0.2 MB (8)  = 13.6 MB logical, 14.8 MB worst case (+9.1%)  texW=258 mgTexW=66
+  what-if t7 map (vel/press/divsrc/flux/limiter/sfield half float, sfieldTmp dropped): 10.1 MB logical, 11.3 MB worst case  -3.4 MB  (pricing only: the drift and residual checks decide each field)
+N=512  textures 52.2 MB (27) + buffers 0.6 MB (8)  = 52.9 MB logical, 55.3 MB worst case (+4.7%)  texW=514 mgTexW=130
+  PASS a5 bar 60 MB: 7.8% headroom
+  what-if t7 map (vel/press/divsrc/flux/limiter/sfield half float, sfieldTmp dropped): 39.3 MB logical, 41.7 MB worst case  -13.6 MB  (pricing only: the drift and residual checks decide each field)
+N=1024  textures 207.1 MB (27) + buffers 2.5 MB (8)  = 209.7 MB logical, 214.6 MB worst case (+2.3%)  texW=1026 mgTexW=258
+  OVER a5 bar 200 MB by 14.6 MB (7.3%)  [reported, not asserted until t7]
+    mass0     16.06 MB  rgba32float
+    mass1     16.06 MB  rgba32float
+    mass2     16.06 MB  rgba32float
+    therm0    16.06 MB  rgba32float
+    therm1    16.06 MB  rgba32float
+    limiterA  16.06 MB  rgba32float
+    sfield    16.06 MB  rgba32float
+    sfieldTmp 16.06 MB  rgba32float
+    vel0      8.03 MB  rg32float
+    vel1      8.03 MB  rg32float
+  what-if t7 map (vel/press/divsrc/flux/limiter/sfield half float, sfieldTmp dropped): 155.5 MB logical, 160.2 MB worst case  -54.2 MB  (pricing only: the drift and residual checks decide each field)
+MEMORY CHECKS PASSED

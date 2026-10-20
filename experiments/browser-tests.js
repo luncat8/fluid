@@ -138,6 +138,8 @@ vm.runInNewContext(inline[1], context, { filename: "browser-tests.html:inline" }
 	assert.match(elements.out.textContent, /phases vac=0 sol=0 melt=0 liq=0 boil=0 gas=0 \| latentE=0 fMom=0 sSat=0/);
 	assert.match(elements.out.textContent, /poisson: res=0\.02 rhs=40 true=0\.0005/,
 		"the report carries the true poisson residual, not only maxDiv");
+	assert.match(elements.out.textContent, /gpu memory: /,
+		"the report carries the a5 field-pool footprint line (n/a is a valid value here)");
 	assert.match(elements.out.textContent, /sampled peaks: .*poissonTrue=0\.0005/,
 		"the sampled peak line follows the residual channel");
 	console.log("PASS browser diagnostics UI: five-case run, phase scenarios, scenario query, scripted paint, in-flight lock, report and clipboard copy");

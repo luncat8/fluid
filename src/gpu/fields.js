@@ -9,13 +9,26 @@
 	function texUsage(){
 		return GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.STORAGE_BINDING|GPUTextureUsage.COPY_SRC|GPUTextureUsage.COPY_DST;
 	}
+	// bytes per texel of every format the pool uses or could use (the 16-bit variants are
+	// what 0.6.0 t7 would switch to; the memory audit has to price them before they exist)
+	function texBpp(format){
+		if(format==="r32float"||format==="rgba8uint")return 4;
+		if(format==="rg32float"||format==="rgba16float")return 8;
+		if(format==="r16float")return 2;
+		if(format==="rg16float")return 4;
+		return 16; // rgba32float
+	}
 	function makeTexture(device,label,format,texW,texH){
-		return device.createTexture({
+		const tex=device.createTexture({
 			label,
 			size:[texW,texH],
 			format,
 			usage:texUsage()
 		});
+		// the memory audit needs width/height/format back; a GPUTexture is opaque in
+		// the spec, so we remember what we asked for instead of reading the object
+		if(tex)tex.fluidSize=[texW,texH,format];
+		return tex;
 	}
 	function createPool(device,N,mgCoarsen){
 		const texW=N+2;
@@ -115,17 +128,49 @@
 		device.queue.writeBuffer(pool.dims,0,dimsArr);
 		return pool;
 	}
-	function destroyPool(pool){
-		const tex=[pool.vel.tex[0],pool.vel.tex[1],pool.mass.tex[0],pool.mass.tex[1],pool.mass.tex[2],
+	// every allocation the pool owns, in one place: destroy and the memory audit both
+	// read these lists, so a new field cannot be destroyed-but-uncounted or the reverse.
+	function poolTextures(pool){
+		return [pool.vel.tex[0],pool.vel.tex[1],pool.mass.tex[0],pool.mass.tex[1],pool.mass.tex[2],
 			pool.therm.tex[0],pool.therm.tex[1],pool.press.tex[0],pool.press.tex[1],
 			pool.flags,pool.flagsTmp,pool.flux,pool.limiterA,pool.limiterB,pool.divsrc,
 			pool.sfield,pool.sfieldTmp,pool.accum,pool.accumTmp,
 			pool.patchMass,pool.patchE,pool.display,
 			pool.mgMass,pool.mgFlags,pool.mgDiv,pool.mgPress.tex[0],pool.mgPress.tex[1]];
-		for(const t of tex){if(t&&t.destroy)try{t.destroy();}catch(e){}}
-		for(const b of [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.dims,pool.mgParams]){
-			if(b&&b.destroy)try{b.destroy();}catch(e){}
+	}
+	function poolBuffers(pool){
+		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.dims,pool.mgParams];
+	}
+	function textureBytes(t){
+		if(!t||!t.fluidSize)return 0;
+		return t.fluidSize[0]*t.fluidSize[1]*texBpp(t.fluidSize[2])*(t.depthOrArrayLayers||1);
+	}
+	// 0.6.0 a5: the device-side footprint of the field pool. webgpu has no allocation
+	// query, so this is what we asked for (logical). An implementation may pad every row
+	// to 256 bytes; `padded` is that worst case, which is what a memory bar should be
+	// budgeted against. Not counted: the transient writeTexture staging arrays, the gpu
+	// profiler's three resolve/read buffers (hundreds of bytes), the canvas backbuffer,
+	// and the cpu mirrors of the initial state, which are freed once uploaded.
+	function memoryReport(pool){
+		if(!pool)return null;
+		let textures=0,texCount=0,buffers=0,bufCount=0,paddedTex=0;
+		for(const t of poolTextures(pool)){
+			const b=textureBytes(t);
+			if(!b)continue;
+			const h=t.fluidSize[1];
+			textures+=b;texCount++;
+			paddedTex+=Math.ceil(b/h/256)*256*h;
 		}
+		if(!texCount)return null;
+		for(const b of poolBuffers(pool)){
+			if(!b||!b.size)continue;
+			buffers+=b.size;bufCount++;
+		}
+		return {textures,buffers,total:textures+buffers,padded:paddedTex+buffers,texCount,bufCount};
+	}
+	function destroyPool(pool){
+		for(const t of poolTextures(pool)){if(t&&t.destroy)try{t.destroy();}catch(e){}}
+		for(const b of poolBuffers(pool)){if(b&&b.destroy)try{b.destroy();}catch(e){}}
 	}
 	function swap(pool,name){
 		const p=pool[name];
@@ -138,13 +183,8 @@
 		return p;
 	}
 	function writeTextureRect(device,texture,texW,texH,format,data){
-		let bytesPerRow;
-		if(format==="rg32float")bytesPerRow=texW*8;
-		else if(format==="r32float")bytesPerRow=texW*4;
-		else if(format==="rgba16float")bytesPerRow=texW*8;
-		else if(format==="rgba8uint")bytesPerRow=texW*4;
-		else bytesPerRow=texW*16;
-		device.queue.writeTexture({texture},data,{bytesPerRow},[texW,texH]);
+		// writeTexture, unlike copyBufferToTexture, has no 256 row rule: tight pitch is legal
+		device.queue.writeTexture({texture},data,{bytesPerRow:texW*texBpp(format)},[texW,texH]);
 	}
 	function writePatch(device,texture,w,h,format,data){
 		writeTextureRect(device,texture,w,h,format,data);
@@ -160,6 +200,6 @@
 		else data=new Float32Array(size*4);
 		writeTextureRect(device,texture,texW,texH,format,data);
 	}
-	Fluid.gpu.fields={createPool,destroyPool,swap,curTex,writeTextureRect,writePatch,clearTexture,PATCH};
+	Fluid.gpu.fields={createPool,destroyPool,swap,curTex,writeTextureRect,writePatch,clearTexture,memoryReport,poolTextures,poolBuffers,texBpp,PATCH};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.fields;
 })(globalThis);

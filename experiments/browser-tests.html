@@ -131,6 +131,7 @@
 			}
 			return smallest;
 		}
+		function mb(x) { return (x / 1048576).toFixed(1); }
 		function solverTag(cfg, pool) {
 			return cfg.useMultigrid ? "mgS" + pool.mgS + "x" + cfg.mgCycles +
 				"(pre" + cfg.mgPre + "/post" + cfg.mgPost + ")" : "rb";
@@ -426,6 +427,15 @@
 				}
 				const setupError = await gpu.popErrorScope();
 				if (setupError) throw new Error("GPU setup validation: " + setupError.message);
+				// 0.6.0 a5: the field pool's device footprint, from the same accounting the
+				// node suite prints (experiments/gpu-memory.js). logical is what we asked
+				// for; worst case assumes an implementation that pads every row to 256.
+				const mem = Fluid.gpu.fields ? Fluid.gpu.fields.memoryReport(solver.pool) : null;
+				log("gpu memory: " + (mem
+					? mb(mem.total) + " MB logical / " + mb(mem.padded) + " MB worst case (textures "
+						+ mb(mem.textures) + " MB x" + mem.texCount + ", buffers " + mb(mem.buffers)
+						+ " MB x" + mem.bufCount + ") vs a5 bar " + (cfg.N <= 512 ? "60 MB" : "200 MB")
+					: "n/a (pool not measurable here)"));
 				for (let i = 0; i < settings.scenarios.length; i++) {
 					await runScenario(solver, cfg, settings.scenarios[i], settings.frames, i, settings.scenarios.length);
 				}
