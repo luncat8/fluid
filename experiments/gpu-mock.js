@@ -338,9 +338,9 @@ async function testPhasePlumbing() {
 	});
 	const canvas = { width: N, height: N };
 	const solver = Fluid.gpu.solver.create(device, canvas, mockContext(), "bgra8unorm", cfg);
-	check("phase pool: 40-float partial stride, 128-byte stats buffer, rgba32float sfield, rg32float accum",
+	check("phase pool: 40-float partial stride, stats-len buffer, rgba32float sfield, rg32float accum",
 		solver.pool.statsPart.size === solver.pool.numWorkgroups * 40 * 4 &&
-		solver.pool.stats.size === 128 &&
+		solver.pool.stats.size === Fluid.core.stats.STATS_LEN * 4 &&
 		solver.pool.sfield.format === "rgba32float" &&
 		solver.pool.accum.format === "rg32float",
 		"statsPart=" + solver.pool.statsPart.size + "B");

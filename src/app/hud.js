@@ -98,12 +98,20 @@
 			if(hasNeg)line+=" | NEGATIVE VALUES: inspect minima (threshold 1e-9)";
 			if(s.diag&&s.diag.sSaturated>0)line+=" | S saturated "+s.diag.sSaturated+" cells";
 			if(s.diag&&s.diag.residual)line+=" | residual "+fmt(s.diag.residual);
+			if(s.diag&&s.diag.poissonRel)line+=" | poisson residual "+fmt(s.diag.poissonRel);
 			if(s.motion.maxDiv>1)line+=" | high divergence "+fmt(s.motion.maxDiv)+" (K="+Fluid.core.config.solverIters(cfg)+(cfg.useMultigrid?" coarse":"")+(recK?" → try "+recK:"")+")";
 			else if(s.motion.maxDiv>0.5)line+=" | divergence "+fmt(s.motion.maxDiv);
 			if(severe)line+=" | SEVERE COMPRESSION: conservation is not stability";
 			else if(modOver)line+=" | compression maxM="+fmt(s.maxM);
 			else if(mildOver)line+=" | mild overpack "+s.cntOver+" cells";
 			return line;
+		}
+		// solver quality in the units plan 4.1 judges: the true poisson residual over
+		// the rhs scale. divAfter (maxDiv above) floors at max|S| in boiling flow.
+		function poissonLine(s){
+			const d=s.diag;
+			if(!d||d.poissonRes===undefined)return "poisson: n/a (no residual channel)";
+			return "poisson: res="+d.poissonRes+" rhs="+d.poissonRhs+" true="+(d.poissonRhs>0?d.poissonRes/d.poissonRhs:0);
 		}
 		// build a copyable diagnostics snapshot (used by button and 's' key)
 		function buildSnapshot(){
@@ -119,6 +127,7 @@
 			}
 			lines.push("min m="+s.mins.m+" dr="+s.mins.dr+" dg="+s.mins.dg+" db="+s.mins.db+" E="+s.mins.E);
 			lines.push("maxM="+s.maxM+" neg="+s.cntNeg+" over="+s.cntOver+" maxDiv="+s.motion.maxDiv+" p["+s.motion.pMin+".."+s.motion.pMax+"] maxVel="+s.motion.maxVel);
+			lines.push(poissonLine(s));
 			lines.push(phaseLine(s));
 			const solverTag=cfg.useMultigrid?"mgS"+cfg.mgCoarsen+"x"+cfg.mgCycles+"(pre"+cfg.mgPre+"/post"+cfg.mgPost+")":
 				"rb";

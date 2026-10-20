@@ -175,6 +175,13 @@
 			log("maxM=" + stats.maxM + " neg=" + stats.cntNeg + " over=" + stats.cntOver +
 				" maxDiv=" + stats.motion.maxDiv + " p[" + stats.motion.pMin + ".." + stats.motion.pMax +
 				"] maxVel=" + stats.motion.maxVel);
+			// solver quality in the units plan 4.1 judges; maxDiv above floors at max|S|
+			// in boiling flow, this channel does not
+			const poisson = stats.diag && stats.diag.poissonRes !== undefined;
+			log("poisson: " + (poisson
+				? "res=" + stats.diag.poissonRes + " rhs=" + stats.diag.poissonRhs +
+				  " true=" + stats.diag.poissonRel
+				: "no residual channel (stats slots 32/33)"));
 			const pc = stats.phaseCounts || [0, 0, 0, 0, 0, 0];
 			const lat = stats.ledger ? stats.ledger.latentChargedE : 0;
 			const fMom = stats.ledger ? stats.ledger.frozenMomentum : 0;
@@ -191,6 +198,7 @@
 				" CPU encode=" + (encodeMs / frames).toFixed(2) + "ms queue wait=" + (queueMs / frames).toFixed(2) +
 				"ms vCap=" + Math.round(cfg.vClamp) + " CFL bound=" + cfl.toFixed(4));
 			log("sampled peaks: maxDiv=" + sampled.maxDiv + " maxM=" + sampled.maxM + " over=" + sampled.maxOver +
+				" poissonTrue=" + sampled.maxPoisson +
 				" · divergence/compression are reported, not pass/fail gates");
 		}
 		function readSettings() {
@@ -268,7 +276,7 @@
 			let encodeMs = 0;
 			let queueMs = 0;
 			let lastNs = 1;
-			const sampled = { maxDiv: 0, maxM: 0, maxOver: 0 };
+			const sampled = { maxDiv: 0, maxM: 0, maxOver: 0, maxPoisson: 0 };
 			const GROUP_COUNT = 8;
 			const profAcc = { samples: 0, substeps: 0, ms: new Float64Array(GROUP_COUNT), lastFrame: -1 };
 			function takeProfile() {
@@ -321,6 +329,7 @@
 					sampled.maxDiv = Math.max(sampled.maxDiv, stats.motion.maxDiv);
 					sampled.maxM = Math.max(sampled.maxM, stats.maxM);
 					sampled.maxOver = Math.max(sampled.maxOver, stats.cntOver);
+					if (stats.diag) sampled.maxPoisson = Math.max(sampled.maxPoisson, stats.diag.poissonRel || 0);
 				}
 				if (gpuErrors.length) throw new Error(gpuErrors.join("\n"));
 				if ((frame + 1) % progressEvery === 0 || frame === frames - 1) {

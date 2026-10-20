@@ -1,0 +1,67 @@
+t2 fixed+auto policy table · generated with: node experiments/gpu-log-table.js experiments/logs/2026-10-20-12_*.log
+source captures: 12:43 K40 · 12:45 K20 · 12:47 K60 · 12:50 K20/c1 (all N=512 &auto=0&ns=4) · 12:51/52/53 K20/K40/K60 auto · 12:54 K20 N=1024 auto
+press%/step are per substep; maxDiv is the sampled peak (trajectory, not solver). rows only compare inside a group (same scenario, dt, ns).
+
+log	scenario	K	cyc	policy	ns	fps	press	step	press%	maxDiv	poissonTrue
+
+# blobs dt=0.004167 ns=4 N=512  · % vs first row
+12_43	blobs	40	2	fixed	4	86.1	1.550	1.852	83.7	1.508	-
+12_45	blobs	20	2	fixed	4	103.8 (20.6%)	1.261 (-18.6%)	1.564	80.6	2.812 (1.87x)	-
+12_47	blobs	60	2	fixed	4	72.6 (-15.7%)	1.844 (19.0%)	2.130	86.6	1.063 (0.71x)	-
+12_50	blobs	20	1	fixed	4	161.3 (87.3%)	0.652 (-57.9%)	0.941	69.3	6.269 (4.16x)	-
+
+# dam dt=0.004167 ns=4 N=512  · % vs first row
+12_43	dam	40	2	fixed	4	86.3	1.516	1.818	83.4	10.395	-
+12_45	dam	20	2	fixed	4	103.9 (20.4%)	1.262 (-16.8%)	1.552	81.3	14.475 (1.39x)	-
+12_47	dam	60	2	fixed	4	72.5 (-16.0%)	1.777 (17.2%)	2.050	86.7	9.425 (0.91x)	-
+12_50	dam	20	1	fixed	4	159.2 (84.5%)	0.639 (-57.8%)	0.936	68.3	23.346 (2.25x)	-
+
+# cycle dt=0.004167 ns=4 N=512  · % vs first row
+12_43	cycle	40	2	fixed	4	87.9	1.467	1.753	83.7	31.246	-
+12_45	cycle	20	2	fixed	4	104.9 (19.3%)	1.180 (-19.6%)	1.493	79.0	30.336 (0.97x)	-
+12_47	cycle	60	2	fixed	4	73.6 (-16.3%)	1.815 (23.7%)	2.113	85.9	31.713 (1.01x)	-
+12_50	cycle	20	1	fixed	4	160.4 (82.5%)	0.599 (-59.2%)	0.888	67.5	122.239 (3.91x)	-
+
+# jet dt=0.004167 ns=4 N=512  · % vs first row
+12_43	jet	40	2	fixed	4	86.2	1.504	1.824	82.5	26.750	-
+12_45	jet	20	2	fixed	4	103.3 (19.8%)	1.263 (-16.0%)	1.562	80.9	27.872 (1.04x)	-
+12_47	jet	60	2	fixed	4	71.8 (-16.7%)	1.799 (19.6%)	2.094	85.9	25.167 (0.94x)	-
+12_50	jet	20	1	fixed	4	161.5 (87.4%)	0.645 (-57.1%)	0.940	68.6	23.700 (0.89x)	-
+
+# blobs dt=0.002778 ns=6 N=512  · % vs first row
+12_51	blobs	20	2	auto	6	73.3	1.217	1.503	81.0	3.163	-
+12_52	blobs	40	2	auto	6	60.3 (-17.7%)	1.452 (19.3%)	1.734	83.7	2.023 (0.64x)	-
+12_53	blobs	60	2	auto	6	51.5 (-29.7%)	1.704 (40.0%)	1.979	86.1	1.427 (0.45x)	-
+
+# dam dt=0.002381 ns=7 N=512  · % vs first row
+12_51	dam	20	2	auto	7	66.7	1.195	1.478	80.9	10.500	-
+12_53	dam	60	2	auto	7	46.5 (-30.3%)	1.694 (41.8%)	1.969	86.0	5.698 (0.54x)	-
+
+# cycle dt=0.001389 ns=12 N=512  (no peer: not comparable)
+12_51	cycle	20	2	auto	12	72.0	1.115	1.394	80.0	35.007	-
+
+# jet dt=0.001389 ns=12 N=512  · % vs first row
+12_51	jet	20	2	auto	12	48.6	1.135	1.431	79.3	25.175	-
+12_52	jet	40	2	auto	12	39.4 (-18.9%)	1.391 (22.6%)	1.689	82.4	26.668 (1.06x)	-
+12_53	jet	60	2	auto	12	33.3 (-31.5%)	1.659 (46.2%)	1.942	85.4	29.457 (1.17x)	-
+
+# dam dt=0.002083 ns=8 N=512  (no peer: not comparable)
+12_52	dam	40	2	auto	8	54.7	1.413	1.690	83.6	7.180	-
+
+# cycle dt=0.001852 ns=9 N=512  (no peer: not comparable)
+12_52	cycle	40	2	auto	9	65.9	1.366	1.643	83.1	91.855	-
+
+# cycle dt=0.001111 ns=15 N=512  (no peer: not comparable)
+12_53	cycle	60	2	auto	15	43.6	1.607	1.900	84.6	33.937	-
+
+# blobs dt=0.001389 ns=12 N=1024  (no peer: not comparable)
+12_54	blobs	20	2	auto	12	26.8	3.990	5.014	79.6	4.529	-
+
+# dam dt=0.001190 ns=14 N=1024  (no peer: not comparable)
+12_54	dam	20	2	auto	14	25.0	3.976	4.974	79.9	12.908	-
+
+# cycle dt=0.001389 ns=12 N=1024  (no peer: not comparable)
+12_54	cycle	20	2	auto	12	27.2	3.782	4.797	78.8	43.106	-
+
+# jet dt=0.001389 ns=12 N=1024  (no peer: not comparable)
+12_54	jet	20	2	auto	12	25.9	3.959	4.974	79.6	27.176	-

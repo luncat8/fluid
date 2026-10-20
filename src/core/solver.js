@@ -766,6 +766,14 @@
 		function stats(){
 			const tot=acc.totalsFromFields(grid.curBuf(mass),grid.curBuf(therm),texW,texH);
 			const mot=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,cfg.dt);
+			// frame-end poisson residual of the last pressure solve, with the operator the
+			// v-cycle itself restricts; the gpu stats pass reports the same two numbers.
+			// computed per call (about one extra grid pass), which is what a polling caller
+			// asks for: gpu diag values are the last sampled frame, these are the current one.
+			const mgOp=Fluid.core.multigrid;
+			const poissonRes=mgOp?mgOp.computeResidual(grid.curBuf(press),divsrc,grid.curBuf(mass),
+				flags,texW,texH,cfg.rhoVac,null):0;
+			const poissonRel=diag.divBefore>0?poissonRes/diag.divBefore:0;
 			const thermal=acc.thermalTotals(grid.curBuf(mass),grid.curBuf(therm),grid.curBuf(vel),texW,texH,cfg.mEps,cfg.cLiq,cfg.TAmb);
 			const phaseCounts=[0,0,0,0,0,0];
 			for(let y=1;y<texH-1;y++){
@@ -774,7 +782,8 @@
 				}
 			}
 			return {frame:cfg.frame,tot,mot,thermal,ledger,phaseCounts,
-				diag:{divBefore:diag.divBefore,divAfter:diag.divAfter,residual:diag.pressureResidual,sSaturated:diag.sSaturated}};
+				diag:{divBefore:diag.divBefore,divAfter:diag.divAfter,residual:diag.pressureResidual,
+					sSaturated:diag.sSaturated,poissonRes,poissonRel}};
 		}
 		function applyDyePatch(patch){
 			const buf=grid.curBuf(mass),tbuf=grid.curBuf(therm);

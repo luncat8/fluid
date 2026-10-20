@@ -12,6 +12,44 @@
 	function cellBlocked(flagsArr,i4){
 		return flagsArr[i4]>0||flagsArr[i4+2]>0;
 	}
+	// the poisson operator for one level: harmonic-mean face weights, zero across a
+	// wall or a frozen cell. shared by the v-cycle and by the frame-end residual
+	// readout, so the reported number can never drift from the system solved.
+	function faceWeight(massArr,texW,texH,x,y,nx,ny,flagsArr,rhoVac){
+		if(nx<1||nx>texW-2||ny<1||ny>texH-2)return 0;
+		if(cellBlocked(flagsArr,(nx+ny*texW)*4))return 0;
+		const ra=Math.max(massArr[(x+y*texW)*4+3],rhoVac);
+		const rb=Math.max(massArr[(nx+ny*texW)*4+3],rhoVac);
+		return 1/(2*ra*rb/(ra+rb));
+	}
+	// out[i]=b-(L p-wsum*p) per open cell, 0 in blocked cells, and the return value
+	// is max|out| — the true poisson residual (0.6.0 4.1). `out` may be null when
+	// only the norm is wanted, so a diagnostic readout needs no scratch field.
+	function computeResidual(pressArr,divArr,massArr,flagsArr,texW,texH,rhoVac,out){
+		let maxA=0;
+		for(let y=1;y<texH-1;y++){
+			for(let x=1;x<texW-1;x++){
+				const i=x+y*texW;
+				let r=0;
+				if(!cellBlocked(flagsArr,i*4)){
+					let wsum=0,sum=0,w;
+					w=faceWeight(massArr,texW,texH,x,y,x-1,y,flagsArr,rhoVac);
+					if(w>0){wsum+=w;sum+=w*pressArr[i-1];}
+					w=faceWeight(massArr,texW,texH,x,y,x+1,y,flagsArr,rhoVac);
+					if(w>0){wsum+=w;sum+=w*pressArr[i+1];}
+					w=faceWeight(massArr,texW,texH,x,y,x,y-1,flagsArr,rhoVac);
+					if(w>0){wsum+=w;sum+=w*pressArr[i-texW];}
+					w=faceWeight(massArr,texW,texH,x,y,x,y+1,flagsArr,rhoVac);
+					if(w>0){wsum+=w;sum+=w*pressArr[i+texW];}
+					r=divArr[i]-(sum-wsum*pressArr[i]);
+				}
+				if(out)out[i]=r;
+				const a=r<0?-r:r;
+				if(a>maxA)maxA=a;
+			}
+		}
+		return maxA;
+	}
 	function create(cfg,texW,texH,refs){
 		const N=cfg.N;
 		let S=Math.max(2,Math.round(cfg.mgCoarsen||2));
@@ -24,13 +62,8 @@
 		const flagsC=new Uint8Array(texWc*texHc*4);
 		const resFine=new Float32Array(texW*texH);
 		const corrFine=new Float32Array(texW*texH);
-		function faceW(massArr,texW_,x,y,nx,ny,flagsArr){
-			if(nx<1||nx>texW_-2||ny<1||ny>texW_-2)return 0;
-			if(cellBlocked(flagsArr,(nx+ny*texW_)*4))return 0;
-			const ra=Math.max(massArr[(x+y*texW_)*4+3],cfg.rhoVac);
-			const rb=Math.max(massArr[(nx+ny*texW_)*4+3],cfg.rhoVac);
-			return 1/(2*ra*rb/(ra+rb));
-		}
+		const faceW=(massArr,texW_,texH_,x,y,nx,ny,flagsArr)=>
+			faceWeight(massArr,texW_,texH_,x,y,nx,ny,flagsArr,cfg.rhoVac);
 		function coarsen(){
 			const massFine=refs.massCur(),flagsFine=refs.flags;
 			for(let yc=1;yc<texHc-1;yc++){
@@ -58,35 +91,17 @@
 							const i=x+y*texW_;
 							if(cellBlocked(flagsArr,i*4)){pressArr[i]=0;continue;}
 							let wsum=0,sum=0,w;
-							w=faceW(massArr,texW_,x,y,x-1,y,flagsArr);
+							w=faceW(massArr,texW_,texH_,x,y,x-1,y,flagsArr);
 							if(w>0){wsum+=w;sum+=w*pressArr[i-1];}
-							w=faceW(massArr,texW_,x,y,x+1,y,flagsArr);
+							w=faceW(massArr,texW_,texH_,x,y,x+1,y,flagsArr);
 							if(w>0){wsum+=w;sum+=w*pressArr[i+1];}
-							w=faceW(massArr,texW_,x,y,x,y-1,flagsArr);
+							w=faceW(massArr,texW_,texH_,x,y,x,y-1,flagsArr);
 							if(w>0){wsum+=w;sum+=w*pressArr[i-texW_];}
-							w=faceW(massArr,texW_,x,y,x,y+1,flagsArr);
+							w=faceW(massArr,texW_,texH_,x,y,x,y+1,flagsArr);
 							if(w>0){wsum+=w;sum+=w*pressArr[i+texW_];}
 							pressArr[i]=wsum>0?(sum-divArr[i])/wsum:0;
 						}
 					}
-				}
-			}
-		}
-		function computeResidual(pressArr,divArr,massArr,flagsArr,texW_,texH_,out){
-			for(let y=1;y<texH_-1;y++){
-				for(let x=1;x<texW_-1;x++){
-					const i=x+y*texW_;
-					if(cellBlocked(flagsArr,i*4)){out[i]=0;continue;}
-					let wsum=0,sum=0,w;
-					w=faceW(massArr,texW_,x,y,x-1,y,flagsArr);
-					if(w>0){wsum+=w;sum+=w*pressArr[i-1];}
-					w=faceW(massArr,texW_,x,y,x+1,y,flagsArr);
-					if(w>0){wsum+=w;sum+=w*pressArr[i+1];}
-					w=faceW(massArr,texW_,x,y,x,y-1,flagsArr);
-					if(w>0){wsum+=w;sum+=w*pressArr[i-texW_];}
-					w=faceW(massArr,texW_,x,y,x,y+1,flagsArr);
-					if(w>0){wsum+=w;sum+=w*pressArr[i+texW_];}
-					out[i]=divArr[i]-(sum-wsum*pressArr[i]);
 				}
 			}
 		}
@@ -137,25 +152,20 @@
 			const p=grid.curBuf(refs.press);
 			coarsen();
 			smooth(p,refs.divsrc,refs.massCur(),refs.flags,texW,texH,preSmooth);
-			computeResidual(p,refs.divsrc,refs.massCur(),refs.flags,texW,texH,resFine);
+			computeResidual(p,refs.divsrc,refs.massCur(),refs.flags,texW,texH,cfg.rhoVac,resFine);
 			restrictResidual();
 			pressC.a.fill(0);pressC.b.fill(0);pressC.cur=0;
 			smooth(grid.curBuf(pressC),divC,massC,flagsC,texWc,texHc,coarseIters);
 			prolongAndCorrect();
 			smooth(p,refs.divsrc,refs.massCur(),refs.flags,texW,texH,postSmooth);
 		}
+		// the true poisson residual of the current fine pressure field, operator units
 		function residualNorm(){
-			const p=grid.curBuf(refs.press);
-			computeResidual(p,refs.divsrc,refs.massCur(),refs.flags,texW,texH,resFine);
-			let maxA=0;
-			for(let y=1;y<texH-1;y++)for(let x=1;x<texW-1;x++){
-				const v=Math.abs(resFine[x+y*texW]);
-				if(v>maxA)maxA=v;
-			}
-			return maxA;
+			return computeResidual(grid.curBuf(refs.press),refs.divsrc,refs.massCur(),
+				refs.flags,texW,texH,cfg.rhoVac,resFine);
 		}
 		return {vcycle,residualNorm,pressC,divC,massC,flagsC,Nc,texWc,texHc,S};
 	}
-	Fluid.core.multigrid={create,cellBlocked};
+	Fluid.core.multigrid={create,cellBlocked,computeResidual};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.multigrid;
 })(globalThis);

@@ -85,6 +85,7 @@
 		const sfieldView=viewRes(pool.sfield);
 		const sfieldTmpView=viewRes(pool.sfieldTmp);
 		const accumView=viewRes(pool.accum);
+		const divsrcView=viewRes(pool.divsrc);
 		const accumTmpView=viewRes(pool.accumTmp);
 		const fluxView=viewRes(pool.flux);
 		const limiterAView=viewRes(pool.limiterA);
@@ -243,7 +244,8 @@
 						{binding:4,resource:viewRes(p0)},
 						{binding:5,resource:flagsView},
 						{binding:6,resource:accumView},
-						{binding:7,resource:{buffer:pool.statsPart}}
+						{binding:7,resource:{buffer:pool.statsPart}},
+						{binding:8,resource:divsrcView}
 					]);
 					groups.toDisplay[m][t][v]=bg(device,"toDisplay"+m+t+v,pipes.toDisplay.getBindGroupLayout(0),[
 						{binding:0,resource:{buffer:pool.params}},

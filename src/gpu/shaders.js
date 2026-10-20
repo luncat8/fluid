@@ -106,6 +106,48 @@ fn eqDist(m: f32, E: f32, T: f32) -> f32 {
 	return 0.0;
 }
 `;
+	// the fine-grid poisson operator, shared by the two kernels that need it: the
+	// v-cycle's restrict (which moves the residual down) and the stats pass (which
+	// reports its norm). the caller supplies the five pressure reads, because the
+	// solver holds press as a storage texture and the stats pass as a sampled one.
+	// mirrors computeResidual in src/core/multigrid.js, the cpu oracle.
+	const POISSON_HELPERS=`
+struct PoissonP { left: f32, right: f32, down: f32, up: f32, center: f32 };
+struct PoissonOut { res: f32, rhs: f32 };
+fn poissonOpen(x: i32, y: i32, w: i32, h: i32) -> bool {
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return false; }
+	let fl = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+	return (fl.r | fl.b) == 0u;
+}
+// harmonic-mean face weight of the inverse density, zero across a wall or frozen cell
+fn poissonFaceW(x: i32, y: i32, nx: i32, ny: i32, w: i32, h: i32) -> f32 {
+	if (nx < 1 || nx > w - 2 || ny < 1 || ny > h - 2) { return 0.0; }
+	let nf = textureLoad(flagsTex, vec2<i32>(nx, ny), 0);
+	if ((nf.r | nf.b) > 0u) { return 0.0; }
+	let rhoVac = params.values[57];
+	let ra = max(textureLoad(massTex, vec2<i32>(x, y), 0).a, rhoVac);
+	let rb = max(textureLoad(massTex, vec2<i32>(nx, ny), 0).a, rhoVac);
+	return 1.0 / (2.0 * ra * rb / (ra + rb));
+}
+fn poissonResidual(p: PoissonP, x: i32, y: i32, w: i32, h: i32) -> PoissonOut {
+	var out: PoissonOut;
+	out.res = 0.0; out.rhs = 0.0;
+	if (!poissonOpen(x, y, w, h)) { return out; }
+	out.rhs = textureLoad(divsrcTex, vec2<i32>(x, y), 0).r;
+	var wsum = 0.0;
+	var sum = 0.0;
+	var fw = poissonFaceW(x, y, x - 1, y, w, h);
+	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * p.left; }
+	fw = poissonFaceW(x, y, x + 1, y, w, h);
+	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * p.right; }
+	fw = poissonFaceW(x, y, x, y - 1, w, h);
+	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * p.down; }
+	fw = poissonFaceW(x, y, x, y + 1, w, h);
+	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * p.up; }
+	out.res = out.rhs - (sum - wsum * p.center);
+	return out;
+}
+`;
 	const shaders={};
 	shaders.paramsStruct=`
 struct Params { values: array<f32,128> };
@@ -866,7 +908,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	textureStore(thermDst, vec2<i32>(x, y), q);
 }
 `;
-	// ---------- two level stats reduction, level 1 (33 values -> stride 40) ----------
+	// ---------- two level stats reduction, level 1 (35 values -> stride 40) ----------
 	shaders.statsReduceA=`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var massTex: texture_2d<f32>;
@@ -876,8 +918,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(5) var flagsTex: texture_2d<u32>;
 @group(0) @binding(6) var accumTex: texture_2d<f32>;
 @group(0) @binding(7) var<storage,read_write> partials: array<f32>;
-
-var<workgroup> sh: array<f32,2112>;
+@group(0) @binding(8) var divsrcTex: texture_2d<f32>;
+${POISSON_HELPERS}
+var<workgroup> sh: array<f32,2240>;
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
@@ -893,6 +936,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 	var maxVel = 0.0; var pMin = 1e30; var pMax = -1e30; var maxDiv = 0.0;
 	var heatIn = 0.0; var heatOut = 0.0; var tMin = 1e30; var tMax = -1e30; var tSum = 0.0; var tCnt = 0.0; var kin = 0.0;
 	var ph: u32 = 0u; var sSat = 0.0; var latE = 0.0; var fMom = 0.0;
+	var maxRes = 0.0; var maxRhs = 0.0;
 	if (inside) {
 		let mass = textureLoad(massTex, vec2<i32>(x, y), 0);
 		let therm = textureLoad(thermTex, vec2<i32>(x, y), 0);
@@ -909,6 +953,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 		maxDiv = abs(uR - uL + vT - vB) / max(dt, 1e-9);
 		let p = textureLoad(pressTex, vec2<i32>(x, y), 0).r;
 		pMin = p; pMax = p;
+		// the true poisson residual of the last projection, in operator units: the
+		// metric plan 4.1 judges, and the only one that survives the S floor in boiling
+		var pp: PoissonP;
+		pp.center = p;
+		pp.left = textureLoad(pressTex, vec2<i32>(x - 1, y), 0).r;
+		pp.right = textureLoad(pressTex, vec2<i32>(x + 1, y), 0).r;
+		pp.down = textureLoad(pressTex, vec2<i32>(x, y - 1), 0).r;
+		pp.up = textureLoad(pressTex, vec2<i32>(x, y + 1), 0).r;
+		let cell = poissonResidual(pp, x, y, w, h);
+		maxRes = abs(cell.res); maxRhs = abs(cell.rhs);
 		heatIn = therm.b; heatOut = therm.a;
 		if (mass.a >= params.values[58]) {
 			tMin = therm.g; tMax = therm.g; tSum = therm.g; tCnt = 1.0;
@@ -941,6 +995,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 	sh[30u * 64u + lid] = sSat;
 	sh[31u * 64u + lid] = latE;
 	sh[32u * 64u + lid] = fMom;
+	sh[33u * 64u + lid] = maxRes; sh[34u * 64u + lid] = maxRhs;
 	workgroupBarrier();
 	var stride = 32u;
 	loop {
@@ -955,6 +1010,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 			sh[14u * 64u + lid] = min(sh[14u * 64u + lid], sh[14u * 64u + lid + stride]);
 			sh[15u * 64u + lid] = max(sh[15u * 64u + lid], sh[15u * 64u + lid + stride]);
 			sh[16u * 64u + lid] = max(sh[16u * 64u + lid], sh[16u * 64u + lid + stride]);
+			sh[33u * 64u + lid] = max(sh[33u * 64u + lid], sh[33u * 64u + lid + stride]);
+			sh[34u * 64u + lid] = max(sh[34u * 64u + lid], sh[34u * 64u + lid + stride]);
 			sh[17u * 64u + lid] = sh[17u * 64u + lid] + sh[17u * 64u + lid + stride];
 			sh[18u * 64u + lid] = sh[18u * 64u + lid] + sh[18u * 64u + lid + stride];
 			sh[19u * 64u + lid] = min(sh[19u * 64u + lid], sh[19u * 64u + lid + stride]);
@@ -966,11 +1023,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 	}
 	if (lid == 0u) {
 		let base = (wid.y * nwg.x + wid.x) * 40u;
-		for (var k = 0u; k < 33u; k++) { partials[base + k] = sh[k * 64u]; }
+		for (var k = 0u; k < 35u; k++) { partials[base + k] = sh[k * 64u]; }
 	}
 }
 `;
-	// ---------- level 2 with kahan sums ----------
+	// ---------- level 2 with kahan sums (35 partial slots -> 36 stats slots) ----------
 	shaders.statsReduceB=`
 @group(0) @binding(0) var<storage,read> partials: array<f32>;
 @group(0) @binding(1) var<storage,read_write> stats: array<f32>;
@@ -1005,6 +1062,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	var neg = 0.0; var over = 0.0;
 	var minM = 1e30; var minDr = 1e30; var minDg = 1e30; var minDb = 1e30; var minE = 1e30;
 	var maxM = -1e30; var maxVel = 0.0; var pMin = 1e30; var pMax = -1e30; var maxDiv = 0.0;
+	var maxRes = 0.0; var maxRhs = 0.0;
 	var tMin = 1e30; var tMax = -1e30;
 	for (var i = 0u; i < num; i++) {
 		let base = i * 40u;
@@ -1022,6 +1080,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		pMin = min(pMin, partials[base + 14u]);
 		pMax = max(pMax, partials[base + 15u]);
 		maxDiv = max(maxDiv, partials[base + 16u]);
+		maxRes = max(maxRes, partials[base + 33u]);
+		maxRhs = max(maxRhs, partials[base + 34u]);
 	}
 	if (minM == 1e30) { minM = 0.0; }
 	if (minDr == 1e30) { minDr = 0.0; }
@@ -1034,6 +1094,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	stats[0u] = sM; stats[1u] = sDr; stats[2u] = sDg; stats[3u] = sDb; stats[4u] = sE;
 	stats[5u] = minM; stats[6u] = minDr; stats[7u] = minDg; stats[8u] = minDb; stats[9u] = minE;
 	stats[10u] = maxM; stats[11u] = neg; stats[12u] = over;
+	stats[32u] = maxRes; stats[33u] = maxRhs;
 	stats[13u] = maxVel; stats[14u] = pMin; stats[15u] = pMax; stats[16u] = maxDiv;
 	if (tMin == 1e30) { tMin = 0.0; }
 	if (tMax == -1e30) { tMax = 0.0; }
@@ -1328,38 +1389,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(4) var flagsTex: texture_2d<u32>;
 @group(0) @binding(5) var divCDst: texture_storage_2d<r32float,write>;
 
-fn faceWR(x: i32, y: i32, nx: i32, ny: i32, w: i32, h: i32, rhoVac: f32) -> f32 {
-	if (nx < 1 || nx > w - 2 || ny < 1 || ny > h - 2) { return 0.0; }
-	let nf = textureLoad(flagsTex, vec2<i32>(nx, ny), 0);
-	if ((nf.r | nf.b) > 0u) { return 0.0; }
-	let ra = max(textureLoad(massTex, vec2<i32>(x, y), 0).a, rhoVac);
-	let rb = max(textureLoad(massTex, vec2<i32>(nx, ny), 0).a, rhoVac);
-	return 1.0 / (2.0 * ra * rb / (ra + rb));
-}
-fn residualAt(x: i32, y: i32, w: i32, h: i32, rhoVac: f32) -> f32 {
-	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return 0.0; }
-	let fl = textureLoad(flagsTex, vec2<i32>(x, y), 0);
-	if ((fl.r | fl.b) > 0u) { return 0.0; }
-	let p = textureLoad(pressFine, vec2<i32>(x, y)).r;
-	let b = textureLoad(divsrcTex, vec2<i32>(x, y), 0).r;
-	var wsum = 0.0;
-	var sum = 0.0;
-	var fw = faceWR(x, y, x - 1, y, w, h, rhoVac);
-	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * textureLoad(pressFine, vec2<i32>(x - 1, y)).r; }
-	fw = faceWR(x, y, x + 1, y, w, h, rhoVac);
-	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * textureLoad(pressFine, vec2<i32>(x + 1, y)).r; }
-	fw = faceWR(x, y, x, y - 1, w, h, rhoVac);
-	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * textureLoad(pressFine, vec2<i32>(x, y - 1)).r; }
-	fw = faceWR(x, y, x, y + 1, w, h, rhoVac);
-	if (fw > 0.0) { wsum = wsum + fw; sum = sum + fw * textureLoad(pressFine, vec2<i32>(x, y + 1)).r; }
-	return b - (sum - wsum * p);
+${POISSON_HELPERS}
+// press arrives as a struct: this kernel reads the fine field as a storage texture,
+// the stats pass reads the same one sampled. the operator itself is shared above.
+fn residualAt(x: i32, y: i32, w: i32, h: i32) -> f32 {
+	var p: PoissonP;
+	p.center = textureLoad(pressFine, vec2<i32>(x, y)).r;
+	p.left = textureLoad(pressFine, vec2<i32>(x - 1, y)).r;
+	p.right = textureLoad(pressFine, vec2<i32>(x + 1, y)).r;
+	p.down = textureLoad(pressFine, vec2<i32>(x, y - 1)).r;
+	p.up = textureLoad(pressFine, vec2<i32>(x, y + 1)).r;
+	return poissonResidual(p, x, y, w, h).res;
 }
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let w = i32(params.values[2]);
 	let h = i32(params.values[3]);
-	let rhoVac = params.values[57];
 	let S = max(2, i32(params.values[94]));
 	let nc = (w - 2) / S;
 	let xc = i32(gid.x);
@@ -1368,7 +1414,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	var sum = 0.0;
 	for (var oy = 0; oy < S; oy++) {
 		for (var ox = 0; ox < S; ox++) {
-			sum = sum + residualAt(S * (xc - 1) + 1 + ox, S * (yc - 1) + 1 + oy, w, h, rhoVac);
+			sum = sum + residualAt(S * (xc - 1) + 1 + ox, S * (yc - 1) + 1 + oy, w, h);
 		}
 	}
 	textureStore(divCDst, vec2<i32>(xc, yc), vec4<f32>(sum, 0.0, 0.0, 0.0));

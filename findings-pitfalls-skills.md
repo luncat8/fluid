@@ -569,3 +569,47 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   multi-step rows show the same split (dam rel 9.0e-3 vs 4.6e-4 at N=128; jet
   2.83e-1 unchanged, i.e. the S floor). If it is ever adopted it must be
   conditional on the scenario, never a global default.
+
+## 2026-10-20 fixed-policy solver baseline and the residual channel (0.6.0 t2)
+
+- skill: price a knob's floor before tuning it. the four pinned N=512 rows fit
+  `press = 0.026 + cycles*(0.466 + 0.0071*K)` ms/substep (K40 predicted within 1 %),
+  i.e. one coarse sweep is 7.1 us while the rest of a V-cycle is 466 us and does not
+  depend on K at all. that kills the K ladder: 60 -> 20 removes 31 % of press and
+  20 -> 0 would remove only 23 % more, while dropping one cycle removes 49 %. a knob
+  that multiplies one additive term cannot beat the term it does not touch; a third
+  level shrinks both, so it is the next candidate.
+- pitfall: never carry a delta over from a row with a different step policy. the t11
+  note that the a2-conservative K=40 fallback "costs ~12 fps" came from auto-policy
+  rows; at pinned ns=4 the same switch costs 0.28 ms/substep = 17 % of the fps
+  (104 -> 87) and 18-19 % in the auto policy. an unpinned price tag turns a
+  measurement into a preference.
+- pitfall: the hardware report's sampled `maxDiv` cannot rank a projection. across the
+  pinned rows it does rise monotonically with fewer sweeps (blobs 1.06/1.51/2.81/6.27
+  for K60/K40/K20/K20-1cyc), but it is flat in `cycle` (31.7/31.2/30.3, the S floor),
+  it *falls* in `jet` (25.2 -> 22.3), and it jumps 4x for one cycle in `cycle` where
+  the oracle says the residual is unchanged. direction only, never magnitude.
+- skill: give the hardware its own quality number instead of arguing from a blind one.
+  `max|b - L p|` and `max|b|` are now stats slots 32/33, printed as
+  `poisson: res= rhs= true=`, where `true` is the oracle's ratio. note the units:
+  `true` is ~1e-2 (residual over rhs) and is NOT the a2 `rel` (~1e-3, divAfter over
+  divBefore); `rel` floors at max|S| in boiling flow, `true` does not.
+- skill: one definition per operator, even across a language boundary. the poisson
+  stencil now exists twice in total (module-scope `faceWeight`/`computeResidual` in
+  src/core/multigrid.js, and `POISSON_HELPERS` in src/gpu/shaders.js interpolated into
+  both kernels that need it) instead of once per caller. two tricks made that possible:
+  a shared wgsl fragment has to be interpolated *after* the binding block (it
+  references those bindings), and the five pressure reads stay in the caller because a
+  storage texture load takes no level argument while a sampled one does; passing
+  `out=null` to computeResidual keeps the diagnostic from needing a 1 MB scratch field.
+  folding the max into the loop that already visits every cell turned `residualNorm()`
+  into a return value, and re-running the oracle (bit-identical rows) is what proved
+  the refactor free.
+- skill: generate capture tables from the log files, and let the grouping be the
+  guard. experiments/gpu-log-table.js pools rows by (scenario, dt, ns, N) and prints
+  "no peer: not comparable" for a lone row, so the three auto rows that differ only by
+  policy (dam ns 7/8/7, cycle ns 12/9/15) refuse to be compared instead of quietly
+  becoming a fake speedup.
+- pitfall: the browser report's header `gravity=300` is the pre-scenario cfg value. the
+  `cycle` scenario scales gravity with the box (600 at N=1024), so compare scenario rows
+  across N, never headers.

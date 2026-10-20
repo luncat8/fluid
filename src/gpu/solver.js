@@ -23,7 +23,7 @@
 		const state={m:0,t:0,v:0,pw:0,ph:0};
 		let flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
 		let ledger=null;
-		const readbackArray=new Float32Array(32);
+		const readbackArray=new Float32Array(stats.STATS_LEN);
 		let readbackInFlight=false;
 		let pendingRead=false;
 		let pendingFrame=0;
@@ -36,7 +36,7 @@
 		let timeAcc=0;
 		let pSpanSmooth=100;
 		const phaseCounts=[0,0,0,0,0,0];
-		const diag={sSaturated:0};
+		const diag={sSaturated:0,poissonRes:0,poissonRhs:0,poissonRel:0};
 		let statsCache=null;
 		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,thermal:null,phaseCounts,diag,ledger:null};
 		function writeParams(){
@@ -107,6 +107,7 @@
 				}
 			}
 			diag.sSaturated=0;
+			diag.poissonRes=0;diag.poissonRhs=0;diag.poissonRel=0;
 			const expected=stats.writeExpectedTotals({m:0,dr:0,dg:0,db:0,E:0},ledger);
 			statsCache={
 				frame:0,
@@ -198,7 +199,7 @@
 				cpass.end();
 			}
 			if(needStats&&!readbackInFlight){
-				encoder.copyBufferToBuffer(pool.stats,0,pool.statsRead,0,128);
+				encoder.copyBufferToBuffer(pool.stats,0,pool.statsRead,0,stats.STATS_LEN*4);
 				stats.writeExpectedTotals(pendingExpected,ledger);
 				pendingHeatNet=heatNetKnown;
 				pendingFrame=frameCount+1;
@@ -319,6 +320,12 @@
 					statsCache.thermal.heatOut=heatOut;
 					for(let k=0;k<6;k++)phaseCounts[k]=Math.round(readbackArray[23+k]);
 					diag.sSaturated=Math.round(readbackArray[29]);
+					// frame-end poisson residual (0.6.0 plan 4.1): max|b - L p| over max|b|
+					// is the solver-quality number that survives the S floor in boiling flow
+					const poissonRes=readbackArray[32],poissonRhs=readbackArray[33];
+					diag.poissonRes=poissonRes;
+					diag.poissonRhs=poissonRhs;
+					diag.poissonRel=poissonRhs>0?poissonRes/poissonRhs:0;
 					ledger.latentChargedE=readbackArray[30];
 					ledger.frozenMomentum=readbackArray[31];
 				}

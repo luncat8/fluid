@@ -52,7 +52,8 @@ const stats = {
 	maxM: 0.8,
 	cntNeg: 0,
 	cntOver: 0,
-	motion: { maxVel: 0, maxDiv: 0.1, pMin: -1, pMax: 1 }
+	motion: { maxVel: 0, maxDiv: 0.1, pMin: -1, pMax: 1 },
+	diag: { sSaturated: 0, poissonRes: 0.02, poissonRhs: 40, poissonRel: 0.0005 }
 };
 const device = {
 	queue: { onSubmittedWorkDone: () => Promise.resolve() },
@@ -135,6 +136,10 @@ vm.runInNewContext(inline[1], context, { filename: "browser-tests.html:inline" }
 		.filter(name => queryElements["case-" + name].checked);
 	assert.deepEqual(selected, ["blobs", "draw"], "scenario query prefill selects a reproducible subset");
 	assert.match(elements.out.textContent, /phases vac=0 sol=0 melt=0 liq=0 boil=0 gas=0 \| latentE=0 fMom=0 sSat=0/);
+	assert.match(elements.out.textContent, /poisson: res=0\.02 rhs=40 true=0\.0005/,
+		"the report carries the true poisson residual, not only maxDiv");
+	assert.match(elements.out.textContent, /sampled peaks: .*poissonTrue=0\.0005/,
+		"the sampled peak line follows the residual channel");
 	console.log("PASS browser diagnostics UI: five-case run, phase scenarios, scenario query, scripted paint, in-flight lock, report and clipboard copy");
 })().catch(error => {
 	console.error(error);

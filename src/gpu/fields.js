@@ -3,7 +3,9 @@
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.gpu=Fluid.gpu||{};
 	const PATCH=128;
-	const PARTIAL_STRIDE=40;
+	// the stats layout is owned by src/core/stats.js so the cpu oracle, the readback
+	// and these buffers cannot disagree on the slot count
+	const STATS=Fluid.core.stats;
 	function texUsage(){
 		return GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.STORAGE_BINDING|GPUTextureUsage.COPY_SRC|GPUTextureUsage.COPY_DST;
 	}
@@ -99,11 +101,13 @@
 		pool.workgroupY=workgroupY;
 		pool.numWorkgroups=workgroupX*workgroupY;
 		pool.params=device.createBuffer({label:"params",size:512,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
-		// 40 partial floats per workgroup reduced into 32 output floats (see src/core/stats.js)
+		const PARTIAL_STRIDE=STATS.PARTIAL_STRIDE;
+		// 40 partial floats per workgroup reduced into STATS_LEN output floats
 		const statsPartSize=pool.numWorkgroups*PARTIAL_STRIDE*4;
 		pool.statsPart=device.createBuffer({label:"statsPart",size:statsPartSize,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
-		pool.stats=device.createBuffer({label:"stats",size:128,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
-		pool.statsRead=device.createBuffer({label:"statsRead",size:128,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+		const statsBytes=STATS.STATS_LEN*4;
+		pool.stats=device.createBuffer({label:"stats",size:statsBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
+		pool.statsRead=device.createBuffer({label:"statsRead",size:statsBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		pool.buoy=device.createBuffer({label:"buoy",size:128,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
 		pool.buoyRead=device.createBuffer({label:"buoyRead",size:128,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		pool.dims=device.createBuffer({label:"dims",size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
