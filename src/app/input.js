@@ -126,9 +126,9 @@
 			}else if(k==="s"){
 				console.log("stats dump",solver?solver.getStats():null);
 			}else if(k==="+"||k==="="){
-				cfg.pressureIters=Math.min(200,cfg.pressureIters+5);
+				Fluid.core.config.setSolverIters(cfg,Math.min(200,Fluid.core.config.solverIters(cfg)+5));
 			}else if(k==="-"||k==="_"){
-				cfg.pressureIters=Math.max(1,cfg.pressureIters-5);
+				Fluid.core.config.setSolverIters(cfg,Math.max(1,Fluid.core.config.solverIters(cfg)-5));
 			}else if(k==="["){
 				const n=Math.max(64,cfg.N-64);
 				if(solver&&n!==cfg.N)solver.resize(n);

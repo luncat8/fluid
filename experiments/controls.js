@@ -67,10 +67,18 @@ check(Fluid.core.config.substepCount(cfg,0)===6,"fixed-step slider feeds the sol
 const iters=els["ctrl-iters"];
 iters.value="75";
 iters.fire("input");
-check(cfg.pressureIters===75,"pressure slider applies on input");
-cfg.pressureIters=80;
+check(cfg.mgCoarseIters===75&&cfg.pressureIters===60,
+	"pressure slider drives the coarse sweep count while multigrid is on");
+cfg.mgCoarseIters=80;
 sync();
 check(iters.value===80&&els["ctrl-iters-val"].textContent===80,"keyboard pressure changes sync back to the slider");
+cfg.useMultigrid=false;
+sync();
+check(iters.value===60,"turning multigrid off shows the red-black sweep count");
+iters.value="40";
+iters.fire("input");
+check(cfg.pressureIters===40&&cfg.mgCoarseIters===80,"mg=0 slider drives the red-black sweep count");
+cfg.useMultigrid=true;
 
 
 const buoy=els["ctrl-buoy"];

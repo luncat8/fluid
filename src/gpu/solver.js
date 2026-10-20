@@ -166,12 +166,13 @@
 			writeParams();
 			// profiling splits the one compute pass at timing-group boundaries;
 			// the dispatch sequence is identical either way (0.6.0 t1).
+			const kIters=Fluid.core.config.solverIters(cfg);
 			const profiling=!!(prof&&cfg.gpuTiming>0);
 			const encoder=device.createCommandEncoder({label:"frame"});
 			if(profiling){
 				prof.beginFrame(substeps,frameCount+1);
 				for(let s=0;s<substeps;s++){
-					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,cfg.pressureIters,cfg.fctLimiter>0,
+					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1);
 				}
 				if(needStats||needBuoy){
@@ -184,7 +185,7 @@
 			}else{
 				const cpass=encoder.beginComputePass({label:"sim"});
 				for(let s=0;s<substeps;s++){
-					passes.encodeStep(cpass,pool,pipes,groups,state,cfg.pressureIters,cfg.fctLimiter>0,
+					passes.encodeStep(cpass,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1);
 				}
 				if(needStats){

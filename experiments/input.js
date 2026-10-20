@@ -100,9 +100,15 @@ key("r",{repeat:true});
 check(resets===0,"holding reset does not repeatedly rebuild the scenario");
 key("r");
 check(resets===1,"plain reset still works");
-const iters=cfg.pressureIters;
+const iters=Fluid.core.config.solverIters(cfg);
 key("+",{repeat:true});
-check(cfg.pressureIters===iters+5,"pressure adjustment still allows key repeat");
+check(Fluid.core.config.solverIters(cfg)===iters+5,"pressure adjustment still allows key repeat");
+cfg.useMultigrid=false;
+const rb=cfg.pressureIters;
+key("-");
+check(cfg.pressureIters===rb-5&&cfg.mgCoarseIters===iters+5,
+	"with multigrid off the same keys move the red-black sweep count");
+cfg.useMultigrid=true;
 cfg.N=64;
 key("[");
 check(resizes===0,"minimum-grid shortcut does not rebuild an unchanged grid");

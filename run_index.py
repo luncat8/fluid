@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import sys
+sys.dont_write_bytecode = True
 """Serve the app or a local browser test page with cross-origin isolation headers."""
 import argparse
 import os

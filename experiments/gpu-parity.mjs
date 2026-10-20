@@ -195,7 +195,7 @@ async function compareSnapshot(testCase, cpu, solver, n, step) {
 }
 async function runCase(testCase, n) {
 	const options = Object.assign({
-		pressureIters: 12,
+		mgCoarseIters: 12,
 		fctLimiter: 1,
 		gravityX: 0,
 		gravityY: 300,
@@ -264,35 +264,35 @@ const tests = [
 		scenario: "convection",
 		steps: heatSteps,
 		snapshots: [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, heatSteps],
-		options: { gravityY: 0, pressureIters: 4, dt: 1 / 240 }
+		options: { gravityY: 0, mgCoarseIters: 4, dt: 1 / 240 }
 	},
 	{
 		name: "ice melt + advection",
 		scenario: "ice",
 		steps: phaseSteps,
 		snapshots: [0, 1, 2, 4, 8, phaseSteps],
-		options: { pressureIters: 8, dt: 1 / 240 }
+		options: { mgCoarseIters: 8, dt: 1 / 240 }
 	},
 	{
 		name: "jet vapor expansion",
 		scenario: "jet",
 		steps: phaseSteps,
 		snapshots: [0, 1, 2, 4, 8, phaseSteps],
-		options: { pressureIters: 8, dt: 1 / 240 }
+		options: { mgCoarseIters: 8, dt: 1 / 240 }
 	},
 	{
 		name: "rain boil/freeze cycle",
 		scenario: "rain",
 		steps: phaseSteps,
 		snapshots: [0, 1, 2, 4, 8, phaseSteps],
-		options: { pressureIters: 8, dt: 1 / 240 }
+		options: { mgCoarseIters: 8, dt: 1 / 240 }
 	},
 	{
 		name: "arch frozen vault + MG",
 		scenario: "arch",
 		steps: phaseSteps,
 		snapshots: [0, 1, 2, 4, 8, phaseSteps],
-		options: { pressureIters: 8, dt: 1 / 240 }
+		options: { mgCoarseIters: 8, dt: 1 / 240 }
 	}
 ];
 for (const testCase of tests) await runCase(testCase, n);
@@ -300,7 +300,7 @@ for (const testCase of tests) await runCase(testCase, n);
 // 0.5.0 stats readback + display view verification (a6, a11, a12)
 {
 	const vn = 32;
-	const opts = { pressureIters: 8, fctLimiter: 1, dt: 1 / 240 };
+	const opts = { mgCoarseIters: 8, fctLimiter: 1, dt: 1 / 240 };
 	const cpuCfg = makeConfig("cycle", vn, opts);
 	const gpuCfg = makeConfig("cycle", vn, opts);
 	const cpu = Fluid.core.solver.create(cpuCfg);

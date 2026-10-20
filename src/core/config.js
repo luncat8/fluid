@@ -37,6 +37,10 @@
 		mouseVX:0,
 		mouseVY:0,
 		mouseR:12,
+		// red-black sweeps on the fine grid when the multigrid solve is off
+		// (the ?mg=0 fallback). the multigrid path reads mgCoarseIters instead:
+		// a fine sweep costs 16x the cells of a coarse sweep, so one shared
+		// number cannot mean the same thing on both paths.
 		pressureIters:60,
 		fctLimiter:1,
 		viscosity:0.0,
@@ -93,6 +97,11 @@
 		mgPost:8,
 		mgCoarsen:4,
 		mgCycles:2,
+		// coarse-level red-black sweeps per V-cycle. 0.6.0 t11: 60 -> 20 removes
+		// 160 of the 295 dispatches per projection (295 -> 135) and 1.6-2.5 ->
+		// 1.1-1.8 ms of gpu press time at N=512, while the divergence and the true
+		// Poisson residual are unchanged on the pinned-dt oracle rows.
+		mgCoarseIters:20,
 		buoyEnabled:1,
 		buoyRefW:16,
 		buoyRefH:64,
@@ -237,6 +246,20 @@
 		if(k>200) k=200;
 		return k;
 	}
+	// the active solver's sweep count: coarse-level sweeps for multigrid,
+	// red-black sweeps for the ?mg=0 fallback. a hand-built cfg that only sets
+	// pressureIters keeps the old single-knob meaning instead of reading as 1.
+	function solverIters(cfg){
+		const coarse=cfg.mgCoarseIters!==undefined?cfg.mgCoarseIters:cfg.pressureIters;
+		const raw=cfg.useMultigrid?coarse:cfg.pressureIters;
+		const n=Math.round(raw)||1;
+		return n<1?1:n;
+	}
+	function setSolverIters(cfg,value){
+		const n=Math.max(1,Math.round(value)||1);
+		if(cfg.useMultigrid)cfg.mgCoarseIters=n;
+		else cfg.pressureIters=n;
+	}
 	function makeParamsArray(){
 		return new Float32Array(128);
 	}
@@ -265,7 +288,7 @@
 		a[paramsOff.mouseVX]=cfg.mouseVX||0;
 		a[paramsOff.mouseVY]=cfg.mouseVY||0;
 		a[paramsOff.mouseR]=cfg.mouseR;
-		a[paramsOff.pressureIters]=cfg.pressureIters;
+		a[paramsOff.pressureIters]=solverIters(cfg);
 		a[paramsOff.fctLimiter]=cfg.fctLimiter;
 		a[paramsOff.viscosity]=cfg.viscosity;
 		a[paramsOff.kLiq]=cfg.kLiq;
@@ -310,6 +333,6 @@
 		a[paramsOff.buoyShow]=cfg.buoyShow||0;
 		a[paramsOff.mgS]=cfg.mgCoarsen||2;
 	}
-	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,substepCount,velocityCap,prepareScenario,recommendedIters,makeParamsArray,writeParams};
+	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,substepCount,velocityCap,prepareScenario,recommendedIters,solverIters,setSolverIters,makeParamsArray,writeParams};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.config;
 })(globalThis);

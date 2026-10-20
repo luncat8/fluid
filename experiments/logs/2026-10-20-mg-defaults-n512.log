@@ -1,0 +1,7 @@
+mg-defaults · pinned dt=0.004166666666666667 · warm-started pressure · medians over the measured steps · N=512 check (shorter warmup)
+== dam N=512 (90 warmup + 30 measured) ==
+  c2k60  rel=3.25e-3 true=6.29e-2 divB=1.79e+2 divA=5.76e-1 maxM=1.0003 neg=0 over=0 cpu=1460.8ms/step
+  c2k40  rel=8.54e-3 true=6.23e-2 divB=1.79e+2 divA=1.51e+0 maxM=1.0005 neg=0 over=0 cpu=1506.4ms/step
+  c2k20  rel=1.50e-2 true=6.15e-2 divB=1.79e+2 divA=2.66e+0 maxM=1.0009 neg=0 over=0 cpu=1549.3ms/step
+  c1k20  rel=4.31e-2 true=6.82e-2 divB=1.79e+2 divA=7.69e+0 maxM=1.0021 neg=0 over=8716 cpu=1279.5ms/step
+done

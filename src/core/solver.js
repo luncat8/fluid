@@ -749,7 +749,7 @@
 			forces(dt);
 			advectVel(dt);
 			poissonRhs(dt);
-			project(cfg.pressureIters);
+			project(Fluid.core.config.solverIters(cfg));
 			applyGrad(dt);
 			const motPost=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,dt);
 			diag.divAfter=motPost.maxDiv;

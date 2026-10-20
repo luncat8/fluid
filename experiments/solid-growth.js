@@ -115,7 +115,7 @@ function testCoolingPlumeAndCrust() {
 		heatBand: 4,
 		kSol: 8,
 		kLiq: 2,
-		pressureIters: 8,
+		mgCoarseIters: 8,
 		useMultigrid: true
 	});
 	const sim = solverMod.create(cfg);
@@ -168,7 +168,7 @@ function testSolidArchAndCavityMg() {
 		texW: N + 2,
 		texH: N + 2,
 		scenario: "arch",
-		pressureIters: 8,
+		mgCoarseIters: 8,
 		useMultigrid: true
 	});
 	configMod.prepareScenario(archCfg);

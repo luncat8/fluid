@@ -1,0 +1,38 @@
+mg-defaults · pinned dt=0.004166666666666667 · warm-started pressure · medians over the measured steps
+== dam N=64 (80 warmup + 30 measured) ==
+  rb60   rel=1.18e-2 true=1.18e-2 divB=3.81e+2 divA=4.60e+0 maxM=1.0021 neg=0 over=126 cpu=35.4ms/step
+  c2k60  rel=2.59e-4 true=2.54e-2 divB=3.79e+2 divA=9.27e-2 maxM=1.0000 neg=0 over=0 cpu=26.0ms/step
+  c2k40  rel=2.47e-4 true=2.54e-2 divB=3.79e+2 divA=8.82e-2 maxM=1.0000 neg=0 over=0 cpu=25.4ms/step
+  c2k20  rel=3.11e-4 true=2.53e-2 divB=3.79e+2 divA=1.05e-1 maxM=1.0000 neg=0 over=0 cpu=25.0ms/step
+  c1k20  rel=5.80e-3 true=2.92e-2 divB=3.79e+2 divA=2.05e+0 maxM=1.0001 neg=0 over=0 cpu=23.2ms/step
+== dam N=128 (180 warmup + 90 measured) ==
+  rb60   rel=3.81e-2 true=3.81e-2 divB=4.00e+2 divA=1.85e+1 maxM=1.0053 neg=0 over=637 cpu=224.8ms/step
+  c2k60  rel=4.56e-4 true=7.69e-2 divB=3.95e+2 divA=1.67e-1 maxM=1.0000 neg=0 over=0 cpu=117.6ms/step
+  c2k40  rel=4.61e-4 true=7.69e-2 divB=3.95e+2 divA=1.76e-1 maxM=1.0000 neg=0 over=0 cpu=109.9ms/step
+  c2k20  rel=7.71e-4 true=7.70e-2 divB=3.95e+2 divA=2.93e-1 maxM=1.0002 neg=0 over=0 cpu=105.0ms/step
+  c1k20  rel=9.00e-3 true=7.93e-2 divB=3.96e+2 divA=3.33e+0 maxM=1.0005 neg=0 over=0 cpu=80.7ms/step
+== dam N=256 (120 warmup + 60 measured) ==
+  rb60   rel=5.84e-2 true=5.84e-2 divB=4.97e+2 divA=2.84e+1 maxM=1.0105 neg=0 over=5065 cpu=980.5ms/step
+  c2k60  rel=6.40e-4 true=9.22e-2 divB=5.11e+2 divA=3.09e-1 maxM=1.0002 neg=0 over=0 cpu=444.1ms/step
+  c2k40  rel=8.77e-4 true=9.22e-2 divB=5.11e+2 divA=4.38e-1 maxM=1.0003 neg=0 over=0 cpu=431.9ms/step
+  c2k20  rel=1.88e-3 true=9.21e-2 divB=5.10e+2 divA=9.60e-1 maxM=1.0007 neg=0 over=0 cpu=445.9ms/step
+  c1k20  rel=1.19e-2 true=9.57e-2 divB=5.10e+2 divA=6.05e+0 maxM=1.0016 neg=0 over=1476 cpu=363.7ms/step
+== blobs N=128 (180 warmup + 90 measured) ==
+  rb60   rel=6.50e-3 true=6.50e-3 divB=1.99e+2 divA=1.35e+0 maxM=0.6471 neg=0 over=0 cpu=262.6ms/step
+  c2k60  rel=1.36e-4 true=2.13e-2 divB=1.99e+2 divA=2.61e-2 maxM=0.6471 neg=0 over=0 cpu=110.4ms/step
+  c2k40  rel=1.42e-4 true=2.13e-2 divB=1.99e+2 divA=2.70e-2 maxM=0.6471 neg=0 over=0 cpu=106.9ms/step
+  c2k20  rel=1.46e-4 true=2.13e-2 divB=1.99e+2 divA=2.75e-2 maxM=0.6471 neg=0 over=0 cpu=106.8ms/step
+  c1k20  rel=3.00e-3 true=2.21e-2 divB=1.99e+2 divA=5.69e-1 maxM=0.6471 neg=0 over=0 cpu=84.4ms/step
+== jet N=128 (180 warmup + 90 measured) ==
+  rb60   rel=2.87e-1 true=2.87e-1 divB=6.70e+1 divA=1.88e+1 maxM=0.1990 neg=0 over=0 cpu=230.3ms/step
+  c2k60  rel=2.83e-1 true=3.32e-2 divB=6.70e+1 divA=1.89e+1 maxM=0.1992 neg=0 over=0 cpu=116.0ms/step
+  c2k40  rel=2.83e-1 true=3.30e-2 divB=6.70e+1 divA=1.89e+1 maxM=0.1992 neg=0 over=0 cpu=111.6ms/step
+  c2k20  rel=2.83e-1 true=3.29e-2 divB=6.70e+1 divA=1.89e+1 maxM=0.1992 neg=0 over=0 cpu=108.2ms/step
+  c1k20  rel=2.83e-1 true=3.35e-2 divB=6.69e+1 divA=1.88e+1 maxM=0.1992 neg=0 over=0 cpu=88.2ms/step
+== cycle N=128 (180 warmup + 90 measured) ==
+  rb60   rel=4.29e-1 true=4.29e-1 divB=4.08e+1 divA=1.75e+1 maxM=1.0011 neg=0 over=15 cpu=220.5ms/step
+  c2k60  rel=4.28e-1 true=4.03e-2 divB=4.09e+1 divA=1.75e+1 maxM=1.0004 neg=0 over=0 cpu=109.8ms/step
+  c2k40  rel=4.28e-1 true=4.03e-2 divB=4.09e+1 divA=1.75e+1 maxM=1.0004 neg=0 over=0 cpu=108.3ms/step
+  c2k20  rel=4.28e-1 true=4.00e-2 divB=4.09e+1 divA=1.75e+1 maxM=1.0004 neg=0 over=0 cpu=106.8ms/step
+  c1k20  rel=4.30e-1 true=4.16e-2 divB=4.09e+1 divA=1.76e+1 maxM=1.0005 neg=0 over=0 cpu=84.1ms/step
+done

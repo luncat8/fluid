@@ -24,11 +24,11 @@ const cfg0 = Fluid.core.config.defaults;
 
 const DT = 1 / 240;
 const CONFIGS = [
-	{ name: "cur c2 pre4 post8 K60", over: { useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, pressureIters: 60 } },
-	{ name: "c1 pre4 post8 K60", over: { useMultigrid: true, mgCycles: 1, mgPre: 4, mgPost: 8, pressureIters: 60 } },
-	{ name: "c1 pre2 post4 K60", over: { useMultigrid: true, mgCycles: 1, mgPre: 2, mgPost: 4, pressureIters: 60 } },
-	{ name: "c1 pre4 post8 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 4, mgPost: 8, pressureIters: 20 } },
-	{ name: "c1 pre2 post4 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 2, mgPost: 4, pressureIters: 20 } },
+	{ name: "cur c2 pre4 post8 K60", over: { useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, mgCoarseIters: 60 } },
+	{ name: "c1 pre4 post8 K60", over: { useMultigrid: true, mgCycles: 1, mgPre: 4, mgPost: 8, mgCoarseIters: 60 } },
+	{ name: "c1 pre2 post4 K60", over: { useMultigrid: true, mgCycles: 1, mgPre: 2, mgPost: 4, mgCoarseIters: 60 } },
+	{ name: "c1 pre4 post8 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 4, mgPost: 8, mgCoarseIters: 20 } },
+	{ name: "c1 pre2 post4 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 2, mgPost: 4, mgCoarseIters: 20 } },
 	{ name: "RB K60", over: { useMultigrid: false, pressureIters: 60 } },
 	{ name: "RB K20", over: { useMultigrid: false, pressureIters: 20 } }
 ];
@@ -37,7 +37,7 @@ function gpuWork(c) {
 	// {feq: fine sweep equivalents, disp: dispatches} per projection, encodeStep shape
 	if (!c.useMultigrid) return { feq: c.pressureIters, disp: 2 * c.pressureIters };
 	const S2 = (c.mgCoarsen || 4) * (c.mgCoarsen || 4);
-	const cyc = c.mgCycles, K = c.pressureIters;
+	const cyc = c.mgCycles, K = c.mgCoarseIters;
 	const feq = cyc * (c.mgPre + c.mgPost) + cyc * K / S2 + cyc * 2 + 1;
 	const disp = 1 + cyc * (2 * (c.mgPre + c.mgPost) + 2 + 2 * K + 1);
 	return { feq, disp };

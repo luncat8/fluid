@@ -32,7 +32,7 @@ function median(a) {
 function gpuWork(c) {
 	if (!c.useMultigrid) return { feq: c.pressureIters, disp: 2 * c.pressureIters };
 	const S2 = (c.mgCoarsen || 4) * (c.mgCoarsen || 4);
-	const cyc = c.mgCycles, K = c.pressureIters;
+	const cyc = c.mgCycles, K = c.mgCoarseIters;
 	return {
 		feq: cyc * (c.mgPre + c.mgPost) + cyc * K / S2 + cyc * 2 + 1,
 		disp: 1 + cyc * (2 * (c.mgPre + c.mgPost) + 2 + 2 * K + 1)
@@ -73,12 +73,12 @@ function stabilityRow(item, steps) {
 		(blowStep > 0 ? "BLOWUP at step " + blowStep : "stable over " + steps + " steps") + "\n");
 }
 
-const CUR = { name: "cur c2 pre4 post8 K60", over: { useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, pressureIters: 60 } };
-const C2K20 = { name: "c2 pre4 post8 K20", over: { useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, pressureIters: 20 } };
-const C2K12 = { name: "c2 pre4 post8 K12", over: { useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, pressureIters: 12 } };
-const C2K8 = { name: "c2 pre4 post8 K8", over: { useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, pressureIters: 8 } };
-const C1K20 = { name: "c1 pre4 post8 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 4, mgPost: 8, pressureIters: 20 } };
-const PRE3 = { name: "c1 pre3 post6 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 3, mgPost: 6, pressureIters: 20 } };
+const CUR = { name: "cur c2 pre4 post8 K60", over: { useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, mgCoarseIters: 60 } };
+const C2K20 = { name: "c2 pre4 post8 K20", over: { useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, mgCoarseIters: 20 } };
+const C2K12 = { name: "c2 pre4 post8 K12", over: { useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, mgCoarseIters: 12 } };
+const C2K8 = { name: "c2 pre4 post8 K8", over: { useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, mgCoarseIters: 8 } };
+const C1K20 = { name: "c1 pre4 post8 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 4, mgPost: 8, mgCoarseIters: 20 } };
+const PRE3 = { name: "c1 pre3 post6 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 3, mgPost: 6, mgCoarseIters: 20 } };
 
 console.log("mg-work2 · true Poisson residual (residualNorm/divBefore) + K sweep + stability bisect · dt=" + DT);
 console.log("== K sweep at c2 pre4 post8, dam N=128 ==");
@@ -89,9 +89,9 @@ for (const scenario of ["jet", "cycle"]) {
 	for (const item of [CUR, C2K20, C1K20]) residualRow(scenario, item);
 }
 console.log("== cycle stability bisect, 480 steps (2 s), N=128 ==");
-stabilityRow({ name: "c1 pre2 post4 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 2, mgPost: 4, pressureIters: 20 } }, 480);
-stabilityRow({ name: "c1 pre2 post8 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 2, mgPost: 8, pressureIters: 20 } }, 480);
+stabilityRow({ name: "c1 pre2 post4 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 2, mgPost: 4, mgCoarseIters: 20 } }, 480);
+stabilityRow({ name: "c1 pre2 post8 K20", over: { useMultigrid: true, mgCycles: 1, mgPre: 2, mgPost: 8, mgCoarseIters: 20 } }, 480);
 stabilityRow(PRE3, 480);
-stabilityRow({ name: "c2 pre2 post4 K20", over: { useMultigrid: true, mgCycles: 2, mgPre: 2, mgPost: 4, pressureIters: 20 } }, 480);
+stabilityRow({ name: "c2 pre2 post4 K20", over: { useMultigrid: true, mgCycles: 2, mgPre: 2, mgPost: 4, mgCoarseIters: 20 } }, 480);
 stabilityRow(C1K20, 480);
 console.log("done");

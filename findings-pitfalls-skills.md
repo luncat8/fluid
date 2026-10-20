@@ -523,3 +523,49 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   functions) and verify mechanically: diff the ordered setPipeline/setBindGroup/
   dispatch sequence against git; profiled fps is then only mildly pessimistic
   and group proportions are trustworthy.
+
+## 2026-10-20 projection defaults adopted (0.6.0 t11): coarse K 20, cycles stay 2
+
+- skill: `divAfter/divBefore` (the a2 ratio) and `mg.residualNorm()/divBefore`
+  (the 4.1 "true residual") are not interchangeable. They are roughly related
+  by dt, but each is a max over cells and the maxima need not coincide: on dam
+  at N=512, rel=5.5e-3 while dt*true=2.3e-4 (24x). Use `true` for solver
+  quality, `rel` for the a2 bar, and quote the dt with either.
+- skill: one sweep count cannot serve both solver paths. A fine sweep covers
+  16x the cells of a coarse sweep (S=4), so `pressureIters` is now the mg=0
+  red-black count (60) and `mgCoarseIters` the coarse count per V-cycle (20).
+  `Fluid.core.config.solverIters(cfg)` / `setSolverIters(cfg, v)` are the only
+  places that choose, and every UI/query/report path goes through them.
+- pitfall: an auto-substep policy rewrites a solver A/B even at a fixed URL.
+  Three N=512 runs of the same scenario set observed ns 6/7/15/12, 6/7/12/12 and
+  6/11/10/12 (blobs/dam/cycle/jet), i.e. three different dam/cycle dts. Only
+  blobs and jet kept dt across all three. For a solve comparison use
+  `&auto=0&ns=4`, and always print ns next to the ms.
+- pitfall: comparing two solver settings by warming each up on its own setting
+  measures where the chaotic flow ended up, not the solve. Coarse K=60 vs 20 on
+  dam reads +69 % divergence at N=128 (180+90 medians, 4.56e-4 vs 7.71e-4) and
+  +193 % at N=256 (120+60, 6.40e-4 vs 1.88e-3), while one step from a *shared*
+  warm state reads +16 % at N=128 and +8 % at N=512. Compare solver variants
+  with experiments/mg-samestate.js (one step from a shared state); use
+  mg-defaults.js only for "what does a long run under this setting look like".
+  The same effect moved the 64^2 conformance dam bar from maxDiv 0.5 to 1.38
+  under the new default: a different splash, not a weaker solve.
+- pitfall: sampled peak `maxDiv` in a 600-frame hardware capture is a
+  trajectory too. The same N=512 blobs scene read 1.43 / 3.16 / 4.67 in the
+  three runs (K60c2 / K20c2 / K20c1) with no quality information in the
+  difference. The hardware is for time; the oracle is for quality.
+- skill: coarse K 60 -> 20 costs +16 % peak divergence on dam and blobs at the
+  same state (+8 % at N=512), leaves the true Poisson residual unchanged
+  (+0.01 % / +0.07 %), is free in boiling flow, and buys 25-48 % frame rate at
+  N=512 (press 2.5/1.7/1.6/1.7 -> 1.8/1.2/1.1/1.2 ms/substep). Over a long run
+  the divergence ratio grows more (+69 % at N=128, +193 % at N=256) because the
+  trajectories separate. K=40 is the conservative rung: +4-6 % same-state and
+  rel below the a2 1e-3 bar at N=64/128/256 (K=20 crosses it at N=256,
+  1.9e-3); it has no hardware row yet, so it stays a `&k=40` fallback.
+- skill: 1 cycle is residual-neutral in boiling flow (jet +6.6 %, cycle -0.3 %
+  of the true residual at the same state) but 21-22x worse peak divergence on
+  dam/blobs at N=128 (rel 7.7e-3 / 4.3e-3, above the 1e-3 bar), and the damage
+  is phase- and grid-dependent (+23 % at N=512 during the early splash). The
+  multi-step rows show the same split (dam rel 9.0e-3 vs 4.6e-4 at N=128; jet
+  2.83e-1 unchanged, i.e. the S floor). If it is ever adopted it must be
+  conditional on the scenario, never a global default.

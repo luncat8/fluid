@@ -6,6 +6,8 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { performance } = require("node:perf_hooks");
 
+require("../src/core/config.js");
+const realConfig = globalThis.Fluid.core.config;
 const html = fs.readFileSync(path.join(__dirname, "browser-tests.html"), "utf8");
 const inline = /<script>([\s\S]*?)<\/script>/.exec(html);
 assert.ok(inline, "browser harness inline script exists");
@@ -58,16 +60,9 @@ const device = {
 	popErrorScope: () => Promise.resolve(null),
 	lost: Promise.resolve({ reason: "destroyed" })
 };
-const config = {
-	defaults: {
-		N: 512, texW: 514, texH: 514, frameDt: 1 / 60, dt: 1 / 60,
-		pressureIters: 60, fctLimiter: 1, gravityY: 300, substepMax: 24,
-		substepsAuto: true, cflTarget: 0.8, vMax: 8, mgCoarsen: 4, mgCycles: 2,
-		mgPre: 4, mgPost: 8, mouseVX: 0, mouseVY: 0
-	},
-	substepCount: () => 1,
-	velocityCap: () => 480
-};
+const config = realConfig;
+config.substepCount = () => 1;
+config.velocityCap = () => 480;
 const Fluid = {
 	core: {
 		config,
@@ -118,6 +113,10 @@ vm.runInNewContext(inline[1], context, { filename: "browser-tests.html:inline" }
 	assert.equal(elements.run.disabled, false, "run button unlocks when the suite ends");
 	assert.match(elements.out.textContent, /scenarios=blobs,dam,still,convection,draw/);
 	assert.match(elements.out.textContent, /Finished 5 scenarios/);
+	assert.match(elements.out.textContent, /pressureK=20 coarse solver=MG/,
+		"the report names the active coarse sweep count");
+	assert.match(elements.out.textContent, / K=20 coarse mgS4x2\(pre4\/post8\) ns=/,
+		"each scenario row names the solver and its K");
 	assert.ok(paintCalls > 0, "scripted draw case adds the deterministic dye stroke");
 	assert.match(elements.out.textContent, /crossOriginIsolated=true/);
 	assert.equal(elements.copy.disabled, false, "copy is available after the report exists");

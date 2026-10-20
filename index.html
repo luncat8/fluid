@@ -74,7 +74,7 @@
 					<button class="ctrl-btn ctrl-color" data-dye-color="3">Y</button>
 				</div>
 				<div class="ctrl-row">
-					<label for="ctrl-iters">Pressure iters</label>
+					<label for="ctrl-iters">Pressure K</label>
 					<input type="range" id="ctrl-iters" min="1" max="200" step="1">
 					<output id="ctrl-iters-val"></output>
 				</div>
@@ -89,7 +89,7 @@
 			<div id="state" class="hud-block"></div>
 			<div id="error-panel" role="alert" hidden></div>
 			<div id="help-overlay" hidden>
-				<p><strong>Keys</strong>: 0-7 view modes · space pause · . step · r reset · n scenario · b paint dye/wall/erase · c dye color · f toggle FCT · o solid overlay · g gravity · u substep policy · y buoy · +/- pressure iters · [ ] grid size · s dump stats · h help</p>
+				<p><strong>Keys</strong>: 0-7 view modes · space pause · . step · r reset · n scenario · b paint dye/wall/erase · c dye color · f toggle FCT · o solid overlay · g gravity · u substep policy · y buoy · +/- pressure K · [ ] grid size · s dump stats · h help</p>
 				<p>The view row under the canvas switches modes on click; on a mouse or trackpad, hovering a mode switches it too. View <code>7</code> maps all six EOS phases (vacuum, solid, melting plateau, liquid, boiling plateau, vapor) plus static walls; <code>o</code> toggles frozen-solid outlines and cross-hatching over any view; view <code>5</code> distinguishes frozen ice from painted static walls.</p>
 				<p>Shortcuts leave focused form controls alone; click the canvas to use simulation keys again.</p>
 				<p>Drag to stir and paint. Dye painting is ledger-accounted: drift stays green. Walls block flow and are visible in view 5.</p>

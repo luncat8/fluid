@@ -98,7 +98,7 @@
 			if(hasNeg)line+=" | NEGATIVE VALUES: inspect minima (threshold 1e-9)";
 			if(s.diag&&s.diag.sSaturated>0)line+=" | S saturated "+s.diag.sSaturated+" cells";
 			if(s.diag&&s.diag.residual)line+=" | residual "+fmt(s.diag.residual);
-			if(s.motion.maxDiv>1)line+=" | high divergence "+fmt(s.motion.maxDiv)+" (K="+cfg.pressureIters+(cfg.useMultigrid?" coarse":"")+(recK?" → try "+recK:"")+")";
+			if(s.motion.maxDiv>1)line+=" | high divergence "+fmt(s.motion.maxDiv)+" (K="+Fluid.core.config.solverIters(cfg)+(cfg.useMultigrid?" coarse":"")+(recK?" → try "+recK:"")+")";
 			else if(s.motion.maxDiv>0.5)line+=" | divergence "+fmt(s.motion.maxDiv);
 			if(severe)line+=" | SEVERE COMPRESSION: conservation is not stability";
 			else if(modOver)line+=" | compression maxM="+fmt(s.maxM);
@@ -122,7 +122,7 @@
 			lines.push(phaseLine(s));
 			const solverTag=cfg.useMultigrid?"mgS"+cfg.mgCoarsen+"x"+cfg.mgCycles+"(pre"+cfg.mgPre+"/post"+cfg.mgPost+")":
 				"rb";
-			lines.push("statsFrame#"+s.statsFrame+" N="+cfg.N+" dt="+cfg.dt+" K="+cfg.pressureIters+" "+solverTag+
+			lines.push("statsFrame#"+s.statsFrame+" N="+cfg.N+" dt="+cfg.dt+" K="+Fluid.core.config.solverIters(cfg)+(cfg.useMultigrid?" coarse":"")+" "+solverTag+
 				" ns="+substepLabel()+" scenario="+cfg.scenario+" FCT="+cfg.fctLimiter+" gravity="+cfg.gravityY);
 			lines.push(performanceLine());
 			const gtl=gpuTimingLine();
@@ -165,7 +165,7 @@
 			if(perfEl){
 				const gtl=gpuTimingLine();
 				const txt=performanceLine()+(gtl?"\n"+gtl:"")+"\nN="+cfg.N+"  dt="+cfg.dt.toFixed(4)+
-					"  K="+cfg.pressureIters+(cfg.useMultigrid?" mg"+cfg.mgCoarsen+"x"+cfg.mgCycles:"")+
+					"  K="+Fluid.core.config.solverIters(cfg)+(cfg.useMultigrid?" coarse mg"+cfg.mgCoarsen+"x"+cfg.mgCycles:"")+
 					"  ns="+substepLabel()+
 					"  maxVel="+fmt(s.motion.maxVel)+"  frame#"+s.frame+" stats#"+s.statsFrame+
 					"\n"+healthLine(s);

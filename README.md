@@ -29,7 +29,7 @@ phase scenarios (ice / cycle / jet / rain / arch).
 Keys: `0-7` view modes · `space` pause · `.` step · `r` reset · `n` scenario
 (blobs / dam / still / convection) · `b` paint dye/wall/erase · `c` dye color · `f` toggle dye FCT
 · drag to stir and paint · `g` gravity · `u` auto-substep policy (off = the fixed step
-count from the panel, 4 by default) · `y` buoy · `+/-` pressure iterations · `[ ]` grid
+count from the panel, 4 by default) · `y` buoy · `+/-` pressure K (coarse sweeps under multigrid) · `[ ]` grid
 size · `s` dump stats · `h` help.
 
 The view modes also switch from the radio row under the canvas: click a mode, or hover

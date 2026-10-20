@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import sys
+sys.dont_write_bytecode = True
 """Run the GPU browser diagnostics page on the COOP/COEP server for fine timers.
 
 	python3 run_browser_tests.py

@@ -1,0 +1,22 @@
+mg-samestate · pinned dt=0.004166666666666667 · one step from a shared warm state (reference: 2 cycles pre4/post8 coarse K=60)
+== dam N=128 (180 warmup, then one step) ==
+  ref    divB=4.859e+2 divA=1.804e-1 rel=3.712e-4 true=7.743e-2 maxM=1.0000 over=0
+  c2k40  divB=4.859e+2 divA=1.918e-1 rel=3.947e-4 true=7.743e-2 maxM=1.0000 over=0
+  c2k20  divB=4.859e+2 divA=2.092e-1 rel=4.305e-4 true=7.744e-2 maxM=1.0000 over=0
+  c1k20  divB=4.859e+2 divA=3.763e+0 rel=7.743e-3 true=8.101e-2 maxM=1.0000 over=0
+== blobs N=128 (180 warmup, then one step) ==
+  ref    divB=1.135e+2 divA=2.211e-2 rel=1.948e-4 true=2.807e-2 maxM=0.7652 over=0
+  c2k40  divB=1.135e+2 divA=2.290e-2 rel=2.017e-4 true=2.808e-2 maxM=0.7652 over=0
+  c2k20  divB=1.135e+2 divA=2.560e-2 rel=2.255e-4 true=2.809e-2 maxM=0.7652 over=0
+  c1k20  divB=1.135e+2 divA=4.852e-1 rel=4.274e-3 true=3.110e-2 maxM=0.7652 over=0
+== jet N=128 (180 warmup, then one step) ==
+  ref    divB=6.858e+1 divA=1.874e+1 rel=2.733e-1 true=2.932e-2 maxM=0.2078 over=0
+  c2k40  divB=6.858e+1 divA=1.877e+1 rel=2.737e-1 true=2.938e-2 maxM=0.2078 over=0
+  c2k20  divB=6.858e+1 divA=1.877e+1 rel=2.737e-1 true=2.999e-2 maxM=0.2078 over=0
+  c1k20  divB=6.858e+1 divA=1.883e+1 rel=2.746e-1 true=3.125e-2 maxM=0.2078 over=0
+== cycle N=128 (180 warmup, then one step) ==
+  ref    divB=4.077e+1 divA=1.695e+1 rel=4.159e-1 true=3.791e-2 maxM=1.0003 over=0
+  c2k40  divB=4.077e+1 divA=1.695e+1 rel=4.159e-1 true=3.797e-2 maxM=1.0003 over=0
+  c2k20  divB=4.077e+1 divA=1.695e+1 rel=4.159e-1 true=3.779e-2 maxM=1.0003 over=0
+  c1k20  divB=4.077e+1 divA=1.695e+1 rel=4.159e-1 true=3.779e-2 maxM=1.0003 over=0
+done

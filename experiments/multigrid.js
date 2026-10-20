@@ -62,7 +62,7 @@ function compare(name, over, frames, ns) {
 	console.log("plain  K=" + plain.cfg.pressureIters + "  maxDiv(end)=" + plain.mot.maxDiv.toFixed(3) +
 		"  worstDiv=" + plain.worstDiv.toFixed(3) + "  maxM=" + plain.tot.maxM.toFixed(4) +
 		"  over=" + plain.tot.cntOver + "  ms=" + plain.el);
-	console.log("mg     pre=" + mg.cfg.mgPre + " post=" + mg.cfg.mgPost + " coarse=" + mg.cfg.pressureIters +
+	console.log("mg     pre=" + mg.cfg.mgPre + " post=" + mg.cfg.mgPost + " coarse=" + mg.cfg.mgCoarseIters +
 		"  maxDiv(end)=" + mg.mot.maxDiv.toFixed(3) + "  worstDiv=" + mg.worstDiv.toFixed(3) +
 		"  maxM=" + mg.tot.maxM.toFixed(4) + "  over=" + mg.tot.cntOver + "  ms=" + mg.el);
 	check(name + ": multigrid lowers the projection divergence at least 2x",
@@ -91,12 +91,12 @@ function main() {
 	// is S^2 times too small. computed from a live state by poking the exposed
 	// coarse arrays is not accessible, so assert the invariant indirectly: one
 	// V-cycle from a converged state must not increase the residual.
-	const cfg = makeCfg({ N: 128, scenario: "dam", useMultigrid: true, pressureIters: 40 });
+	const cfg = makeCfg({ N: 128, scenario: "dam", useMultigrid: true, mgCoarseIters: 40 });
 	const sim = solverMod.create(cfg);
 	const dt = cfg.frameDt / 4;
 	for (let f = 0; f < 20; f++) for (let s = 0; s < 4; s++) sim.step(dt);
 	const before = sim.mg.residualNorm();
-	sim.mg.vcycle(cfg.mgPre, cfg.pressureIters, cfg.mgPost);
+	sim.mg.vcycle(cfg.mgPre, cfg.mgCoarseIters, cfg.mgPost);
 	const after = sim.mg.residualNorm();
 	check("one V-cycle never increases the fine pressure residual",
 		after <= before * 1.05, "residual " + before.toFixed(3) + " -> " + after.toFixed(3));

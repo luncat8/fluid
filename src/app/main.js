@@ -33,6 +33,7 @@
 		if(q.has("cycles"))cfg.mgCycles=Math.max(1,Math.round(+q.get("cycles")||2));
 		if(q.has("pre"))cfg.mgPre=Math.max(1,Math.round(+q.get("pre")||4));
 		if(q.has("post"))cfg.mgPost=Math.max(1,Math.round(+q.get("post")||8));
+		if(q.has("k"))Fluid.core.config.setSolverIters(cfg,Math.max(1,Math.round(+q.get("k")||60)));
 		cfg.texW=cfg.N+2;cfg.texH=cfg.N+2;
 		cfg._paused=false;cfg._stepOnce=false;cfg._dirty=true;
 		if(status)status.textContent="Running";

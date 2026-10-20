@@ -1,0 +1,7 @@
+mg-samestate · pinned dt=0.004166666666666667 · one step from a shared warm state (reference: 2 cycles pre4/post8 coarse K=60) · N=512 check
+== dam N=512 (90 warmup, then one step) ==
+  ref    divB=1.818e+2 divA=1.007e+0 rel=5.540e-3 true=5.460e-2 maxM=1.0003 over=0
+  c2k40  divB=1.818e+2 divA=1.040e+0 rel=5.718e-3 true=5.459e-2 maxM=1.0003 over=0
+  c2k20  divB=1.818e+2 divA=1.090e+0 rel=5.996e-3 true=5.458e-2 maxM=1.0003 over=0
+  c1k20  divB=1.818e+2 divA=1.238e+0 rel=6.808e-3 true=5.450e-2 maxM=1.0003 over=0
+done

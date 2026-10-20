@@ -133,11 +133,11 @@
 		const kVal=document.getElementById("ctrl-iters-val");
 		if(kSlider){
 			trackSlider(kSlider);
-			kSlider.value=cfg.pressureIters;
-			if(kVal)kVal.textContent=cfg.pressureIters;
+			kSlider.value=Fluid.core.config.solverIters(cfg);
+			if(kVal)kVal.textContent=kSlider.value;
 			kSlider.addEventListener("input",()=>{
-				cfg.pressureIters=parseInt(kSlider.value,10);
-				if(kVal)kVal.textContent=cfg.pressureIters;
+				Fluid.core.config.setSolverIters(cfg,parseInt(kSlider.value,10));
+				if(kVal)kVal.textContent=kSlider.value;
 			});
 		}
 		const gridSlider=document.getElementById("ctrl-grid");
@@ -185,7 +185,7 @@
 				buoyChk.checked=cfg.buoyEnabled>0;
 				buoyChk.disabled=cfg.scenario!=="dam";
 			}
-			syncSlider(kSlider,kVal,cfg.pressureIters);
+			syncSlider(kSlider,kVal,Fluid.core.config.solverIters(cfg));
 			syncSlider(gridSlider,gridVal,cfg.N);
 			syncSlider(fixedSlider,fixedVal,cfg.substepsFixed);
 			if(scenSel)scenSel.value=cfg.scenario;
