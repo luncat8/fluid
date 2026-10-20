@@ -398,3 +398,33 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   (`velocityCap = min(vMax, 0.45*ns)/frameDt`). With auto substeps the cap only
   grows after the count is chosen, so it bounds growth per frame instead of
   fighting the sim.
+
+## 2026-10-20 phase core (0.5.0 t1-t3) and the browser-GPU runner
+
+- pitfall: the caloric curve classifies by E/m only, so a cold thin cell
+  (scenario ambient m=0.3 at T_amb) is a *liquid-branch* state with rho* =
+  rho_liq. Wiring the plan's two-sided S straight to rho* collapses every
+  ambient toward rho_liq in one step. S must be two-sided only where vapor is
+  present (phi_g > 0) and one-sided anti-overpack for phi_g = 0 — the 0.2.0
+  minimal form. Thin cold cells are the air tier of the density hierarchy and
+  carry no expansion target. Documented in 0.5.0 section 3.1/3.2.
+- pitfall: therm.b/a are the donor-transported heat-source accumulators the
+  stats reduction reads back (0.4.0). The 0.5.0 plan wanted them for phi_l/phi_g;
+  derived state must not be transported. sfield (S, phi_l, phi_g, -) is the
+  scratch home: written by phase_eos, read one step behind by poisson_rhs.
+- skill: scenario energy must come from the *inverse* caloric curve
+  (energyFromT) once the branch layout exists. Writing E = m*c*T after a curve
+  change silently re-temperatures every scenario (the convection stratification
+  would start at 356 K, not 293 K).
+- skill: a pairwise conduction clamp proves nothing for four neighbours with
+  unequal capacities (c_eff differs across phases) and says nothing about
+  latent plateaus. Cap each face additionally by 0.25 of the *enthalpy distance
+  to thermal equilibrium* (eqDist): both endpoints compute the same cap from
+  pre-update state, the four-face sum stays inside the temperature hull, and no
+  face traverses a latent interval. Measured: the budget is exactly the pairwise
+  clamp for equal capacities (no behavior change in the old tests) and binds for
+  unequal ones.
+- skill: serve the browser diagnostics page with run_browser_tests.py (COOP/
+  COEP); a file:// or plain-server capture reports quantum=0.1 ms and
+  crossOriginIsolated=false, which makes queue/wait timings far coarser than the
+  page thinks it is measuring.

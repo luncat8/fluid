@@ -13,15 +13,17 @@ scenario: an unstably stratified box, hot at the bottom and cold at the top,
 sustained by a thermostat-capped heater band and a cold plate; selecting it
 switches to the temperature view, whose range matches the stratification), and a CPU reference solver with a
 conformance suite. GPU thermal pipelines mirror the CPU ones; browser parity/performance
-measurements remain pending.
+measurements remain pending. The CPU reference additionally carries the 0.5.0 phase core
+(caloric EOS with latent plateaus, freeze/melt masks, expansion source S, phase-aware
+conduction with an enthalpy budget); its WGSL port is pending.
 
 ## Run
 
 - Directly: open `index.html` from disk (`file://`) in a WebGPU browser.
 - Or: `python3 run_index.py` (options: `port`, `--host`, `--no-open`, `--page`) and open
   `http://127.0.0.1:8000/index.html`. The server sends COOP/COEP headers for cross-origin
-  isolation and finer browser timers; for the GPU diagnostic page use
-  `python3 run_index.py --page experiments/browser-tests.html`.
+  isolation and finer browser timers; for the GPU diagnostic page run
+  `python3 run_browser_tests.py`.
 
 Keys: `0-7` view modes · `space` pause · `.` step · `r` reset · `n` scenario
 (blobs / dam / still / convection) · `b` paint dye/wall/erase · `c` dye color · `f` toggle dye FCT
@@ -72,11 +74,14 @@ the external `webgpu` package and a working backend; opt in with
 `python3 run_tests.py --gpu --copy`.
 
 For actual browser/WebGPU diagnostics, run
-`python3 run_index.py --page experiments/browser-tests.html`. It executes the
+`python3 run_browser_tests.py` (options: `port`, `--host`, `--no-open`, `--query`;
+it serves `experiments/browser-tests.html` on the same COOP/COEP server as
+`run_index.py`). It executes the
 selected scenarios (including a repeatable paint/stir stress case) at a fixed
 grid/frame count, resets between scenarios, and provides **Copy report** and
-**Save report**. Query parameters prefill comparable runs, for example
-`?n=512&frames=600&scenarios=blobs,draw` and the same URL with `&mg=0` for
+**Save report** (save into `experiments/logs/` as `<date>-GPU-browser-tests.log`).
+Query parameters prefill comparable runs, for example
+`--query "n=512&frames=600&scenarios=blobs,draw"` and the same query plus `&mg=0` for
 multigrid versus red-black; `&auto=0&ns=4` selects the same fixed four-substep
 policy in both.
 The report records `crossOriginIsolated` and an observed
@@ -89,7 +94,10 @@ queue wait includes driver/scheduling overhead rather than a GPU timestamp.
 the scheme in `0.0.0-plan.md` section 5) through: stats-reduction error, FCT dye
 sharpness/bounds, still box, stirred closed box, dam break, wall integrity, emitter
 accounting, and a draw stroke that guards the per-cell flux outflow limiter. Run
-`node experiments/sharpness.js` for the isolated upwind-versus-FCT front measurement,
+`node experiments/eos.js` for the caloric EOS contract (plateau boundaries, T(E)
+monotonicity, rho* continuity, S signs and clamps) and `node experiments/phase.js`
+for the phase transitions (melt/boil/condense time series, latent ledger, freeze
+mask), `node experiments/sharpness.js` for the isolated upwind-versus-FCT front measurement,
 `node experiments/convection.js` for the thermal plan (derive_T, clamped conduction
 conservation/monotonicity, source ledger closure, convection onset and buoyancy sign,
 10x stability sweep), `node experiments/buoy.js` for the floating body (float line versus dye level and versus

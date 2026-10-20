@@ -31,7 +31,7 @@
 <body>
 	<h1>Fluid · browser GPU diagnostics</h1>
 	<p>Runs the same WebGPU solver as <code>index.html</code> through the selected scenarios with fixed, serial frames. It records conservation, positivity, divergence, substeps and queue wait in one copyable report. The scripted draw/stir case repeats a dye stroke and mouse-force sweep over the blobs scene. Divergence and compression are measurements, not pass/fail gates. This is the real-device complement to <code>node experiments/run-all.js</code>.</p>
-	<p>For the browser's finer <code>performance.now()</code> resolution, serve this page with <code>python3 run_index.py --page experiments/browser-tests.html</code>. The server sets COOP/COEP; the report shows whether the page is cross-origin isolated. For the red-black baseline, open the same page with <code>?mg=0</code>; grid, frame count and scenarios are otherwise identical.</p>
+	<p>For the browser's finer <code>performance.now()</code> resolution, serve this page with <code>python3 run_browser_tests.py</code> (or <code>python3 run_index.py --page experiments/browser-tests.html</code>). The server sets COOP/COEP; the report shows whether the page is cross-origin isolated and which timer quantum was observed. For the red-black baseline, run the same capture with <code>--query "n=512&frames=600&scenarios=blobs,draw&mg=0"</code>; grid, frame count and scenarios are otherwise identical.</p>
 	<div class="layout">
 		<div>
 			<canvas id="c" width="512" height="512" aria-label="WebGPU test render"></canvas>

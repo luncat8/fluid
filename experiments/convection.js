@@ -25,18 +25,18 @@ function makeCfg(over) {
 function cur(sim, pp) { return pp.cur === 0 ? pp.a : pp.b; }
 function totals(sim, cfg) { return stats.totalsFromFields(cur(sim, sim.mass), cur(sim, sim.therm), cfg.texW, cfg.texH); }
 
-// 1. derive_T: T is E/(m c) where there is substance, T_amb in vacuum
+// 1. phase_eos: T comes from the caloric curve, T_amb in vacuum
 function testDerive() {
 	const cfg = makeCfg({ N: 16, scenario: "still" });
 	const sim = solverMod.create(cfg);
 	const therm = cur(sim, sim.therm), mass = cur(sim, sim.mass);
 	const i = (4 + 4 * cfg.texW) * 4;
-	mass[i + 3] = 0.5; therm[i] = 0.5 * cfg.cLiq * 350; therm[i + 1] = 999;
+	mass[i + 3] = 0.5; therm[i] = solverMod.energyFromT(0.5, 350, cfg); therm[i + 1] = 999;
 	const j = (8 + 8 * cfg.texW) * 4;
 	mass[j + 3] = 0; therm[j] = 0; therm[j + 1] = 999;
-	sim.deriveT();
-	check("derive_T: T = E/(m c) with substance, T_amb in vacuum, monotone in E",
-		Math.abs(therm[i + 1] - 350) < 1e-4 && therm[j + 1] === cfg.TAmb,
+	sim.phaseEos(false);
+	check("phase_eos: T from the caloric curve with substance, T_amb in vacuum, monotone in E",
+		Math.abs(therm[i + 1] - 350) < 1e-3 && therm[j + 1] === cfg.TAmb,
 		"T_sub=" + therm[i + 1].toFixed(3) + " T_vac=" + therm[j + 1]);
 }
 
@@ -47,13 +47,13 @@ function testConduction() {
 	// diffusion time over L cells is L^2*C/coef: at the 0.2 default that is
 	// ~hours of steps across 32 cells. a high coefficient exercises relaxation;
 	// the clamp check below exercises the rate limit separately.
-	const cfg = makeCfg({ N: 32, scenario: "still", conductivity: 20 });
+	const cfg = makeCfg({ N: 32, scenario: "still", kLiq: 20 });
 	const sim = solverMod.create(cfg);
 	const therm = cur(sim, sim.therm), mass = cur(sim, sim.mass);
 	for (let y = 1; y < cfg.texH - 1; y++) for (let x = 1; x < cfg.texW - 1; x++) {
 		const i = (x + y * cfg.texW) * 4;
 		const T = x <= cfg.N / 2 ? 340 : 280;
-		therm[i] = mass[i + 3] * cfg.cLiq * T; therm[i + 1] = T;
+		therm[i] = solverMod.energyFromT(mass[i + 3], T, cfg); therm[i + 1] = T;
 	}
 	const E0 = totals(sim, cfg).sumE;
 	let maxT = 340, minT = 280, overshoot = false;
@@ -78,7 +78,7 @@ function testConduction() {
 	check("conduction: no overshoot, field relaxed toward the 310 mean",
 		!overshoot && maxT < 315 && minT > 305,
 		"T range after= [" + minT.toFixed(2) + ".." + maxT.toFixed(2) + "]");
-	cfg.conductivity = 1e9;
+	cfg.kSol = 1e9; cfg.kLiq = 1e9; cfg.kGas = 1e9;
 	sim.conduction(1 / 60);
 	const th2 = cur(sim, sim.therm);
 	let hi2 = -Infinity, lo2 = Infinity;
@@ -179,7 +179,7 @@ function testConvection() {
 
 // 5. stability sweep: 10x defaults must stay finite
 function testStability() {
-	const cfg = makeCfg({ N: 32, scenario: "convection", pressureIters: 10, beta: cfg0.beta * 10, conductivity: cfg0.conductivity * 10 });
+	const cfg = makeCfg({ N: 32, scenario: "convection", pressureIters: 10, beta: cfg0.beta * 10, kLiq: cfg0.kLiq * 10 });
 	const sim = solverMod.create(cfg);
 	cfg.beta = cfg0.beta * 10; // after create: prepareScenario pins the scenario beta on reset
 	for (let s = 0; s < 300; s++) sim.step(1 / 240);

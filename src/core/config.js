@@ -7,8 +7,9 @@
 		paintX:8,paintY:9,paintW:10,paintH:11,
 		gravityX:16,gravityY:17,rhoRef:18,beta:19,TRef:20,mouseX:21,mouseY:22,mouseStrength:23,
 		mouseVX:24,mouseVY:25,mouseR:26,rhoMean:27,
-		pressureIters:32,fctLimiter:33,viscosity:34,conductivity:35,SMax:36,tauPhase:37,vClamp:38,
+		pressureIters:32,fctLimiter:33,viscosity:34,kLiq:35,SMax:36,tauPhase:37,vClamp:38,
 		heatPower:39,coolTop:40,wallCool:41,heatBand:42,thermalOn:43,heatTarget:44,
+		kSol:45,kGas:46,TEps:47,
 		cSol:48,cLiq:49,cGas:50,Lf:51,Lv:52,TMelt:53,TBoil:54,rhoLiq:55,rhoGas0:56,rhoVac:57,mEps:58,
 		viewMode:80,TMin:81,TMax:82,PMin:83,PMax:84,VMax:85,overlay:86,colorGain:87,
 		buoyX0:88,buoyY0:89,buoyW:90,buoyH:91,buoySub:92,buoyShow:93,
@@ -38,7 +39,12 @@
 		pressureIters:60,
 		fctLimiter:1,
 		viscosity:0.0,
-		conductivity:0.2,
+		// phase dependent conduction (0.5.0): the liquid value is the 0.4.0
+		// coefficient; gas nearly insulating keeps steam plumes hot so they rise far.
+		kSol:0.25,
+		kLiq:0.2,
+		kGas:0.02,
+		TEps:0.001,
 		// thermal sources (0.4.0): fixed power per bottom-band cell, cold plate
 		// relaxation per top-band cell, wall exchange coefficient. only applied
 		// while cfg.thermalSources is on (the convection scenario turns it on).
@@ -251,7 +257,10 @@
 		a[paramsOff.pressureIters]=cfg.pressureIters;
 		a[paramsOff.fctLimiter]=cfg.fctLimiter;
 		a[paramsOff.viscosity]=cfg.viscosity;
-		a[paramsOff.conductivity]=cfg.conductivity;
+		a[paramsOff.kLiq]=cfg.kLiq;
+		a[paramsOff.kSol]=cfg.kSol;
+		a[paramsOff.kGas]=cfg.kGas;
+		a[paramsOff.TEps]=cfg.TEps;
 		a[paramsOff.SMax]=cfg.SMax;
 		a[paramsOff.tauPhase]=cfg.tauPhase;
 		a[paramsOff.vClamp]=cfg.vClamp;

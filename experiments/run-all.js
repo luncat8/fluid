@@ -6,6 +6,7 @@ const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
 const QUICK_SUITES = [
+	"eos.js",
 	"sharpness.js",
 	"transport-roundoff.js",
 	"gpu-mock.js",
@@ -20,6 +21,8 @@ const FULL_SUITES = [
 	"conformance.js",
 	"sharpness.js",
 	"convection.js",
+	"phase.js",
+	"eos.js",
 	"buoy.js",
 	"multigrid.js",
 	"transport-roundoff.js",

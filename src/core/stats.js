@@ -119,7 +119,10 @@
 			injectedM:0,injectedDr:0,injectedDg:0,injectedDb:0,injectedE:0,
 			removedM:0,removedDr:0,removedDg:0,removedDb:0,removedE:0,
 			boundaryM:0,boundaryDr:0,boundaryDg:0,boundaryDb:0,boundaryE:0,
-			heatInE:0,heatOutE:0
+			heatInE:0,heatOutE:0,
+			// 0.5.0 diagnostics: m*L traversed through latent plateaus, and the
+			// momentum frozen cells lost (not conserved, explains "where the splash went")
+			latentChargedE:0,frozenMomentum:0
 		};
 	}
 	function expectedTotal(ledger,kind){
