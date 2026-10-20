@@ -74,6 +74,11 @@
 			fctChk.checked=cfg.fctLimiter>0;
 			fctChk.addEventListener("change",()=>{cfg.fctLimiter=fctChk.checked?1:0;cfg._dirty=true;});
 		}
+		const solidsChk=document.getElementById("ctrl-solids");
+		if(solidsChk){
+			solidsChk.checked=cfg.overlay>0;
+			solidsChk.addEventListener("change",()=>{cfg.overlay=solidsChk.checked?1:0;cfg._dirty=true;});
+		}
 		const gravChk=document.getElementById("ctrl-gravity");
 		if(gravChk){
 			gravChk.checked=cfg.gravityY!==0;
@@ -168,6 +173,7 @@
 			lastCtrlUpdate=now;
 			if(pauseBtn)pauseBtn.textContent=cfg._paused?"Resume":"Pause";
 			if(fctChk)fctChk.checked=cfg.fctLimiter>0;
+			if(solidsChk)solidsChk.checked=cfg.overlay>0;
 			if(gravChk)gravChk.checked=cfg.gravityY!==0;
 			if(subChk)subChk.checked=!!cfg.substepsAuto;
 			if(buoyChk){

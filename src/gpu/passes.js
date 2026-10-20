@@ -2,9 +2,6 @@
 	"use strict";
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.gpu=Fluid.gpu||{};
-	// m uses three slots when dye FCT is enabled; t and v remain ping-pong fields.
-	// Pressure parity is invariant because every red-black sweep returns to press[0].
-	// Bind groups for every state combination are built once during setup/resize.
 	function createPipelines(device,canvasFormat){
 		const sh=Fluid.gpu.shaders;
 		const PS=sh.paramsStruct;
@@ -48,7 +45,8 @@
 			flux:comp("flux",PS+sh.computeFlux),
 			advectMass:comp("advectMass",PS+sh.advectMass),
 			advectTherm:comp("advectTherm",PS+sh.advectTherm),
-			deriveT:comp("deriveT",PS+sh.deriveT),
+			phaseEos:comp("phaseEos",PS+sh.phaseEos),
+			freezeVel:comp("freezeVel",PS+sh.freezeVel),
 			conduction:comp("conduction",PS+sh.conduction),
 			heatSources:comp("heatSources",PS+sh.heatSources),
 			limiterPrepare:comp("limiterPrepare",PS+sh.limiterPrepare),
@@ -83,40 +81,75 @@
 	function makeBindGroups(device,pipes,pool){
 		const p0=pool.press.tex[0],p1=pool.press.tex[1];
 		const flagsView=viewRes(pool.flags);
+		const flagsTmpView=viewRes(pool.flagsTmp);
+		const sfieldView=viewRes(pool.sfield);
+		const sfieldTmpView=viewRes(pool.sfieldTmp);
+		const accumView=viewRes(pool.accum);
+		const accumTmpView=viewRes(pool.accumTmp);
 		const fluxView=viewRes(pool.flux);
 		const limiterAView=viewRes(pool.limiterA);
 		const limiterBView=viewRes(pool.limiterB);
 		const groups={
 			forces:[],advectVel:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
-			deriveT:[],conduction:[],heatSources:[],
+			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],heatSources:[],
 			limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
 			statsA:[],toDisplay:[],statsB:null,buoySample:[],render:null
 		};
-		// thermal passes run after scalar transport, so they key on the mass
-		// slot that will be current then: [start mass slot][therm source][mass slot]
-		function thermalGroups(label,pipe,withFlags){
-			const out=[];
-			for(let m=0;m<3;m++){
-				out[m]=[];
-				for(let t=0;t<2;t++){
-					out[m][t]=[];
-					for(let mm=0;mm<3;mm++){
-						const entries=[
-							{binding:0,resource:{buffer:pool.params}},
-							{binding:1,resource:viewRes(pool.mass.tex[mm])},
-							{binding:2,resource:viewRes(pool.therm.tex[t])},
-							{binding:3,resource:viewRes(pool.therm.tex[1-t])}
-						];
-						if(withFlags)entries.push({binding:4,resource:flagsView});
-						out[m][t][mm]=bg(device,label+m+t+mm,pipe.getBindGroupLayout(0),entries);
-					}
+		for(let mm=0;mm<3;mm++){
+			groups.phaseA[mm]=[];
+			groups.phaseB[mm]=[];
+			groups.conduction[mm]=[];
+			groups.heatSources[mm]=[];
+			const massV=viewRes(pool.mass.tex[mm]);
+			for(let t=0;t<2;t++){
+				const tSrc=viewRes(pool.therm.tex[t]),tDst=viewRes(pool.therm.tex[1-t]);
+				groups.phaseA[mm][t]=[];
+				groups.phaseB[mm][t]=[];
+				for(let v=0;v<2;v++){
+					const velV=viewRes(pool.vel.tex[v]);
+					groups.phaseA[mm][t][v]=bg(device,"phaseA"+mm+t+v,pipes.phaseEos.getBindGroupLayout(0),[
+						{binding:0,resource:{buffer:pool.params}},
+						{binding:1,resource:massV},
+						{binding:2,resource:tSrc},
+						{binding:3,resource:velV},
+						{binding:4,resource:flagsView},
+						{binding:5,resource:sfieldView},
+						{binding:6,resource:accumView},
+						{binding:7,resource:tDst},
+						{binding:8,resource:flagsTmpView},
+						{binding:9,resource:sfieldTmpView},
+						{binding:10,resource:accumTmpView}
+					]);
+					groups.phaseB[mm][t][v]=bg(device,"phaseB"+mm+t+v,pipes.phaseEos.getBindGroupLayout(0),[
+						{binding:0,resource:{buffer:pool.params}},
+						{binding:1,resource:massV},
+						{binding:2,resource:tSrc},
+						{binding:3,resource:velV},
+						{binding:4,resource:flagsTmpView},
+						{binding:5,resource:sfieldTmpView},
+						{binding:6,resource:accumTmpView},
+						{binding:7,resource:tDst},
+						{binding:8,resource:flagsView},
+						{binding:9,resource:sfieldView},
+						{binding:10,resource:accumView}
+					]);
 				}
+				groups.conduction[mm][t]=bg(device,"conduction"+mm+t,pipes.conduction.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:massV},
+					{binding:2,resource:tSrc},
+					{binding:3,resource:tDst},
+					{binding:4,resource:flagsTmpView}
+				]);
+				groups.heatSources[mm][t]=bg(device,"heatSources"+mm+t,pipes.heatSources.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:massV},
+					{binding:2,resource:tSrc},
+					{binding:3,resource:tDst},
+					{binding:4,resource:flagsTmpView}
+				]);
 			}
-			return out;
 		}
-		groups.deriveT=thermalGroups("deriveT",pipes.deriveT,false);
-		groups.conduction=thermalGroups("conduction",pipes.conduction,true);
-		groups.heatSources=thermalGroups("heatSources",pipes.heatSources,true);
 		for(let m=0;m<3;m++){
 			const nextM=(m+1)%3,finalM=(m+2)%3;
 			const mm=pool.mass.tex[m],ml=pool.mass.tex[nextM];
@@ -166,7 +199,6 @@
 				{binding:2,resource:viewRes(ml)},
 				{binding:3,resource:viewRes(pool.patchMass)}
 			]);
-			groups.rhs[m]=[];
 			groups.applyGrad[m]=[];
 			groups.buoySample[m]=[];
 			groups.statsA[m]=[];
@@ -188,13 +220,6 @@
 						{binding:5,resource:flagsView}
 					]);
 					if(t===0){
-						groups.rhs[m][v]=bg(device,"rhs"+m+v,pipes.rhs.getBindGroupLayout(0),[
-							{binding:0,resource:{buffer:pool.params}},
-							{binding:1,resource:viewRes(pool.divsrc)},
-							{binding:2,resource:viewRes(vv)},
-							{binding:3,resource:viewRes(mm)},
-							{binding:4,resource:flagsView}
-						]);
 						groups.applyGrad[m][v]=bg(device,"applyGrad"+m+v,pipes.applyGrad.getBindGroupLayout(0),[
 							{binding:0,resource:{buffer:pool.params}},
 							{binding:1,resource:viewRes(vv)},
@@ -203,7 +228,6 @@
 							{binding:4,resource:viewRes(mm)},
 							{binding:5,resource:flagsView}
 						]);
-						// the sample reads the (mass, vel) pair the sim left behind
 						groups.buoySample[m][v]=bg(device,"buoySample"+m+v,pipes.buoySample.getBindGroupLayout(0),[
 							{binding:0,resource:{buffer:pool.params}},
 							{binding:1,resource:viewRes(mm)},
@@ -217,7 +241,9 @@
 						{binding:2,resource:viewRes(tt)},
 						{binding:3,resource:viewRes(vv)},
 						{binding:4,resource:viewRes(p0)},
-						{binding:5,resource:{buffer:pool.statsPart}}
+						{binding:5,resource:flagsView},
+						{binding:6,resource:accumView},
+						{binding:7,resource:{buffer:pool.statsPart}}
 					]);
 					groups.toDisplay[m][t][v]=bg(device,"toDisplay"+m+t+v,pipes.toDisplay.getBindGroupLayout(0),[
 						{binding:0,resource:{buffer:pool.params}},
@@ -251,7 +277,15 @@
 			groups.advectVel[v]=bg(device,"advectVel"+v,pipes.advectVel.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
 				{binding:1,resource:viewRes(vv)},
-				{binding:2,resource:viewRes(vn)}
+				{binding:2,resource:viewRes(vn)},
+				{binding:3,resource:flagsView}
+			]);
+			groups.rhs[v]=bg(device,"rhs"+v,pipes.rhs.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(pool.divsrc)},
+				{binding:2,resource:viewRes(vv)},
+				{binding:3,resource:sfieldView},
+				{binding:4,resource:flagsView}
 			]);
 			groups.flux[v]=bg(device,"flux"+v,pipes.flux.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
@@ -259,10 +293,19 @@
 				{binding:2,resource:flagsView},
 				{binding:3,resource:fluxView}
 			]);
+			groups.freezeTmp[v]=bg(device,"freezeTmp"+v,pipes.freezeVel.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(vv)},
+				{binding:2,resource:flagsTmpView},
+				{binding:3,resource:viewRes(vn)}
+			]);
+			groups.freezeMain[v]=bg(device,"freezeMain"+v,pipes.freezeVel.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(vv)},
+				{binding:2,resource:flagsView},
+				{binding:3,resource:viewRes(vn)}
+			]);
 		}
-		// multigrid coarse level (0.6.0 t4). the coarse RBGS reuses the fine
-		// project pipeline and shader; only the dimensions and the bound fields
-		// differ, so paramsC carries the coarse W/H and rhoVac.
 		const mgMassView=viewRes(pool.mgMass);
 		const mgFlagsView=viewRes(pool.mgFlags);
 		const mgDivView=viewRes(pool.mgDiv);
@@ -312,7 +355,9 @@
 		groups.mgProlong=bg(device,"mgProlong",pipes.mgProlong.getBindGroupLayout(0),[
 			{binding:0,resource:{buffer:pool.params}},
 			{binding:1,resource:mgP0},
-			{binding:2,resource:viewRes(p0)}
+			{binding:2,resource:viewRes(p0)},
+			{binding:3,resource:flagsView},
+			{binding:4,resource:mgFlagsView}
 		]);
 		groups.statsB=bg(device,"statsB",pipes.statsB.getBindGroupLayout(0),[
 			{binding:0,resource:{buffer:pool.statsPart}},
@@ -324,6 +369,28 @@
 			{binding:1,resource:viewRes(pool.display)}
 		]);
 		return groups;
+	}
+	function encodePrimePhase(cpass,pool,pipes,groups,state){
+		const wx=pool.workgroupX,wy=pool.workgroupY;
+		const m=state.m;
+		let t=state.t,v=state.v;
+		cpass.setPipeline(pipes.phaseEos);
+		cpass.setBindGroup(0,groups.phaseA[m][t][v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		t=1-t;
+		cpass.setPipeline(pipes.freezeVel);
+		cpass.setBindGroup(0,groups.freezeTmp[v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		v=1-v;
+		cpass.setPipeline(pipes.phaseEos);
+		cpass.setBindGroup(0,groups.phaseB[m][t][v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		t=1-t;
+		cpass.setPipeline(pipes.freezeVel);
+		cpass.setBindGroup(0,groups.freezeMain[v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		state.t=t;
+		state.v=1-v;
 	}
 	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
@@ -339,16 +406,9 @@
 		cpass.dispatchWorkgroups(wx,wy);
 		v=1-v;
 		cpass.setPipeline(pipes.rhs);
-		cpass.setBindGroup(0,groups.rhs[m][v]);
+		cpass.setBindGroup(0,groups.rhs[v]);
 		cpass.dispatchWorkgroups(wx,wy);
 		if(mgOn){
-			// pre-smooth the fine error, solve its long-wavelength part on the
-			// N/S grid, add the bilinear correction, post-smooth. repeat
-			// mgCycles times. the coarse RHS is the *sum* of the S^2 fine
-			// residuals (see the scaling note in src/core/multigrid.js); with
-			// the average the correction is S^2 times too small and the cycle
-			// loses to plain GS. coarsen once: mass does not change during the
-			// solve, and every cycle re-zeroes the coarse pressure.
 			const cycles=Math.max(1,Math.round(mgCycles||1));
 			cpass.setPipeline(pipes.mgCoarsen);
 			cpass.setBindGroup(0,groups.mgCoarsen[m]);
@@ -368,9 +428,6 @@
 				cpass.setPipeline(pipes.mgRestrict);
 				cpass.setBindGroup(0,groups.mgRestrict[m]);
 				cpass.dispatchWorkgroups(mx,my);
-				// round the coarse sweep count up to an even number: red writes
-				// mgPress1 and black mgPress0, and mgProlong reads mgPress0.
-				// an odd count would leave the correction one texture over.
 				const cIters=iters+(iters&1);
 				for(let k=0;k<cIters;k++){
 					cpass.setPipeline(pipes.projRed);
@@ -427,26 +484,36 @@
 		}else{
 			state.m=nextM;
 		}
-		// thermal chain (0.4.0): derive, conduction, sources, derive. four
-		// ping-pongs after the transport flip return therm to 1-t, as before.
+		// 0.5.0 phase + thermal chain: phaseEos + freezeVel -> conduction ->
+		// heatSources -> phaseEos + freezeVel. double flip keeps flags/sfield/accum
+		// in their canonical textures and preserves therm/vel ping-pong parity.
 		const mf=state.m;
 		let ts=1-t;
-		cpass.setPipeline(pipes.deriveT);
-		cpass.setBindGroup(0,groups.deriveT[m][ts][mf]);
+		cpass.setPipeline(pipes.phaseEos);
+		cpass.setBindGroup(0,groups.phaseA[mf][ts][v]);
 		cpass.dispatchWorkgroups(wx,wy);
 		ts=1-ts;
+		cpass.setPipeline(pipes.freezeVel);
+		cpass.setBindGroup(0,groups.freezeTmp[v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		v=1-v;
 		cpass.setPipeline(pipes.conduction);
-		cpass.setBindGroup(0,groups.conduction[m][ts][mf]);
+		cpass.setBindGroup(0,groups.conduction[mf][ts]);
 		cpass.dispatchWorkgroups(wx,wy);
 		ts=1-ts;
 		cpass.setPipeline(pipes.heatSources);
-		cpass.setBindGroup(0,groups.heatSources[m][ts][mf]);
+		cpass.setBindGroup(0,groups.heatSources[mf][ts]);
 		cpass.dispatchWorkgroups(wx,wy);
 		ts=1-ts;
-		cpass.setPipeline(pipes.deriveT);
-		cpass.setBindGroup(0,groups.deriveT[m][ts][mf]);
+		cpass.setPipeline(pipes.phaseEos);
+		cpass.setBindGroup(0,groups.phaseB[mf][ts][v]);
 		cpass.dispatchWorkgroups(wx,wy);
-		state.t=1-ts;
+		ts=1-ts;
+		cpass.setPipeline(pipes.freezeVel);
+		cpass.setBindGroup(0,groups.freezeMain[v]);
+		cpass.dispatchWorkgroups(wx,wy);
+		v=1-v;
+		state.t=ts;
 		state.v=v;
 	}
 	function encodeStats(cpass,pool,pipes,groups,state){
@@ -457,8 +524,6 @@
 		cpass.setBindGroup(0,groups.statsB);
 		cpass.dispatchWorkgroups(1);
 	}
-	// one workgroup over the body footprint. the gpu solver dispatches it once per
-	// refresh frame, after the substep loop, never inside it
 	function encodeBuoySample(cpass,pool,pipes,groups,state){
 		cpass.setPipeline(pipes.buoySample);
 		cpass.setBindGroup(0,groups.buoySample[state.m][state.v]);
@@ -485,6 +550,6 @@
 		rpass.setBindGroup(0,groups.render);
 		rpass.draw(3);
 	}
-	Fluid.gpu.passes={createPipelines,makeBindGroups,encodeStep,encodeStats,encodeBuoySample,encodeDisplay,encodePaint,encodeRender};
+	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeStep,encodeStats,encodeBuoySample,encodeDisplay,encodePaint,encodeRender};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.passes;
 })(globalThis);

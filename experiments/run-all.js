@@ -22,6 +22,7 @@ const FULL_SUITES = [
 	"sharpness.js",
 	"convection.js",
 	"phase.js",
+	"solid-growth.js",
 	"eos.js",
 	"buoy.js",
 	"multigrid.js",

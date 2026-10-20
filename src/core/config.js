@@ -11,6 +11,7 @@
 		heatPower:39,coolTop:40,wallCool:41,heatBand:42,thermalOn:43,heatTarget:44,
 		kSol:45,kGas:46,TEps:47,
 		cSol:48,cLiq:49,cGas:50,Lf:51,Lv:52,TMelt:53,TBoil:54,rhoLiq:55,rhoGas0:56,rhoVac:57,mEps:58,
+		chargeLatent:59,TCeil:60,
 		viewMode:80,TMin:81,TMax:82,PMin:83,PMax:84,VMax:85,overlay:86,colorGain:87,
 		buoyX0:88,buoyY0:89,buoyW:90,buoyH:91,buoySub:92,buoyShow:93,
 		mgS:94,emitters:96
@@ -47,17 +48,14 @@
 		TEps:0.001,
 		// thermal sources (0.4.0): fixed power per bottom-band cell, cold plate
 		// relaxation per top-band cell, wall exchange coefficient. only applied
-		// while cfg.thermalSources is on (the convection scenario turns it on).
+		// while cfg.thermalSources is on (thermal/phase scenarios turn it on).
 		heatPower:30,
 		coolTop:0.5,
 		wallCool:0,
 		heatBand:2,
 		thermalSources:0,
-		// convection demo endpoints: the scenario starts from this unstable
-		// stratification (hot below cold) instead of uniform T_amb plus a heater
-		// whose heat conduction spreads <1 cell in 10 s at the 0.2 default.
-		// the heater/cold plate then sustain the gradient the rolls feed on.
 		heatTarget:0,
+		TCeil:0,
 		convBotT:343,
 		convTopT:293,
 		SMax:30,
@@ -74,40 +72,21 @@
 		rhoGas0:0.02,
 		rhoVac:0.001,
 		mEps:0.0001,
+		chargeLatent:1,
 		viewMode:0,
 		TMin:273,
 		TMax:373,
 		PMin:-100,
 		PMax:100,
 		VMax:400,
-		overlay:0,
+		overlay:1,
 		colorGain:1.2,
 		statsEvery:30,
 		cflTarget:0.8,
 		substepMax:24,
-		// the auto-cfl substep policy is optional. with it off the frame still runs
-		// substepsFixed steps, not one: a single 1/60 s step at 512^2 lets the cfl
-		// number reach 20+, the outflow limiter clamps most of the field and the
-		// liquid reads as smeared and sticky. 4 is the smallest count that keeps the
-		// frame budget playable while giving the solve a usable dt.
-		// 24 is the cap. the cfl metric that matters is the *total* outflow of a
-		// cell, which for a divergence-free velocity field is at most 2x the
-		// largest face flux: the donor-cell update stays positive only while
-		// sum(outflow) <= 1. substepCount now targets that bound, so at N=512 a
-		// 200 cells/s burst picks 8-9 substeps and a 350 cells/s dam front 15.
-		// the old per-face target (half the bound) chosen 4-5 and left the
-		// positivity limiter clipping every fast frame - which is mass
-		// compression, not just dissipation (measured dam N=256: maxM 3.9).
 		substepsAuto:true,
 		substepsFixed:4,
 		vMax:8,
-		// multigrid: two-level V-cycle for the pressure solve (0.6.0 t4).
-		// pre/post fine red-black sweeps, coarse level at N/4 solved with
-		// pressureIters sweeps, two V-cycles. measured N=128 dam (auto policy,
-		// 60 frames): plain K=60 maxDiv 20.1 / over 741 / 23.7 s vs S=4 c=2
-		// maxDiv 0.05 / over 0 / 19.4 s. S=2 needed three cycles to reach 0.19
-		// and cost 35 s: a coarse level that is too fine also has to solve the
-		// long wavelengths it was built to remove. see src/core/multigrid.js.
 		useMultigrid:true,
 		mgPre:4,
 		mgPost:8,
@@ -144,7 +123,7 @@
 		phase:7
 	};
 	const viewModeNames=["color","temperature","pressure","velocity","divergence","flags","thermal","phase"];
-	const scenarioNames=["blobs","dam","still","convection"];
+	const scenarioNames=["blobs","dam","still","convection","ice","cycle","jet","rain","arch"];
 	const paintModeNames=["dye","wall","erase"];
 	const keyMap={
 		"0":"color","1":"temperature","2":"pressure","3":"velocity","4":"divergence","5":"flags",
@@ -152,12 +131,8 @@
 		" ":"pause",".":"step","r":"reset","h":"help","s":"dumpStats","d":"dumpField","g":"gravity",
 		"+":"iterUp","-":"iterDown","=":"iterUp","_":"iterDown","[":"sizeDown","]":"sizeUp",
 		"c":"cycleColor","b":"cyclePaint","n":"nextScenario","f":"toggleFct",
-		"u":"toggleSubsteps","y":"toggleBuoy"
+		"u":"toggleSubsteps","y":"toggleBuoy","o":"toggleOverlay"
 	};
-	// steps per rendered frame. the single implementation: app, core experiments and
-	// the gpu plumbing mock all call this, so the rule cannot drift between them.
-	// auto follows the cfl target from the live velocity, clamped to the step budget;
-	// off runs the fixed count from the slider, clamped the same way.
 	function substepCount(cfg,maxVel){
 		if(!cfg.substepsAuto){
 			let n=Math.round(cfg.substepsFixed)||1;
@@ -165,62 +140,97 @@
 			if(n>cfg.substepMax)n=cfg.substepMax;
 			return n;
 		}
-		// target the total-outflow bound, not the per-face one: donor-cell is
-		// monotone only while the four outgoing fluxes sum to <= 1, and for an
-		// incompressible field that sum is at most 2*maxVel*dt (two faces at the
-		// peak). targeting maxVel*dt = cflTarget (the old rule) leaves the
-		// positivity limiter clipping at every peak, and clipping is a local
-		// mass sink: measured dam N=256 maxM 3.9 / over 4200 cells.
 		let ns=Math.ceil(2*maxVel*cfg.frameDt/cfg.cflTarget);
 		if(!(ns>=1))ns=1;
 		if(ns>cfg.substepMax)ns=cfg.substepMax;
 		return ns;
 	}
-	// velocity cap that the step budget can actually transport. vMax is a
-	// cells-per-frame limit, but at ns substeps a face may only move
-	// 0.45 cells/substep or two outgoing faces exceed the donor-cell bound and
-	// the flux limiter starts compressing. in auto the cap rises with ns, so
-	// the physical speed is preserved once enough substeps are chosen; in a
-	// fixed low count it trades speed for conservation (no runaway maxM).
 	function velocityCap(cfg,ns){
 		const cap=Math.min(cfg.vMax,0.45*Math.max(1,ns));
 		return cap/cfg.frameDt;
 	}
+	function scaleBeta(N){
+		const l2=Math.log2(Math.max(1,N/64));
+		return defaults.beta*Math.min(1.8,1+0.18*l2);
+	}
 	// per-scenario presentation/physics setup, applied by both solvers on reset
-	// so cpu and gpu cannot drift. convection gets a heater band that scales
-	// with N (a fixed 2-cell band is invisible at 512) and a temperature view
-	// range matched to its stratification, not the full 273..373 phase range:
-	// with the full range a 60 K gradient used only ~half the colormap and the
-	// old uniform start used none of it.
+	// so cpu and gpu cannot drift. resets scenario-driven keys back to defaults first
+	// so switching scenarios never leaks thermal sources or view bounds.
 	function prepareScenario(cfg){
-		const conv=cfg.scenario==="convection";
-		cfg.thermalSources=conv?1:0;
-		cfg.heatBand=conv?Math.max(2,Math.round(cfg.N/32)):defaults.heatBand;
-		cfg.TMin=conv?cfg.convTopT:defaults.TMin;
-		cfg.heatTarget=conv?cfg.convBotT:0;
-		// velocities are in cells/s, so at fixed beta a 512 box turns over 8x slower
-		// than a 64 box. scale buoyancy sub-linearly so turnover stays visible
-		// without the 512 box exploding to 400 cells/s (measured with linear scale).
-		// sqrt(N/64) gave 2.8x at N=512 and still hit 240 cells/s, CFL 1.33 capped
-		// at 8 substeps (user report 2026-10-19: blobs CFL 1.29, convection 1.33/
-		// 1.41 at 6-7/8). use a log-linear factor: 1 + 0.3*log2(N/64), capped at
-		// 1.6x at N=512 => beta 0.0032, peak ~170 cells/s, CFL ~0.9 at 6 substeps.
-		// at N=64 factor 1.0 (baseline convection passes), N=1024 factor 1.8.
-		if(conv){
-			const l2=Math.log2(Math.max(1,cfg.N/64));
-			const fac=1+0.18*l2;
-			cfg.beta=defaults.beta*Math.min(1.8,fac);
-		} else {
+		const s=cfg.scenario;
+		const band=Math.max(2,Math.round(cfg.N/32));
+		if(cfg._prevScenario&&cfg._prevScenario!==s){
+			cfg.gravityY=defaults.gravityY;
+			cfg.heatPower=defaults.heatPower;
+			cfg.coolTop=defaults.coolTop;
+			cfg.TCeil=0;
+			cfg.TMin=defaults.TMin;
+			cfg.TMax=defaults.TMax;
+			cfg.thermalSources=0;
+			cfg.heatBand=defaults.heatBand;
+			cfg.heatTarget=0;
 			cfg.beta=defaults.beta;
 		}
-		cfg.TMax=conv?cfg.convBotT:defaults.TMax;
+		cfg._prevScenario=s;
+		if(s==="convection"){
+			cfg.thermalSources=1;
+			cfg.heatBand=band;
+			cfg.TMin=cfg.convTopT;
+			cfg.TMax=cfg.convBotT;
+			cfg.heatTarget=cfg.convBotT;
+			cfg.beta=scaleBeta(cfg.N);
+		} else if(s==="ice"){
+			cfg.thermalSources=1;
+			cfg.heatBand=band;
+			cfg.heatPower=260;
+			cfg.coolTop=0.5;
+			cfg.heatTarget=355;
+			cfg.TMin=245;
+			cfg.TMax=355;
+			cfg.beta=scaleBeta(cfg.N);
+		} else if(s==="cycle"){
+			// balanced cooker: box-scaled gravity keeps identical Froude number across N,
+			// heater melts ice and crosses boiling plateau, cold ceiling condenses vapor back.
+			cfg.gravityY=Math.max(24,defaults.gravityY*(cfg.N/512));
+			cfg.thermalSources=1;
+			cfg.heatBand=band;
+			cfg.heatPower=380;
+			cfg.coolTop=6.5;
+			cfg.heatTarget=420;
+			cfg.TMin=255;
+			cfg.TMax=420;
+			cfg.beta=scaleBeta(cfg.N);
+		} else if(s==="jet"){
+			cfg.thermalSources=1;
+			cfg.heatBand=band;
+			cfg.heatPower=180;
+			cfg.coolTop=1.2;
+			cfg.heatTarget=520;
+			cfg.TMin=290;
+			cfg.TMax=520;
+			cfg.beta=scaleBeta(cfg.N);
+		} else if(s==="rain"){
+			cfg.thermalSources=1;
+			cfg.heatBand=band;
+			cfg.heatPower=420;
+			cfg.coolTop=3.0;
+			cfg.heatTarget=405;
+			cfg.TCeil=235;
+			cfg.TMin=235;
+			cfg.TMax=405;
+			cfg.beta=scaleBeta(cfg.N);
+		} else if(s==="arch"){
+			cfg.thermalSources=1;
+			cfg.heatBand=band;
+			cfg.heatPower=220;
+			cfg.coolTop=0.3;
+			cfg.heatTarget=340;
+			cfg.TMin=240;
+			cfg.TMax=340;
+			cfg.beta=scaleBeta(cfg.N);
+		}
 	}
 	function recommendedIters(N){
-		// Gauss-Seidel needs O(N) iterations for similar residual; tuned to keep
-		// maxDiv <0.5 at N=64/K=60 and scale to N=512. slider max is 200.
-		// Measured: dam at N=64/K=60 maxDiv 0.31, N=512/K=60 maxDiv 2.5-80. Linear
-		// scale 0.15*N+28 gives 105 at N=512, HUD earlier used ceil(N*0.18+20)=113;
-		// unify on the latter (113 at N=512, 200 at N=1024) and expose one function.
 		let k=Math.ceil(N*0.18+20);
 		if(k<20) k=20;
 		if(k>200) k=200;
@@ -281,6 +291,8 @@
 		a[paramsOff.rhoGas0]=cfg.rhoGas0;
 		a[paramsOff.rhoVac]=cfg.rhoVac;
 		a[paramsOff.mEps]=cfg.mEps;
+		a[paramsOff.chargeLatent]=cfg.chargeLatent===undefined?1:cfg.chargeLatent;
+		a[paramsOff.TCeil]=cfg.TCeil||0;
 		a[paramsOff.viewMode]=cfg.viewMode;
 		a[paramsOff.TMin]=cfg.TMin;
 		a[paramsOff.TMax]=cfg.TMax;

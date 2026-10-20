@@ -13,12 +13,14 @@ const modules = [
 	"src/core/config.js",
 	"src/core/grid.js",
 	"src/core/stats.js",
+	"src/core/multigrid.js",
 	"src/core/solver.js",
 	"src/core/buoy.js",
 	"src/gpu/shaders.js",
 	"src/gpu/fields.js",
 	"src/gpu/passes.js",
-	"src/gpu/solver.js"
+	"src/gpu/solver.js",
+	"src/gpu/view.js"
 ];
 for (const file of modules) require(path.join(root, file));
 
@@ -102,10 +104,22 @@ async function readTextures(fields, width, height) {
 			const row = mapped.subarray(y * copy.bytesPerRow, y * copy.bytesPerRow + copy.rowBytes);
 			packed.set(row, y * copy.rowBytes);
 		}
-		copy.field.gpuValues = copy.field.integer ? packed : new Float32Array(packed.buffer);
+		copy.field.gpuValues = copy.field.integer
+			? packed
+			: copy.field.halfFloat
+				? new Uint16Array(packed.buffer)
+				: new Float32Array(packed.buffer);
 		copy.buffer.unmap();
 		copy.buffer.destroy();
 	}
+}
+function f16ToF32(h) {
+	const s = (h & 0x8000) >> 15;
+	const e = (h & 0x7c00) >> 10;
+	const f = h & 0x03ff;
+	if (e === 0) return (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+	if (e === 31) return f ? NaN : (s ? -Infinity : Infinity);
+	return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
 }
 function fieldSpecs(cpu, solver) {
 	const pool = solver.pool;
@@ -117,6 +131,7 @@ function fieldSpecs(cpu, solver) {
 		{ name: "pressure", texture: pool.press.tex[0], cpuValues: current(cpu.press), bytesPerPixel: 4, atol: 2e-2, rtol: 2e-5 },
 		{ name: "flux", texture: pool.flux, cpuValues: cpu.flux, bytesPerPixel: 8, atol: 2e-6, rtol: 2e-5 },
 		{ name: "divergence-source", texture: pool.divsrc, cpuValues: cpu.divsrc, bytesPerPixel: 4, atol: 2e-2, rtol: 2e-5 },
+		{ name: "sfield", texture: pool.sfield, cpuValues: cpu.sfield, bytesPerPixel: 16, atol: 5e-4, rtol: 2e-4 },
 		{ name: "flags", texture: pool.flags, cpuValues: cpu.flags, bytesPerPixel: 4, integer: true }
 	];
 }
@@ -235,6 +250,7 @@ device.onuncapturederror = event => uncaptured.push(event.error.message);
 const n = Number(process.env.FLUID_GPU_PARITY_N || 32);
 const flowSteps = Number(process.env.FLUID_GPU_PARITY_FLOW_STEPS || 8);
 const heatSteps = Number(process.env.FLUID_GPU_PARITY_HEAT_STEPS || 500);
+const phaseSteps = Number(process.env.FLUID_GPU_PARITY_PHASE_STEPS || 16);
 const tests = [
 	{
 		name: "dam transport/projection",
@@ -248,9 +264,122 @@ const tests = [
 		steps: heatSteps,
 		snapshots: [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, heatSteps],
 		options: { gravityY: 0, pressureIters: 4, dt: 1 / 240 }
+	},
+	{
+		name: "ice melt + advection",
+		scenario: "ice",
+		steps: phaseSteps,
+		snapshots: [0, 1, 2, 4, 8, phaseSteps],
+		options: { pressureIters: 8, dt: 1 / 240 }
+	},
+	{
+		name: "jet vapor expansion",
+		scenario: "jet",
+		steps: phaseSteps,
+		snapshots: [0, 1, 2, 4, 8, phaseSteps],
+		options: { pressureIters: 8, dt: 1 / 240 }
+	},
+	{
+		name: "rain boil/freeze cycle",
+		scenario: "rain",
+		steps: phaseSteps,
+		snapshots: [0, 1, 2, 4, 8, phaseSteps],
+		options: { pressureIters: 8, dt: 1 / 240 }
+	},
+	{
+		name: "arch frozen vault + MG",
+		scenario: "arch",
+		steps: phaseSteps,
+		snapshots: [0, 1, 2, 4, 8, phaseSteps],
+		options: { pressureIters: 8, dt: 1 / 240 }
 	}
 ];
 for (const testCase of tests) await runCase(testCase, n);
+
+// 0.5.0 stats readback + display view verification (a6, a11, a12)
+{
+	const vn = 32;
+	const opts = { pressureIters: 8, fctLimiter: 1, dt: 1 / 240 };
+	const cpuCfg = makeConfig("cycle", vn, opts);
+	const gpuCfg = makeConfig("cycle", vn, opts);
+	const cpu = Fluid.core.solver.create(cpuCfg);
+	const format = "rgba8unorm";
+	const canvas = { width: vn, height: vn };
+	const target = device.createTexture({
+		label: "view-render-target",
+		size: [vn, vn],
+		format,
+		usage: GPUTextureUsage.RENDER_ATTACHMENT
+	});
+	const context = { getCurrentTexture: () => target };
+	const solver = Fluid.gpu.solver.create(device, canvas, context, format, gpuCfg);
+	try {
+		for (let s = 0; s < 12; s++) {
+			cpuCfg.dt = opts.dt;
+			cpu.step(opts.dt);
+			solver.frame(opts.dt, 1, s === 11);
+		}
+		await device.queue.onSubmittedWorkDone();
+		await solver.pollReadback();
+		const cpuSt = cpu.stats();
+		const gpuSt = solver.getStats();
+		const countMatch = cpuSt.phaseCounts.every((c, i) => c === gpuSt.phaseCounts[i]);
+		const latRel = Math.abs(gpuSt.ledger.latentChargedE - cpuSt.ledger.latentChargedE)
+			/ Math.max(cpuSt.ledger.latentChargedE, 1e-6);
+		check("stats readback: 32-float phaseCounts + latentChargedE + auto PMin/PMax match CPU",
+			countMatch && latRel < 1e-4 && gpuCfg.PMax > 0 && gpuCfg.PMin === -gpuCfg.PMax,
+			"counts=" + gpuSt.phaseCounts.join("/") + " lat=" + gpuSt.ledger.latentChargedE.toFixed(2)
+			+ " P=[" + gpuCfg.PMin.toFixed(1) + ".." + gpuCfg.PMax.toFixed(1) + "]");
+
+		// Paint one static wall cell so display has frozen ice, liquid, and static wall together
+		solver.paintWall(0.1, 0.9, false);
+		const dispSpec = [{ name: "display", texture: solver.pool.display, bytesPerPixel: 8, halfFloat: true }];
+		const readDisplay = async () => {
+			solver.renderOnly();
+			await readTextures(dispSpec, vn + 2, vn + 2);
+			return Array.from(dispSpec[0].gpuValues, f16ToF32);
+		};
+		gpuCfg.viewMode = 7;
+		const phaseImg = await readDisplay();
+		const rgbKey = i => [phaseImg[i].toFixed(2), phaseImg[i + 1].toFixed(2), phaseImg[i + 2].toFixed(2)].join(",");
+		const seenPhaseColors = new Set();
+		for (let y = 1; y <= vn; y++) {
+			for (let x = 1; x <= vn; x++) seenPhaseColors.add(rgbKey((x + y * (vn + 2)) * 4));
+		}
+		check("toDisplay mode 7 (phase map): renders distinct colors for ice, liquid, gas, and wall",
+			seenPhaseColors.size >= 3, "distinct=" + seenPhaseColors.size);
+
+		gpuCfg.viewMode = 5;
+		const flagsImg = await readDisplay();
+		const flagsColors = new Set();
+		for (let y = 1; y <= vn; y++) {
+			for (let x = 1; x <= vn; x++) {
+				const i = (x + y * (vn + 2)) * 4;
+				flagsColors.add([flagsImg[i].toFixed(2), flagsImg[i + 1].toFixed(2), flagsImg[i + 2].toFixed(2)].join(","));
+			}
+		}
+		check("toDisplay mode 5 (flags): distinguishes frozen solid, static wall, and open fluid",
+			flagsColors.size >= 3, "distinct=" + flagsColors.size);
+
+		gpuCfg.viewMode = 0;
+		gpuCfg.overlay = 1;
+		const overOn = await readDisplay();
+		gpuCfg.overlay = 0;
+		const overOff = await readDisplay();
+		let diffPixels = 0;
+		for (let i = 0; i < overOn.length; i += 4) {
+			if (Math.abs(overOn[i] - overOff[i]) + Math.abs(overOn[i + 1] - overOff[i + 1]) + Math.abs(overOn[i + 2] - overOff[i + 2]) > 0.02) {
+				diffPixels++;
+			}
+		}
+		check("toDisplay solid overlay: toggling cfg.overlay updates frozen-cell pixels immediately",
+			diffPixels > 0, "changed_pixels=" + diffPixels);
+	} finally {
+		solver.destroy();
+		target.destroy();
+	}
+}
+
 await device.queue.onSubmittedWorkDone();
 device.destroy();
 console.log(failures === 0

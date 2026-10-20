@@ -44,7 +44,7 @@ const BUOY_PATTERN = [8, 32, 32, 32, 0, 0.5];
 function makeDevice(sink) {
 	const device = {
 		createBuffer: d => makeBuffer(d),
-		createTexture: () => { textures++; return { createView: () => ({}), destroy() {} }; },
+		createTexture: d => { textures++; return { format: d.format, createView: () => ({}), destroy() {} }; },
 		createSampler: () => ({}),
 		createShaderModule: d => { sink.modules.push(d); return { code: d.code, label: d.label }; },
 		createCommandEncoder: () => makeEncoder(sink),
@@ -324,11 +324,71 @@ function testSampler() {
 		st.ux === 2, "mean u=" + st.ux);
 }
 
+async function testPhasePlumbing() {
+	require("../src/gpu/view.js");
+	require("../src/app/hud.js");
+	require("../src/app/viewmenu.js");
+	require("../src/app/input.js");
+	require("../src/app/controls.js");
+	const sink = newSink();
+	const device = makeDevice(sink);
+	const N = 64;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {
+		N, texW: N + 2, texH: N + 2, scenario: "ice", buoyEnabled: 0
+	});
+	const canvas = { width: N, height: N };
+	const solver = Fluid.gpu.solver.create(device, canvas, mockContext(), "bgra8unorm", cfg);
+	check("phase pool: 40-float partial stride, 128-byte stats buffer, rgba32float sfield, rg32float accum",
+		solver.pool.statsPart.size === solver.pool.numWorkgroups * 40 * 4 &&
+		solver.pool.stats.size === 128 &&
+		solver.pool.sfield.format === "rgba32float" &&
+		solver.pool.accum.format === "rg32float",
+		"statsPart=" + solver.pool.statsPart.size + "B");
+	check("phase pipelines: phaseEos and freezeVel compiled and dispatched during reset priming",
+		sink.modules.some(m => m.label === "phaseEos-mod") &&
+		sink.modules.some(m => m.label === "freezeVel-mod") &&
+		sink.pipeOrder.includes("phaseEos") && sink.pipeOrder.includes("freezeVel") &&
+		cfg.chargeLatent === 1);
+	const st = solver.getStats();
+	check("reset seeds CPU phase census matching scenario cells (ice + liquid = 64^2)",
+		st.phaseCounts[1] > 0 && st.phaseCounts[3] > 0 &&
+		st.phaseCounts.reduce((a, b) => a + b, 0) === N * N,
+		"counts=" + st.phaseCounts.join("/"));
+	// Minimal DOM stub for HUD + input 'o' overlay shortcut
+	const listeners = {};
+	const origWin = globalThis.window, origDoc = globalThis.document;
+	globalThis.document = {
+		getElementById: () => ({ textContent: "", addEventListener() {} })
+	};
+	globalThis.window = {
+		addEventListener(type, fn) { (listeners[type] || (listeners[type] = [])).push(fn); }
+	};
+	const hud = Fluid.app.hud.create(solver, cfg, null);
+	const snap = hud.buildSnapshot();
+	check("HUD snapshot includes 6-phase census, latent/momentum ledgers, and sSat counter",
+		/phases vac=0 sol=\d+ melt=0 liq=\d+ boil=0 gas=0 \| latentE=0 fMom=0 sSat=0/.test(snap),
+		snap.split("\n")[2]);
+	const mockCanvas = {
+		addEventListener() {}, setPointerCapture() {}, hasPointerCapture: () => false,
+		releasePointerCapture() {}, focus() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 64, height: 64 })
+	};
+	Fluid.app.input.create(mockCanvas, cfg, solver, () => {});
+	const beforeOverlay = cfg.overlay;
+	for (const fn of listeners.keydown || []) fn({ key: "o", target: null, preventDefault() {} });
+	check("keyboard shortcut 'o' toggles solid overlay flag and marks view dirty",
+		cfg.overlay === (beforeOverlay > 0 ? 0 : 1) && cfg._dirty === true,
+		"overlay " + beforeOverlay + " -> " + cfg.overlay);
+	globalThis.window = origWin;
+	globalThis.document = origDoc;
+	solver.destroy();
+}
+
 (async function main() {
 	testParams();
 	testWgsl();
 	testSampler();
 	await testPlumbing();
+	await testPhasePlumbing();
 	console.log(failures === 0 ? "ALL GPU-MOCK CHECKS PASSED" : failures + " FAILURES");
 	process.exitCode = failures === 0 ? 0 : 1;
 })();

@@ -49,6 +49,11 @@
 				<label><input type="checkbox" id="case-dam" checked> dam</label>
 				<label><input type="checkbox" id="case-still" checked> still</label>
 				<label><input type="checkbox" id="case-convection" checked> convection</label>
+				<label><input type="checkbox" id="case-ice"> ice</label>
+				<label><input type="checkbox" id="case-cycle"> cycle</label>
+				<label><input type="checkbox" id="case-jet"> jet</label>
+				<label><input type="checkbox" id="case-rain"> rain</label>
+				<label><input type="checkbox" id="case-arch"> arch</label>
 				<label><input type="checkbox" id="case-draw" checked> scripted draw/stir</label>
 			</div>
 			<div class="controls">
@@ -93,12 +98,15 @@
 		let running = false;
 		let gpuErrors = [];
 
+		const ALL_CASES = ["blobs", "dam", "still", "convection", "ice", "cycle", "jet", "rain", "arch", "draw"];
 		if (query.has("n")) byId("grid").value = query.get("n");
 		if (query.has("frames")) byId("frames").value = query.get("frames");
 		if (query.has("scenarios")) {
-			const selected = new Set(query.get("scenarios").split(",").map(name => name.trim()));
-			for (const name of ["blobs", "dam", "still", "convection", "draw"]) {
-				byId("case-" + name).checked = selected.has(name);
+			const raw = query.get("scenarios").split(",").map(name => name.trim());
+			const selected = new Set(raw.includes("all") ? ALL_CASES : raw);
+			for (const name of ALL_CASES) {
+				const el = byId("case-" + name);
+				if (el) el.checked = selected.has(name);
 			}
 		}
 
@@ -166,6 +174,12 @@
 			log("maxM=" + stats.maxM + " neg=" + stats.cntNeg + " over=" + stats.cntOver +
 				" maxDiv=" + stats.motion.maxDiv + " p[" + stats.motion.pMin + ".." + stats.motion.pMax +
 				"] maxVel=" + stats.motion.maxVel);
+			const pc = stats.phaseCounts || [0, 0, 0, 0, 0, 0];
+			const lat = stats.ledger ? stats.ledger.latentChargedE : 0;
+			const fMom = stats.ledger ? stats.ledger.frozenMomentum : 0;
+			const sSat = stats.diag && stats.diag.sSaturated ? stats.diag.sSaturated : 0;
+			log("phases vac=" + pc[0] + " sol=" + pc[1] + " melt=" + pc[2] + " liq=" + pc[3] +
+				" boil=" + pc[4] + " gas=" + pc[5] + " | latentE=" + lat + " fMom=" + fMom + " sSat=" + sSat);
 			log("statsFrame#" + stats.statsFrame + " frame#" + stats.frame + " N=" + cfg.N +
 				" dt=" + cfg.dt + " K=" + cfg.pressureIters + " " + label + " ns=" + lastNs +
 				"/" + cfg.substepMax + " " + (cfg.substepsAuto ? "auto" : "fixed") +
@@ -186,8 +200,10 @@
 			if (!Number.isInteger(frames) || frames < 1 || frames > 3600) {
 				throw new Error("Frames per scenario must be an integer from 1 to 3600.");
 			}
-			const scenarios = ["blobs", "dam", "still", "convection", "draw"]
-				.filter(name => byId("case-" + name).checked);
+			const scenarios = ALL_CASES.filter(name => {
+				const el = byId("case-" + name);
+				return !!(el && el.checked);
+			});
 			if (!scenarios.length) throw new Error("Select at least one scenario.");
 			return { n, frames, scenarios };
 		}
@@ -306,7 +322,10 @@
 			runBtn.disabled = value;
 			byId("grid").disabled = value;
 			byId("frames").disabled = value;
-			for (const id of ["case-blobs", "case-dam", "case-still", "case-convection", "case-draw"]) byId(id).disabled = value;
+			for (const id of ALL_CASES.map(name => "case-" + name)) {
+				const el = byId(id);
+				if (el) el.disabled = value;
+			}
 			copyBtn.disabled = value || !lines.length;
 			saveBtn.disabled = value || !lines.length;
 		}

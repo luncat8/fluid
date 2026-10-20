@@ -46,6 +46,7 @@
 				</div>
 				<div class="ctrl-row">
 					<label class="ctrl-check" title="Bounded anti-diffusion: preserves sharper RGB dye edges, not velocity or mass"><input type="checkbox" id="ctrl-fct"> Dye FCT</label>
+					<label class="ctrl-check" title="Outline and hatch frozen solid cells over any view"><input type="checkbox" id="ctrl-solids"> Solids</label>
 					<label class="ctrl-check"><input type="checkbox" id="ctrl-gravity"> Gravity</label>
 				</div>
 				<div class="ctrl-row">
@@ -86,11 +87,11 @@
 			<div id="state" class="hud-block"></div>
 			<div id="error-panel" role="alert" hidden></div>
 			<div id="help-overlay" hidden>
-				<p><strong>Keys</strong>: 0-7 view modes · space pause · . step · r reset · n scenario · b paint dye/wall/erase · c dye color · f toggle FCT · g gravity · u substep policy · y buoy · +/- pressure iters · [ ] grid size · s dump stats · h help</p>
-				<p>The view row under the canvas switches modes on click; on a mouse or trackpad, hovering a mode switches it too.</p>
+				<p><strong>Keys</strong>: 0-7 view modes · space pause · . step · r reset · n scenario · b paint dye/wall/erase · c dye color · f toggle FCT · o solid overlay · g gravity · u substep policy · y buoy · +/- pressure iters · [ ] grid size · s dump stats · h help</p>
+				<p>The view row under the canvas switches modes on click; on a mouse or trackpad, hovering a mode switches it too. View <code>7</code> maps all six EOS phases (vacuum, solid, melting plateau, liquid, boiling plateau, vapor) plus static walls; <code>o</code> toggles frozen-solid outlines and cross-hatching over any view; view <code>5</code> distinguishes frozen ice from painted static walls.</p>
 				<p>Shortcuts leave focused form controls alone; click the canvas to use simulation keys again.</p>
 				<p>Drag to stir and paint. Dye painting is ledger-accounted: drift stays green. Walls block flow and are visible in view 5.</p>
-				<p>Pick the convection scenario (or press <code>n</code> until it appears) for heated-from-below rolls: it starts hot at the bottom and cold at the top and switches to the temperature view. Other scenarios start at uniform ambient temperature, so their temperature map is flat by construction.</p>
+				<p>Pick <code>convection</code>, <code>ice</code>, <code>cycle</code>, <code>jet</code>, <code>rain</code>, or <code>arch</code> (or press <code>n</code>) to see thermal rolls, melting ice blocks, closed water/vapor/ice cycling, rising steam jets, ceiling freezing/rain, and self-supporting frozen arches.</p>
 				<p>The dam scenario drops a buoy: an outlined rectangle lifted by the blue inside it, so it rides the water surface. It only reads the field, so nothing is added to the ledger. <code>u</code> switches between auto-cfl substeps and the fixed step count in the panel.</p>
 				<p>Dye FCT (flux-corrected transport) keeps moving color edges sharper than donor-cell transport. Compare separate reset runs in color view; toggling it cannot undo mixing already accumulated. It does not affect mass, energy, or velocity. Gravity changes density sorting and thermal convection, not existing momentum. The dam float is a read-only marker, not a force on the fluid.</p>
 				<p>Performance: sim/s counts submitted simulation frames (target 60); render/s includes view-only redraws; rAF/s is browser callback frequency, not solver throughput. Speed is simulated seconds per wall second. Queue ms is last submission-to-completion latency, not pure GPU time. Only one application frame is in flight.</p>

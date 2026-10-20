@@ -3,6 +3,7 @@
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.gpu=Fluid.gpu||{};
 	const PATCH=128;
+	const PARTIAL_STRIDE=40;
 	function texUsage(){
 		return GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.STORAGE_BINDING|GPUTextureUsage.COPY_SRC|GPUTextureUsage.COPY_DST;
 	}
@@ -24,11 +25,15 @@
 			therm:{tex:[],cur:0},
 			press:{tex:[],cur:0},
 			flags:null,
+			flagsTmp:null,
 			flux:null,
 			limiterA:null,
 			limiterB:null,
 			divsrc:null,
 			sfield:null,
+			sfieldTmp:null,
+			accum:null,
+			accumTmp:null,
 			mgMass:null,
 			mgFlags:null,
 			mgDiv:null,
@@ -62,12 +67,11 @@
 		pool.press.tex[0]=makeTexture(device,"press0","r32float",texW,texH);
 		pool.press.tex[1]=makeTexture(device,"press1","r32float",texW,texH);
 		pool.flags=makeTexture(device,"flags","rgba8uint",texW,texH);
+		pool.flagsTmp=makeTexture(device,"flagsTmp","rgba8uint",texW,texH);
 		pool.flux=makeTexture(device,"flux","rg32float",texW,texH);
 		pool.limiterA=makeTexture(device,"limiterA","rgba32float",texW,texH);
 		pool.limiterB=makeTexture(device,"limiterB","rg32float",texW,texH);
 		pool.divsrc=makeTexture(device,"divsrc","r32float",texW,texH);
-		// multigrid coarse level: one level at N/2. every field the coarse RBGS
-		// and the residual restriction need, at (N/S+2)^2.
 		let mgS=Math.max(2,Math.round(mgCoarsen||2));
 		while(mgS>2&&Math.floor(N/mgS)<4)mgS=Math.floor(mgS/2);
 		const mgNc=Math.floor(N/mgS);
@@ -75,16 +79,17 @@
 		const mgTexH=mgNc+2;
 		pool.mgNc=mgNc;pool.mgTexW=mgTexW;pool.mgTexH=mgTexH;pool.mgS=mgS;
 		pool.mgWorkgroupX=Math.ceil(mgTexW/8);pool.mgWorkgroupY=Math.ceil(mgTexH/8);
-		// mass must stay rgba32float: projectStep reads .a from it, and an
-		// r32float texture would return 1.0 in .a (the extension channels are
-		// (0,0,0,1)), silently making every coarse face weight 1/rhoVac.
 		pool.mgMass=makeTexture(device,"mgMass","rgba32float",mgTexW,mgTexH);
 		pool.mgFlags=makeTexture(device,"mgFlags","rgba8uint",mgTexW,mgTexH);
 		pool.mgDiv=makeTexture(device,"mgDiv","r32float",mgTexW,mgTexH);
 		pool.mgPress.tex[0]=makeTexture(device,"mgPress0","r32float",mgTexW,mgTexH);
 		pool.mgPress.tex[1]=makeTexture(device,"mgPress1","r32float",mgTexW,mgTexH);
 		pool.mgParams=device.createBuffer({label:"mgParams",size:512,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
-		pool.sfield=makeTexture(device,"sfield","r32float",texW,texH);
+		// 0.5.0: sfield holds (S, phi_l, phi_g, 0); accum holds (latentChargedE, frozenMomentum)
+		pool.sfield=makeTexture(device,"sfield","rgba32float",texW,texH);
+		pool.sfieldTmp=makeTexture(device,"sfieldTmp","rgba32float",texW,texH);
+		pool.accum=makeTexture(device,"accum","rg32float",texW,texH);
+		pool.accumTmp=makeTexture(device,"accumTmp","rg32float",texW,texH);
 		pool.patchMass=makeTexture(device,"patchMass","rgba32float",PATCH,PATCH);
 		pool.patchE=makeTexture(device,"patchE","r32float",PATCH,PATCH);
 		pool.display=makeTexture(device,"display","rgba16float",texW,texH);
@@ -94,24 +99,24 @@
 		pool.workgroupY=workgroupY;
 		pool.numWorkgroups=workgroupX*workgroupY;
 		pool.params=device.createBuffer({label:"params",size:512,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
-		// stats layout: 32 slots (see src/core/stats.js IDX_*)
-		const statsPartSize=pool.numWorkgroups*32*4;
+		// 40 partial floats per workgroup reduced into 32 output floats (see src/core/stats.js)
+		const statsPartSize=pool.numWorkgroups*PARTIAL_STRIDE*4;
 		pool.statsPart=device.createBuffer({label:"statsPart",size:statsPartSize,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
 		pool.stats=device.createBuffer({label:"stats",size:128,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
 		pool.statsRead=device.createBuffer({label:"statsRead",size:128,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
-		// buoy_sample output + its readback twin: six floats (see src/core/buoy.js),
-		// 128 bytes like the stats pair so both readbacks share one shape
 		pool.buoy=device.createBuffer({label:"buoy",size:128,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
 		pool.buoyRead=device.createBuffer({label:"buoyRead",size:128,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		pool.dims=device.createBuffer({label:"dims",size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
-		const dimsArr=new Uint32Array([pool.numWorkgroups*32,0,0,0]);
+		const dimsArr=new Uint32Array([pool.numWorkgroups*PARTIAL_STRIDE,0,0,0]);
 		device.queue.writeBuffer(pool.dims,0,dimsArr);
 		return pool;
 	}
 	function destroyPool(pool){
 		const tex=[pool.vel.tex[0],pool.vel.tex[1],pool.mass.tex[0],pool.mass.tex[1],pool.mass.tex[2],
 			pool.therm.tex[0],pool.therm.tex[1],pool.press.tex[0],pool.press.tex[1],
-			pool.flags,pool.flux,pool.limiterA,pool.limiterB,pool.divsrc,pool.sfield,pool.patchMass,pool.patchE,pool.display,
+			pool.flags,pool.flagsTmp,pool.flux,pool.limiterA,pool.limiterB,pool.divsrc,
+			pool.sfield,pool.sfieldTmp,pool.accum,pool.accumTmp,
+			pool.patchMass,pool.patchE,pool.display,
 			pool.mgMass,pool.mgFlags,pool.mgDiv,pool.mgPress.tex[0],pool.mgPress.tex[1]];
 		for(const t of tex){if(t&&t.destroy)try{t.destroy();}catch(e){}}
 		for(const b of [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.dims,pool.mgParams]){

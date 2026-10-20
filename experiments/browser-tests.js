@@ -10,12 +10,13 @@ const html = fs.readFileSync(path.join(__dirname, "browser-tests.html"), "utf8")
 const inline = /<script>([\s\S]*?)<\/script>/.exec(html);
 assert.ok(inline, "browser harness inline script exists");
 
+const DEFAULT_CASES = new Set(["case-blobs", "case-dam", "case-still", "case-convection", "case-draw"]);
 class Element {
 	constructor(id) {
 		this.id = id;
 		this.listeners = Object.create(null);
 		this.style = {};
-		this.checked = id.startsWith("case-");
+		this.checked = DEFAULT_CASES.has(id);
 		this.value = id === "grid" ? "512" : id === "frames" ? "1" : "";
 		this.textContent = "";
 		this.disabled = false;
@@ -32,7 +33,9 @@ class Element {
 
 const ids = [
 	"out", "status", "run", "copy", "save", "c", "error-panel", "grid", "frames",
-	"case-blobs", "case-dam", "case-still", "case-convection", "case-draw", "copy-feedback"
+	"case-blobs", "case-dam", "case-still", "case-convection",
+	"case-ice", "case-cycle", "case-jet", "case-rain", "case-arch",
+	"case-draw", "copy-feedback"
 ];
 const elements = Object.fromEntries(ids.map(id => [id, new Element(id)]));
 let copied = "";
@@ -129,10 +132,11 @@ vm.runInNewContext(inline[1], context, { filename: "browser-tests.html:inline" }
 		console: { log() {}, error() {} }
 	};
 	vm.runInNewContext(inline[1], queryContext, { filename: "browser-tests.html:query" });
-	const selected = ["blobs", "dam", "still", "convection", "draw"]
+	const selected = ["blobs", "dam", "still", "convection", "ice", "cycle", "jet", "rain", "arch", "draw"]
 		.filter(name => queryElements["case-" + name].checked);
 	assert.deepEqual(selected, ["blobs", "draw"], "scenario query prefill selects a reproducible subset");
-	console.log("PASS browser diagnostics UI: five-case run, scenario query, scripted paint, in-flight lock, report and clipboard copy");
+	assert.match(elements.out.textContent, /phases vac=0 sol=0 melt=0 liq=0 boil=0 gas=0 \| latentE=0 fMom=0 sSat=0/);
+	console.log("PASS browser diagnostics UI: five-case run, phase scenarios, scenario query, scripted paint, in-flight lock, report and clipboard copy");
 })().catch(error => {
 	console.error(error);
 	process.exitCode = 1;

@@ -6,6 +6,106 @@
 	// same blocking predicates, same donor rules, same update order. if the two
 	// disagree, 0.0.0-plan.md section 5 wins and both get fixed.
 	// param offsets are Fluid.core.config.paramsOff.
+	const EOS_HELPERS=`
+struct PhaseState {
+	T: f32,
+	phiL: f32,
+	phiG: f32,
+	phase: u32,
+	rhoStar: f32,
+	S: f32,
+	c: f32,
+	k: f32
+};
+fn evalPhase(m: f32, E: f32) -> PhaseState {
+	var o: PhaseState;
+	let TAmb = params.values[20];
+	let kLiq = params.values[35];
+	let SMax = params.values[36];
+	let tau = params.values[37];
+	let kSol = params.values[45];
+	let kGas = params.values[46];
+	let TEps = params.values[47];
+	let cSol = params.values[48];
+	let cLiq = params.values[49];
+	let cGas = params.values[50];
+	let Lf = params.values[51];
+	let Lv = params.values[52];
+	let TMelt = params.values[53];
+	let TBoil = params.values[54];
+	let rhoLiq = params.values[55];
+	let rhoGas0 = params.values[56];
+	let mEps = params.values[58];
+	if (!(m >= mEps)) {
+		o.T = TAmb; o.phiL = 0.0; o.phiG = 0.0; o.phase = 0u;
+		o.rhoStar = rhoLiq; o.S = 0.0; o.c = cLiq; o.k = kLiq;
+		return o;
+	}
+	let E1 = m * cSol * TMelt;
+	let E2 = E1 + m * Lf;
+	let E3 = E2 + m * cLiq * (TBoil - TMelt);
+	let E4 = E3 + m * Lv;
+	var T = TAmb;
+	var phiL = 0.0;
+	var phiG = 0.0;
+	var ph = 0u;
+	if (E < E1) {
+		T = E / (m * cSol); ph = 1u;
+	} else if (E < E2) {
+		T = TMelt; phiL = (E - E1) / (m * Lf); ph = 2u;
+	} else if (E < E3) {
+		T = TMelt + (E - E2) / (m * cLiq); phiL = 1.0; ph = 3u;
+	} else if (E < E4) {
+		T = TBoil; phiG = (E - E3) / (m * Lv); phiL = 1.0; ph = 4u;
+	} else {
+		T = TBoil + (E - E4) / (m * cGas); phiG = 1.0; phiL = 1.0; ph = 5u;
+	}
+	let rhoGas = rhoGas0 * TBoil / max(T, TEps);
+	let vStar = (1.0 - phiG) / rhoLiq + phiG / rhoGas;
+	let rhoStar = 1.0 / vStar;
+	var S = 0.0;
+	if (phiG > 0.0) {
+		S = (m - rhoStar) / (max(m, rhoStar) * tau);
+	} else if (m > rhoLiq) {
+		S = (m - rhoLiq) / (m * tau);
+	}
+	S = clamp(S, -SMax, SMax);
+	o.T = T;
+	o.phiL = phiL;
+	o.phiG = phiG;
+	o.phase = ph;
+	o.rhoStar = rhoStar;
+	o.S = S;
+	o.c = (1.0 - phiL) * cSol + phiL * ((1.0 - phiG) * cLiq + phiG * cGas);
+	o.k = (1.0 - phiL) * kSol + phiL * ((1.0 - phiG) * kLiq + phiG * kGas);
+	return o;
+}
+fn eqDist(m: f32, E: f32, T: f32) -> f32 {
+	let cSol = params.values[48];
+	let cLiq = params.values[49];
+	let cGas = params.values[50];
+	let Lf = params.values[51];
+	let Lv = params.values[52];
+	let TMelt = params.values[53];
+	let TBoil = params.values[54];
+	var lo = 0.0;
+	var hi = 0.0;
+	if (T < TMelt) {
+		lo = m * cSol * T; hi = lo;
+	} else if (T == TMelt) {
+		lo = m * cSol * TMelt; hi = lo + m * Lf;
+	} else if (T < TBoil) {
+		lo = m * (cSol * TMelt + Lf + cLiq * (T - TMelt)); hi = lo;
+	} else if (T == TBoil) {
+		lo = m * (cSol * TMelt + Lf + cLiq * (TBoil - TMelt)); hi = lo + m * Lv;
+	} else {
+		lo = m * (cSol * TMelt + Lf + cLiq * (TBoil - TMelt) + Lv + cGas * (T - TBoil)); hi = lo;
+	}
+	if (E < lo) { return lo - E; }
+	if (E > hi) { return E - hi; }
+	return 0.0;
+}
+`;
 	const shaders={};
 	shaders.paramsStruct=`
 struct Params { values: array<f32,128> };
@@ -19,27 +119,30 @@ struct Params { values: array<f32,128> };
 @group(0) @binding(4) var thermTex: texture_2d<f32>;
 @group(0) @binding(5) var flagsTex: texture_2d<u32>;
 
-fn isWall(x: i32, y: i32, w: i32, h: i32) -> bool {
+fn isBlocked(x: i32, y: i32, w: i32, h: i32) -> bool {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
-	return textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;
+	let f = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+	return (f.r | f.b) > 0u;
 }
 fn uBlocked(x: i32, y: i32, w: i32, h: i32) -> bool {
-	return x <= 1 || x >= w - 1 || isWall(x - 1, y, w, h) || isWall(x, y, w, h);
+	return x <= 1 || x >= w - 1 || isBlocked(x - 1, y, w, h) || isBlocked(x, y, w, h);
 }
 fn vBlocked(x: i32, y: i32, w: i32, h: i32) -> bool {
-	return y <= 1 || y >= h - 1 || isWall(x, y - 1, w, h) || isWall(x, y, w, h);
+	return y <= 1 || y >= h - 1 || isBlocked(x, y - 1, w, h) || isBlocked(x, y, w, h);
 }
-fn cellAccelX(x: i32, y: i32, w: i32, h: i32, gx: f32, rhoMean: f32, rhoRef: f32, beta: f32, tref: f32) -> f32 {
+fn cellAccelX(x: i32, y: i32, w: i32, h: i32, gx: f32, rhoMean: f32, rhoRef: f32, beta: f32, tref: f32, mEps: f32) -> f32 {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return 0.0; }
 	let m = textureLoad(massTex, vec2<i32>(x, y), 0).a;
 	let T = textureLoad(thermTex, vec2<i32>(x, y), 0).g;
-	return gx * (rhoMean - m) / rhoRef + gx * beta * (T - tref);
+	let tb = select(0.0, gx * beta * (T - tref), m >= mEps);
+	return gx * (rhoMean - m) / rhoRef + tb;
 }
-fn cellAccelY(x: i32, y: i32, w: i32, h: i32, gy: f32, rhoMean: f32, rhoRef: f32, beta: f32, tref: f32) -> f32 {
+fn cellAccelY(x: i32, y: i32, w: i32, h: i32, gy: f32, rhoMean: f32, rhoRef: f32, beta: f32, tref: f32, mEps: f32) -> f32 {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return 0.0; }
 	let m = textureLoad(massTex, vec2<i32>(x, y), 0).a;
 	let T = textureLoad(thermTex, vec2<i32>(x, y), 0).g;
-	return gy * (rhoMean - m) / rhoRef + gy * beta * (T - tref);
+	let tb = select(0.0, gy * beta * (T - tref), m >= mEps);
+	return gy * (rhoMean - m) / rhoRef + tb;
 }
 fn mouseFall(dx: f32, dy: f32, r: f32) -> f32 {
 	let r2 = dx * dx + dy * dy;
@@ -67,11 +170,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let mvy = params.values[25];
 	let mr = params.values[26];
 	let vclamp = params.values[38];
+	let mEps = params.values[58];
 	let src = textureLoad(velSrc, vec2<i32>(x, y));
 	var u = 0.0;
 	var v = 0.0;
 	if (!uBlocked(x, y, w, h)) {
-		u = src.r + dt * 0.5 * (cellAccelX(x - 1, y, w, h, gx, rhoMean, rhoRef, beta, tref) + cellAccelX(x, y, w, h, gx, rhoMean, rhoRef, beta, tref));
+		u = src.r + dt * 0.5 * (cellAccelX(x - 1, y, w, h, gx, rhoMean, rhoRef, beta, tref, mEps) + cellAccelX(x, y, w, h, gx, rhoMean, rhoRef, beta, tref, mEps));
 		if (ms > 0.0) {
 			let f = mouseFall(f32(x - 1) - params.values[21], f32(y) - 0.5 - params.values[22], mr);
 			u = u + dt * mvx * f * ms;
@@ -79,7 +183,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		u = clamp(u, -vclamp, vclamp);
 	}
 	if (!vBlocked(x, y, w, h)) {
-		v = src.g + dt * 0.5 * (cellAccelY(x, y - 1, w, h, gy, rhoMean, rhoRef, beta, tref) + cellAccelY(x, y, w, h, gy, rhoMean, rhoRef, beta, tref));
+		v = src.g + dt * 0.5 * (cellAccelY(x, y - 1, w, h, gy, rhoMean, rhoRef, beta, tref, mEps) + cellAccelY(x, y, w, h, gy, rhoMean, rhoRef, beta, tref, mEps));
 		if (ms > 0.0) {
 			let f = mouseFall(f32(x) - 0.5 - params.values[21], f32(y - 1) - params.values[22], mr);
 			v = v + dt * mvy * f * ms;
@@ -94,7 +198,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var velSrc: texture_storage_2d<rg32float,read>;
 @group(0) @binding(2) var velDst: texture_storage_2d<rg32float,write>;
+@group(0) @binding(3) var flagsTex: texture_2d<u32>;
 
+fn isBlockedAV(x: i32, y: i32, w: i32, h: i32) -> bool {
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
+	let f = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+	return (f.r | f.b) > 0u;
+}
+fn uBlockedAV(x: i32, y: i32, w: i32, h: i32) -> bool {
+	return x <= 1 || x >= w - 1 || isBlockedAV(x - 1, y, w, h) || isBlockedAV(x, y, w, h);
+}
+fn vBlockedAV(x: i32, y: i32, w: i32, h: i32) -> bool {
+	return y <= 1 || y >= h - 1 || isBlockedAV(x, y - 1, w, h) || isBlockedAV(x, y, w, h);
+}
 fn loadU(t: texture_storage_2d<rg32float,read>, m: i32, l: i32, w: i32, h: i32) -> f32 {
 	let mm = clamp(m, 0, w - 1);
 	let ll = clamp(l, 0, h - 1);
@@ -118,53 +234,55 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let src = textureLoad(velSrc, vec2<i32>(x, y));
 	var u = 0.0;
 	var v = 0.0;
-	// u face at (x-1, y-0.5); sample the u lattice (integers x, half-offset y)
-	let uc = src.r;
-	let vc = 0.25 * (loadV(velSrc, x - 1, y, w, h) + loadV(velSrc, x - 1, y + 1, w, h)
-		+ loadV(velSrc, x, y, w, h) + loadV(velSrc, x, y + 1, w, h));
-	var px = f32(x - 1) - dt * uc;
-	var py = f32(y) - 0.5 - dt * vc;
-	px = clamp(px, 0.0, f32(n));
-	py = clamp(py, 0.5, f32(n) - 0.5);
-	let i0 = i32(floor(px));
-	let fx = px - f32(i0);
-	let l0 = i32(floor(py + 0.5));
-	let fy = py + 0.5 - f32(l0);
-	let u00 = loadU(velSrc, i0 + 1, l0, w, h);
-	let u10 = loadU(velSrc, i0 + 2, l0, w, h);
-	let u01 = loadU(velSrc, i0 + 1, l0 + 1, w, h);
-	let u11 = loadU(velSrc, i0 + 2, l0 + 1, w, h);
-	let a0 = u00 + (u10 - u00) * fx;
-	let a1 = u01 + (u11 - u01) * fx;
-	u = a0 + (a1 - a0) * fy;
-	// v face at (x-0.5, y-1); sample the v lattice (half-offset x, integers y)
-	let vc2 = src.g;
-	let uc2 = 0.25 * (loadU(velSrc, x, y - 1, w, h) + loadU(velSrc, x + 1, y - 1, w, h)
-		+ loadU(velSrc, x, y, w, h) + loadU(velSrc, x + 1, y, w, h));
-	var px2 = f32(x) - 0.5 - dt * uc2;
-	var py2 = f32(y - 1) - dt * vc2;
-	px2 = clamp(px2, 0.5, f32(n) - 0.5);
-	py2 = clamp(py2, 0.0, f32(n));
-	let k0 = i32(floor(px2 + 0.5));
-	let fx2 = px2 + 0.5 - f32(k0);
-	let l1 = i32(floor(py2));
-	let fy2 = py2 - f32(l1);
-	let v00 = loadV(velSrc, k0, l1 + 1, w, h);
-	let v10 = loadV(velSrc, k0 + 1, l1 + 1, w, h);
-	let v01 = loadV(velSrc, k0, l1 + 2, w, h);
-	let v11 = loadV(velSrc, k0 + 1, l1 + 2, w, h);
-	let b0 = v00 + (v10 - v00) * fx2;
-	let b1 = v01 + (v11 - v01) * fx2;
-	v = b0 + (b1 - b0) * fy2;
+	if (!uBlockedAV(x, y, w, h)) {
+		let uc = src.r;
+		let vc = 0.25 * (loadV(velSrc, x - 1, y, w, h) + loadV(velSrc, x - 1, y + 1, w, h)
+			+ loadV(velSrc, x, y, w, h) + loadV(velSrc, x, y + 1, w, h));
+		var px = f32(x - 1) - dt * uc;
+		var py = f32(y) - 0.5 - dt * vc;
+		px = clamp(px, 0.0, f32(n));
+		py = clamp(py, 0.5, f32(n) - 0.5);
+		let i0 = i32(floor(px));
+		let fx = px - f32(i0);
+		let l0 = i32(floor(py + 0.5));
+		let fy = py + 0.5 - f32(l0);
+		let u00 = loadU(velSrc, i0 + 1, l0, w, h);
+		let u10 = loadU(velSrc, i0 + 2, l0, w, h);
+		let u01 = loadU(velSrc, i0 + 1, l0 + 1, w, h);
+		let u11 = loadU(velSrc, i0 + 2, l0 + 1, w, h);
+		let a0 = u00 + (u10 - u00) * fx;
+		let a1 = u01 + (u11 - u01) * fx;
+		u = a0 + (a1 - a0) * fy;
+	}
+	if (!vBlockedAV(x, y, w, h)) {
+		let vc2 = src.g;
+		let uc2 = 0.25 * (loadU(velSrc, x, y - 1, w, h) + loadU(velSrc, x + 1, y - 1, w, h)
+			+ loadU(velSrc, x, y, w, h) + loadU(velSrc, x + 1, y, w, h));
+		var px2 = f32(x) - 0.5 - dt * uc2;
+		var py2 = f32(y - 1) - dt * vc2;
+		px2 = clamp(px2, 0.5, f32(n) - 0.5);
+		py2 = clamp(py2, 0.0, f32(n));
+		let k0 = i32(floor(px2 + 0.5));
+		let fx2 = px2 + 0.5 - f32(k0);
+		let l1 = i32(floor(py2));
+		let fy2 = py2 - f32(l1);
+		let v00 = loadV(velSrc, k0, l1 + 1, w, h);
+		let v10 = loadV(velSrc, k0 + 1, l1 + 1, w, h);
+		let v01 = loadV(velSrc, k0, l1 + 2, w, h);
+		let v11 = loadV(velSrc, k0 + 1, l1 + 2, w, h);
+		let b0 = v00 + (v10 - v00) * fx2;
+		let b1 = v01 + (v11 - v01) * fx2;
+		v = b0 + (b1 - b0) * fy2;
+	}
 	textureStore(velDst, vec2<i32>(x, y), vec4<f32>(u, v, 0.0, 0.0));
 }
 `;
-	// ---------- poisson rhs with the liquid anti-overpack source S ----------
+	// ---------- poisson rhs reading S one step behind from sfield ----------
 	shaders.poissonRhs=`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var divsrc: texture_storage_2d<r32float,write>;
 @group(0) @binding(2) var velTex: texture_2d<f32>;
-@group(0) @binding(3) var massTex: texture_2d<f32>;
+@group(0) @binding(3) var sfieldTex: texture_2d<f32>;
 @group(0) @binding(4) var flagsTex: texture_2d<u32>;
 
 @compute @workgroup_size(8,8)
@@ -175,28 +293,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let y = i32(gid.y);
 	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
 	var b = 0.0;
-	if (textureLoad(flagsTex, vec2<i32>(x, y), 0).r == 0u) {
+	let fl = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+	if ((fl.r | fl.b) == 0u) {
 		let dt = params.values[4];
 		let uL = textureLoad(velTex, vec2<i32>(x, y), 0).r;
 		let uR = textureLoad(velTex, vec2<i32>(x + 1, y), 0).r;
 		let vB = textureLoad(velTex, vec2<i32>(x, y), 0).g;
 		let vT = textureLoad(velTex, vec2<i32>(x, y + 1), 0).g;
-		let m = textureLoad(massTex, vec2<i32>(x, y), 0).a;
-		var S = 0.0;
-		let rhoLiq = params.values[55];
-		if (m > rhoLiq) {
-			let tau = params.values[37];
-			let smax = params.values[36];
-			S = clamp((m - rhoLiq) / (m * tau), 0.0, smax);
-		}
+		let S = textureLoad(sfieldTex, vec2<i32>(x, y), 0).r;
 		b = (uR - uL + vT - vB) / dt - S;
 	}
 	textureStore(divsrc, vec2<i32>(x, y), vec4<f32>(b, 0.0, 0.0, 0.0));
 }
 `;
 	// ---------- one red-black gauss-seidel color sweep ----------
-	// plain jacobi is unusable on the closed box: the checkerboard mode is an
-	// exact eigenvalue -1 of the jacobi iteration there (see core solver note).
 	shaders.projectStep=`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var pressSrc: texture_storage_2d<r32float,read>;
@@ -208,7 +318,8 @@ override COLOR: u32;
 
 fn faceW(x: i32, y: i32, nx: i32, ny: i32, w: i32, h: i32) -> f32 {
 	if (nx < 1 || nx > w - 2 || ny < 1 || ny > h - 2) { return 0.0; }
-	if (textureLoad(flagsTex, vec2<i32>(nx, ny), 0).r > 0u) { return 0.0; }
+	let nf = textureLoad(flagsTex, vec2<i32>(nx, ny), 0);
+	if ((nf.r | nf.b) > 0u) { return 0.0; }
 	let rhoVac = params.values[57];
 	let ra = max(textureLoad(massTex, vec2<i32>(x, y), 0).a, rhoVac);
 	let rb = max(textureLoad(massTex, vec2<i32>(nx, ny), 0).a, rhoVac);
@@ -225,7 +336,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let src = textureLoad(pressSrc, vec2<i32>(x, y)).r;
 	var p = src;
 	if ((u32(x + y) & 1u) == COLOR) {
-		if (textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u) {
+		let fl = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+		if ((fl.r | fl.b) > 0u) {
 			p = 0.0;
 		} else {
 			let b = textureLoad(divsrcTex, vec2<i32>(x, y), 0).r;
@@ -254,15 +366,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(4) var massTex: texture_2d<f32>;
 @group(0) @binding(5) var flagsTex: texture_2d<u32>;
 
-fn isWall2(x: i32, y: i32, w: i32, h: i32) -> bool {
+fn isBlocked2(x: i32, y: i32, w: i32, h: i32) -> bool {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
-	return textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;
+	let f = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+	return (f.r | f.b) > 0u;
 }
 fn uBlocked2(x: i32, y: i32, w: i32, h: i32) -> bool {
-	return x <= 1 || x >= w - 1 || isWall2(x - 1, y, w, h) || isWall2(x, y, w, h);
+	return x <= 1 || x >= w - 1 || isBlocked2(x - 1, y, w, h) || isBlocked2(x, y, w, h);
 }
 fn vBlocked2(x: i32, y: i32, w: i32, h: i32) -> bool {
-	return y <= 1 || y >= h - 1 || isWall2(x, y - 1, w, h) || isWall2(x, y, w, h);
+	return y <= 1 || y >= h - 1 || isBlocked2(x, y - 1, w, h) || isBlocked2(x, y, w, h);
 }
 fn invRho(ax: i32, ay: i32, bx: i32, by: i32, rhoVac: f32) -> f32 {
 	let ra = max(textureLoad(massTex, vec2<i32>(ax, ay), 0).a, rhoVac);
@@ -300,16 +413,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(2) var flagsTex: texture_2d<u32>;
 @group(0) @binding(3) var fluxDst: texture_storage_2d<rg32float,write>;
 
-fn isWall3(x: i32, y: i32, w: i32, h: i32) -> bool {
+fn isBlocked3(x: i32, y: i32, w: i32, h: i32) -> bool {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
-	return textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;
+	let f = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+	return (f.r | f.b) > 0u;
 }
 fn rawFx(x: i32, y: i32, w: i32, h: i32, dt: f32) -> f32 {
-	if (x <= 1 || x >= w - 1 || isWall3(x - 1, y, w, h) || isWall3(x, y, w, h)) { return 0.0; }
+	if (x <= 1 || x >= w - 1 || isBlocked3(x - 1, y, w, h) || isBlocked3(x, y, w, h)) { return 0.0; }
 	return clamp(textureLoad(velTex, vec2<i32>(x, y), 0).r * dt, -1.0, 1.0);
 }
 fn rawFy(x: i32, y: i32, w: i32, h: i32, dt: f32) -> f32 {
-	if (y <= 1 || y >= h - 1 || isWall3(x, y - 1, w, h) || isWall3(x, y, w, h)) { return 0.0; }
+	if (y <= 1 || y >= h - 1 || isBlocked3(x, y - 1, w, h) || isBlocked3(x, y, w, h)) { return 0.0; }
 	return clamp(textureLoad(velTex, vec2<i32>(x, y), 0).g * dt, -1.0, 1.0);
 }
 fn outFlux(x: i32, y: i32, w: i32, h: i32, dt: f32) -> f32 {
@@ -329,14 +443,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let dt = params.values[4];
 	var fx = rawFx(x, y, w, h, dt);
 	var fy = rawFy(x, y, w, h, dt);
-	// Keep a 1e-6 outflow margin for f32 sum/division rounding; never clip state.
-	// monotone donor-cell needs total outflow <= 1 volume per cell per step. the
-	// +-1 face clamp alone is not enough: a diverging cell empties through up to
-	// 4 faces at once and the q'=q*(1-k)+in update then amplifies sign-alternating
-	// mass every step (draw + stir exploded to NaN in ~15 frames). scale the faces
-	// a cell owns as outflow so they sum to <= 1; each face is outflow for exactly
-	// one of its two cells, so the stored value stays the single shared flux and
-	// conservation is untouched. same limiter in src/core/solver.js.
 	if (fx != 0.0) {
 		let s = select(outFlux(x, y, w, h, dt), outFlux(x - 1, y, w, h, dt), fx > 0.0);
 		if (s > 0.999999) { fx = fx * (0.999999 / s); }
@@ -349,9 +455,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 	// ---------- donor cell upwind transport ----------
-	// conservation argument: both cells sharing a face read the identical stored
-	// flux float and the identical donor value, with opposite signs. never
-	// recompute a flux here from velocity - that breaks exact conservation.
 	shaders.advectMass=`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var fluxTex: texture_storage_2d<rg32float,read>;
@@ -374,7 +477,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let qE = textureLoad(massSrc, vec2<i32>(x + 1, y));
 	let qS = textureLoad(massSrc, vec2<i32>(x, y - 1));
 	let qN = textureLoad(massSrc, vec2<i32>(x, y + 1));
-	// Nonnegative weights avoid subtractive cancellation in an emptied cell.
 	let remaining = 1.0 - (max(-fw, 0.0) + max(fe, 0.0) + max(-fs, 0.0) + max(fN, 0.0));
 	let out = q * remaining + qW * max(fw, 0.0) + qE * max(-fe, 0.0)
 		+ qS * max(fs, 0.0) + qN * max(-fN, 0.0);
@@ -403,19 +505,78 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let qE = textureLoad(thermSrc, vec2<i32>(x + 1, y));
 	let qS = textureLoad(thermSrc, vec2<i32>(x, y - 1));
 	let qN = textureLoad(thermSrc, vec2<i32>(x, y + 1));
-	// Nonnegative weights avoid subtractive cancellation in an emptied cell.
 	let remaining = 1.0 - (max(-fw, 0.0) + max(fe, 0.0) + max(-fs, 0.0) + max(fN, 0.0));
 	let out = q * remaining + qW * max(fw, 0.0) + qE * max(-fe, 0.0)
 		+ qS * max(fs, 0.0) + qN * max(-fN, 0.0);
 	textureStore(thermDst, vec2<i32>(x, y), out);
 }
 `;
-	// ---------- derive_T (0.4.0): therm.g is a cache of E/(m*c), never transported ----------
-	shaders.deriveT=`
+	// ---------- 0.5.0 phase_eos + freezeVel ----------
+	shaders.phaseEos=EOS_HELPERS+`
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;
-@group(0) @binding(2) var thermSrc: texture_storage_2d<rgba32float,read>;
-@group(0) @binding(3) var thermDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(1) var massTex: texture_2d<f32>;
+@group(0) @binding(2) var thermSrc: texture_2d<f32>;
+@group(0) @binding(3) var velTex: texture_2d<f32>;
+@group(0) @binding(4) var flagsSrc: texture_2d<u32>;
+@group(0) @binding(5) var sfieldSrc: texture_2d<f32>;
+@group(0) @binding(6) var accumSrc: texture_2d<f32>;
+@group(0) @binding(7) var thermDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(8) var flagsDst: texture_storage_2d<rgba8uint,write>;
+@group(0) @binding(9) var sfieldDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(10) var accumDst: texture_storage_2d<rg32float,write>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	let at = vec2<i32>(x, y);
+	let q = textureLoad(thermSrc, at, 0);
+	let prevFl = textureLoad(flagsSrc, at, 0);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) {
+		textureStore(thermDst, at, q);
+		textureStore(flagsDst, at, prevFl);
+		textureStore(sfieldDst, at, vec4<f32>(0.0));
+		textureStore(accumDst, at, vec4<f32>(0.0));
+		return;
+	}
+	let m = textureLoad(massTex, at, 0).a;
+	let s = evalPhase(m, q.r);
+	let prevS = textureLoad(sfieldSrc, at, 0);
+	let prevAcc = textureLoad(accumSrc, at, 0);
+	let Lf = params.values[51];
+	let Lv = params.values[52];
+	let SMax = params.values[36];
+	let mEps = params.values[58];
+	var latAcc = prevAcc.r;
+	if (params.values[59] > 0.5) {
+		latAcc = latAcc + m * Lf * abs(s.phiL - prevS.g) + m * Lv * abs(s.phiG - prevS.b);
+	}
+	let frozen = s.phiL < 0.5 && s.phiG == 0.0 && m >= mEps;
+	var momAcc = prevAcc.g;
+	if (params.values[59] > 0.5 && frozen && prevFl.b == 0u) {
+		let uL = textureLoad(velTex, at, 0).r;
+		let uR = textureLoad(velTex, vec2<i32>(x + 1, y), 0).r;
+		let vB = textureLoad(velTex, at, 0).g;
+		let vT = textureLoad(velTex, vec2<i32>(x, y + 1), 0).g;
+		let uc = 0.5 * (uL + uR);
+		let vc = 0.5 * (vB + vT);
+		momAcc = momAcc + m * sqrt(uc * uc + vc * vc);
+	}
+	let sat = abs(s.S) >= SMax;
+	textureStore(thermDst, at, vec4<f32>(q.r, s.T, q.b, q.a));
+	textureStore(flagsDst, at, vec4<u32>(prevFl.r, s.phase, select(0u, 1u, frozen), select(0u, 1u, sat)));
+	textureStore(sfieldDst, at, vec4<f32>(s.S, s.phiL, s.phiG, 0.0));
+	textureStore(accumDst, at, vec4<f32>(latAcc, momAcc, 0.0, 0.0));
+}
+`;
+	shaders.freezeVel=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var velSrc: texture_2d<f32>;
+@group(0) @binding(2) var flagsTex: texture_2d<u32>;
+@group(0) @binding(3) var velDst: texture_storage_2d<rg32float,write>;
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -425,40 +586,47 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let y = i32(gid.y);
 	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
 	let at = vec2<i32>(x, y);
-	let m = textureLoad(massTex, at).a;
-	var q = textureLoad(thermSrc, at);
-	q.g = select(params.values[20], q.r / (m * params.values[49]), m >= params.values[58]);
-	textureStore(thermDst, at, q);
+	let src = textureLoad(velSrc, at, 0);
+	let fC = textureLoad(flagsTex, at, 0).b > 0u;
+	let fW = x <= 1 || textureLoad(flagsTex, vec2<i32>(x - 1, y), 0).b > 0u;
+	let fS = y <= 1 || textureLoad(flagsTex, vec2<i32>(x, y - 1), 0).b > 0u;
+	let u = select(src.r, 0.0, fC || fW);
+	let v = select(src.g, 0.0, fC || fS);
+	textureStore(velDst, at, vec4<f32>(u, v, 0.0, 0.0));
 }
 `;
-	// ---------- conduction (0.4.0): clamped pairwise exchange, ping-pong ----------
-	// each cell sums four face exchanges from the pre-update state; neighbours
-	// compute equal-and-opposite f32 fluxes, with only per-cell sum rounding left.
-	shaders.conduction=`
+	// ---------- conduction (0.5.0 phase-aware + enthalpy budget) ----------
+	shaders.conduction=EOS_HELPERS+`
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;
-@group(0) @binding(2) var thermSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(1) var massTex: texture_2d<f32>;
+@group(0) @binding(2) var thermSrc: texture_2d<f32>;
 @group(0) @binding(3) var thermDst: texture_storage_2d<rgba32float,write>;
 @group(0) @binding(4) var flagsTex: texture_2d<u32>;
 
-fn faceExchange(x: i32, y: i32, nx: i32, ny: i32, w: i32, h: i32, T: f32, dt: f32) -> f32 {
-	if (nx < 1 || nx > w - 2 || ny < 1 || ny > h - 2) { return 0.0; }
-	let at = vec2<i32>(nx, ny);
-	if (textureLoad(flagsTex, at, 0).r > 0u) { return 0.0; }
-	let mN = textureLoad(massTex, at).a;
-	if (mN < params.values[58]) { return 0.0; }
-	let dT = textureLoad(thermSrc, at).g - T;
-	if (dT == 0.0) { return 0.0; }
-	let cL = textureLoad(massTex, vec2<i32>(x, y)).a * params.values[49];
-	let cR = mN * params.values[49];
-	let ch = (cL * cR) / (cL + cR);
-	let dE = params.values[35] * dT * dt;
-	let limit = 0.5 * ch * abs(dT);
-	return clamp(dE, -limit, limit);
-}
 fn isWallAt(x: i32, y: i32, w: i32, h: i32) -> bool {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
 	return textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;
+}
+fn faceExchange(own: PhaseState, nx: i32, ny: i32, w: i32, h: i32, mL: f32, EL: f32, dt: f32) -> f32 {
+	if (nx < 1 || nx > w - 2 || ny < 1 || ny > h - 2) { return 0.0; }
+	let at = vec2<i32>(nx, ny);
+	if (textureLoad(flagsTex, at, 0).r > 0u) { return 0.0; }
+	let mR = textureLoad(massTex, at, 0).a;
+	if (mR < params.values[58]) { return 0.0; }
+	let ER = textureLoad(thermSrc, at, 0).r;
+	let nb = evalPhase(mR, ER);
+	let dT = nb.T - own.T;
+	if (dT == 0.0) { return 0.0; }
+	let CL = mL * own.c;
+	let CR = mR * nb.c;
+	let Ch = (CL * CR) / (CL + CR);
+	let kf = (2.0 * own.k * nb.k) / (own.k + nb.k);
+	var dE = (kf * dT) * dt;
+	let lim = (0.5 * Ch) * abs(dT);
+	if (abs(dE) > lim) { dE = select(-lim, lim, dE > 0.0); }
+	let bud = 0.25 * min(eqDist(mL, EL, nb.T), eqDist(mR, ER, own.T));
+	if (abs(dE) > bud) { dE = select(-bud, bud, dE > 0.0); }
+	return dE;
 }
 
 @compute @workgroup_size(8,8)
@@ -470,33 +638,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
 	let at = vec2<i32>(x, y);
 	let dt = params.values[4];
-	let m = textureLoad(massTex, at).a;
-	var q = textureLoad(thermSrc, at);
-	var E = q.r;
+	let m = textureLoad(massTex, at, 0).a;
+	var q = textureLoad(thermSrc, at, 0);
+	let E0 = q.r;
+	var E = E0;
 	if (m >= params.values[58] && !isWallAt(x, y, w, h)) {
-		let T = q.g;
-		E = E + faceExchange(x, y, x - 1, y, w, h, T, dt) + faceExchange(x, y, x + 1, y, w, h, T, dt)
-			+ faceExchange(x, y, x, y - 1, w, h, T, dt) + faceExchange(x, y, x, y + 1, w, h, T, dt);
+		let own = evalPhase(m, E0);
+		E = E + faceExchange(own, x - 1, y, w, h, m, E0, dt);
+		E = E + faceExchange(own, x + 1, y, w, h, m, E0, dt);
+		E = E + faceExchange(own, x, y - 1, w, h, m, E0, dt);
+		E = E + faceExchange(own, x, y + 1, w, h, m, E0, dt);
 		let wallCool = params.values[41];
 		if (wallCool > 0.0 && (isWallAt(x - 1, y, w, h) || isWallAt(x + 1, y, w, h) || isWallAt(x, y - 1, w, h) || isWallAt(x, y + 1, w, h))) {
-			let dE = -wallCool * (T - params.values[20]) * (m * params.values[49]) * dt;
+			let dE = (((-wallCool) * (q.g - params.values[20])) * (m * own.c)) * dt;
 			E = E + dE;
 			q.b = q.b + max(dE, 0.0);
 			q.a = q.a + max(-dE, 0.0);
 		}
 	}
 	q.r = E;
-	q.g = select(params.values[20], E / (m * params.values[49]), m >= params.values[58]);
+	q.g = evalPhase(m, E).T;
 	textureStore(thermDst, at, q);
 }
 `;
-	// ---------- heat sources (0.4.0): bottom heater band, top cold plate ----------
-	// local and accounted: therm.b/a accumulate injected/removed energy per cell;
-	// donor transport carries them, so their field sums are the source ledger.
-	shaders.heatSources=`
+	// ---------- heat sources (0.4.0 / 0.5.0 phase-aware capacity + ceiling target) ----------
+	shaders.heatSources=EOS_HELPERS+`
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;
-@group(0) @binding(2) var thermSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(1) var massTex: texture_2d<f32>;
+@group(0) @binding(2) var thermSrc: texture_2d<f32>;
 @group(0) @binding(3) var thermDst: texture_storage_2d<rgba32float,write>;
 @group(0) @binding(4) var flagsTex: texture_2d<u32>;
 
@@ -508,21 +677,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let y = i32(gid.y);
 	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
 	let at = vec2<i32>(x, y);
-	var q = textureLoad(thermSrc, at);
+	var q = textureLoad(thermSrc, at, 0);
 	if (params.values[43] > 0.5) {
-		let m = textureLoad(massTex, at).a;
+		let m = textureLoad(massTex, at, 0).a;
 		let wall = textureLoad(flagsTex, at, 0).r > 0u;
 		if (m >= params.values[58] && !wall) {
+			let own = evalPhase(m, q.r);
 			let dt = params.values[4];
-			let band = max(i32(params.values[42]), 1);
+			let band = max(i32(round(params.values[42])), 1);
 			let n = i32(params.values[0]);
+			let ceilT = select(params.values[20], params.values[60], params.values[60] > 0.0);
 			var dE = 0.0;
 			if (y <= band && (params.values[44] == 0.0 || q.g < params.values[44])) { dE = dE + params.values[39] * dt; }
-			if (y > n - band) { dE = dE - params.values[40] * (q.g - params.values[20]) * (m * params.values[49]) * dt; }
-			q.r = q.r + dE;
-			q.b = q.b + max(dE, 0.0);
-			q.a = q.a + max(-dE, 0.0);
-			q.g = q.r / (m * params.values[49]);
+			if (y > n - band) { dE = dE - ((params.values[40] * (q.g - ceilT)) * (m * own.c)) * dt; }
+			if (dE != 0.0) {
+				q.r = q.r + dE;
+				q.g = evalPhase(m, q.r).T;
+				q.b = q.b + max(dE, 0.0);
+				q.a = q.a + max(-dE, 0.0);
+			}
 		}
 	}
 	textureStore(thermDst, at, q);
@@ -693,39 +866,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	textureStore(thermDst, vec2<i32>(x, y), q);
 }
 `;
-	// ---------- two level stats reduction, level 1 ----------
+	// ---------- two level stats reduction, level 1 (33 values -> stride 40) ----------
 	shaders.statsReduceA=`
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;
-@group(0) @binding(2) var thermTex: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(1) var massTex: texture_2d<f32>;
+@group(0) @binding(2) var thermTex: texture_2d<f32>;
 @group(0) @binding(3) var velTex: texture_2d<f32>;
 @group(0) @binding(4) var pressTex: texture_2d<f32>;
-@group(0) @binding(5) var<storage,read_write> partials: array<f32>;
+@group(0) @binding(5) var flagsTex: texture_2d<u32>;
+@group(0) @binding(6) var accumTex: texture_2d<f32>;
+@group(0) @binding(7) var<storage,read_write> partials: array<f32>;
 
-var<workgroup> shM: array<f32,64>;
-var<workgroup> shDr: array<f32,64>;
-var<workgroup> shDg: array<f32,64>;
-var<workgroup> shDb: array<f32,64>;
-var<workgroup> shE: array<f32,64>;
-var<workgroup> shMinM: array<f32,64>;
-var<workgroup> shMinDr: array<f32,64>;
-var<workgroup> shMinDg: array<f32,64>;
-var<workgroup> shMinDb: array<f32,64>;
-var<workgroup> shMinE: array<f32,64>;
-var<workgroup> shMaxM: array<f32,64>;
-var<workgroup> shNeg: array<f32,64>;
-var<workgroup> shOver: array<f32,64>;
-var<workgroup> shMaxVel: array<f32,64>;
-var<workgroup> shPMin: array<f32,64>;
-var<workgroup> shPMax: array<f32,64>;
-var<workgroup> shMaxDiv: array<f32,64>;
-var<workgroup> shHeatIn: array<f32,64>;
-var<workgroup> shHeatOut: array<f32,64>;
-var<workgroup> shTMin: array<f32,64>;
-var<workgroup> shTMax: array<f32,64>;
-var<workgroup> shTSum: array<f32,64>;
-var<workgroup> shTCnt: array<f32,64>;
-var<workgroup> shKin: array<f32,64>;
+var<workgroup> sh: array<f32,2112>;
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
@@ -734,14 +886,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 	let dt = params.values[4];
 	let x = i32(gid.x);
 	let y = i32(gid.y);
+	let inside = x >= 1 && x < w - 1 && y >= 1 && y < h - 1;
 	var totM = 0.0; var totDr = 0.0; var totDg = 0.0; var totDb = 0.0; var totE = 0.0;
 	var minM = 1e30; var minDr = 1e30; var minDg = 1e30; var minDb = 1e30; var minE = 1e30;
 	var maxM = -1e30; var neg = 0.0; var over = 0.0;
 	var maxVel = 0.0; var pMin = 1e30; var pMax = -1e30; var maxDiv = 0.0;
 	var heatIn = 0.0; var heatOut = 0.0; var tMin = 1e30; var tMax = -1e30; var tSum = 0.0; var tCnt = 0.0; var kin = 0.0;
-	if (x >= 1 && x < w - 1 && y >= 1 && y < h - 1) {
-		let mass = textureLoad(massTex, vec2<i32>(x, y));
-		let therm = textureLoad(thermTex, vec2<i32>(x, y));
+	var ph: u32 = 0u; var sSat = 0.0; var latE = 0.0; var fMom = 0.0;
+	if (inside) {
+		let mass = textureLoad(massTex, vec2<i32>(x, y), 0);
+		let therm = textureLoad(thermTex, vec2<i32>(x, y), 0);
 		totM = mass.a; totDr = mass.r; totDg = mass.g; totDb = mass.b; totE = therm.r;
 		minM = mass.a; minDr = mass.r; minDg = mass.g; minDb = mass.b; minE = therm.r;
 		maxM = mass.a;
@@ -752,8 +906,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 		let vB = textureLoad(velTex, vec2<i32>(x, y), 0).g;
 		let vT = textureLoad(velTex, vec2<i32>(x, y + 1), 0).g;
 		maxVel = max(max(abs(uL), abs(uR)), max(abs(vB), abs(vT)));
-		let div = abs(uR - uL + vT - vB) / max(dt, 1e-9);
-		maxDiv = div;
+		maxDiv = abs(uR - uL + vT - vB) / max(dt, 1e-9);
 		let p = textureLoad(pressTex, vec2<i32>(x, y), 0).r;
 		pMin = p; pMax = p;
 		heatIn = therm.b; heatOut = therm.a;
@@ -763,111 +916,98 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 			let vc = 0.5 * (vB + vT);
 			kin = 0.5 * mass.a * (uc * uc + vc * vc);
 		}
+		let fl = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+		ph = fl.g;
+		if (fl.a > 0u) { sSat = 1.0; }
+		let ac = textureLoad(accumTex, vec2<i32>(x, y), 0);
+		latE = ac.r;
+		fMom = ac.g;
 	}
-	shM[lid] = totM; shDr[lid] = totDr; shDg[lid] = totDg; shDb[lid] = totDb; shE[lid] = totE;
-	shMinM[lid] = minM; shMinDr[lid] = minDr; shMinDg[lid] = minDg; shMinDb[lid] = minDb; shMinE[lid] = minE;
-	shMaxM[lid] = maxM; shNeg[lid] = neg; shOver[lid] = over;
-	shMaxVel[lid] = maxVel; shPMin[lid] = pMin; shPMax[lid] = pMax; shMaxDiv[lid] = maxDiv;
-	shHeatIn[lid] = heatIn; shHeatOut[lid] = heatOut;
-	shTMin[lid] = tMin; shTMax[lid] = tMax; shTSum[lid] = tSum; shTCnt[lid] = tCnt; shKin[lid] = kin;
+	sh[0u * 64u + lid] = totM; sh[1u * 64u + lid] = totDr; sh[2u * 64u + lid] = totDg;
+	sh[3u * 64u + lid] = totDb; sh[4u * 64u + lid] = totE;
+	sh[5u * 64u + lid] = minM; sh[6u * 64u + lid] = minDr; sh[7u * 64u + lid] = minDg;
+	sh[8u * 64u + lid] = minDb; sh[9u * 64u + lid] = minE;
+	sh[10u * 64u + lid] = maxM; sh[11u * 64u + lid] = neg; sh[12u * 64u + lid] = over;
+	sh[13u * 64u + lid] = maxVel; sh[14u * 64u + lid] = pMin; sh[15u * 64u + lid] = pMax; sh[16u * 64u + lid] = maxDiv;
+	sh[17u * 64u + lid] = heatIn; sh[18u * 64u + lid] = heatOut;
+	sh[19u * 64u + lid] = tMin; sh[20u * 64u + lid] = tMax; sh[21u * 64u + lid] = tSum;
+	sh[22u * 64u + lid] = kin; sh[23u * 64u + lid] = tCnt;
+	sh[24u * 64u + lid] = select(0.0, 1.0, inside && ph == 0u);
+	sh[25u * 64u + lid] = select(0.0, 1.0, inside && ph == 1u);
+	sh[26u * 64u + lid] = select(0.0, 1.0, inside && ph == 2u);
+	sh[27u * 64u + lid] = select(0.0, 1.0, inside && ph == 3u);
+	sh[28u * 64u + lid] = select(0.0, 1.0, inside && ph == 4u);
+	sh[29u * 64u + lid] = select(0.0, 1.0, inside && ph == 5u);
+	sh[30u * 64u + lid] = sSat;
+	sh[31u * 64u + lid] = latE;
+	sh[32u * 64u + lid] = fMom;
 	workgroupBarrier();
 	var stride = 32u;
 	loop {
 		if (stride == 0u) { break; }
 		if (lid < stride) {
-			shM[lid] = shM[lid] + shM[lid + stride];
-			shDr[lid] = shDr[lid] + shDr[lid + stride];
-			shDg[lid] = shDg[lid] + shDg[lid + stride];
-			shDb[lid] = shDb[lid] + shDb[lid + stride];
-			shE[lid] = shE[lid] + shE[lid + stride];
-			shMinM[lid] = min(shMinM[lid], shMinM[lid + stride]);
-			shMinDr[lid] = min(shMinDr[lid], shMinDr[lid + stride]);
-			shMinDg[lid] = min(shMinDg[lid], shMinDg[lid + stride]);
-			shMinDb[lid] = min(shMinDb[lid], shMinDb[lid + stride]);
-			shMinE[lid] = min(shMinE[lid], shMinE[lid + stride]);
-			shMaxM[lid] = max(shMaxM[lid], shMaxM[lid + stride]);
-			shNeg[lid] = shNeg[lid] + shNeg[lid + stride];
-			shOver[lid] = shOver[lid] + shOver[lid + stride];
-			shMaxVel[lid] = max(shMaxVel[lid], shMaxVel[lid + stride]);
-			shPMin[lid] = min(shPMin[lid], shPMin[lid + stride]);
-			shPMax[lid] = max(shPMax[lid], shPMax[lid + stride]);
-			shMaxDiv[lid] = max(shMaxDiv[lid], shMaxDiv[lid + stride]);
-			shHeatIn[lid] = shHeatIn[lid] + shHeatIn[lid + stride];
-			shHeatOut[lid] = shHeatOut[lid] + shHeatOut[lid + stride];
-			shTMin[lid] = min(shTMin[lid], shTMin[lid + stride]);
-			shTMax[lid] = max(shTMax[lid], shTMax[lid + stride]);
-			shTSum[lid] = shTSum[lid] + shTSum[lid + stride];
-			shTCnt[lid] = shTCnt[lid] + shTCnt[lid + stride];
-			shKin[lid] = shKin[lid] + shKin[lid + stride];
+			for (var k = 0u; k < 5u; k++) { sh[k * 64u + lid] = sh[k * 64u + lid] + sh[k * 64u + lid + stride]; }
+			for (var k = 5u; k < 10u; k++) { sh[k * 64u + lid] = min(sh[k * 64u + lid], sh[k * 64u + lid + stride]); }
+			sh[10u * 64u + lid] = max(sh[10u * 64u + lid], sh[10u * 64u + lid + stride]);
+			sh[11u * 64u + lid] = sh[11u * 64u + lid] + sh[11u * 64u + lid + stride];
+			sh[12u * 64u + lid] = sh[12u * 64u + lid] + sh[12u * 64u + lid + stride];
+			sh[13u * 64u + lid] = max(sh[13u * 64u + lid], sh[13u * 64u + lid + stride]);
+			sh[14u * 64u + lid] = min(sh[14u * 64u + lid], sh[14u * 64u + lid + stride]);
+			sh[15u * 64u + lid] = max(sh[15u * 64u + lid], sh[15u * 64u + lid + stride]);
+			sh[16u * 64u + lid] = max(sh[16u * 64u + lid], sh[16u * 64u + lid + stride]);
+			sh[17u * 64u + lid] = sh[17u * 64u + lid] + sh[17u * 64u + lid + stride];
+			sh[18u * 64u + lid] = sh[18u * 64u + lid] + sh[18u * 64u + lid + stride];
+			sh[19u * 64u + lid] = min(sh[19u * 64u + lid], sh[19u * 64u + lid + stride]);
+			sh[20u * 64u + lid] = max(sh[20u * 64u + lid], sh[20u * 64u + lid + stride]);
+			for (var k = 21u; k < 33u; k++) { sh[k * 64u + lid] = sh[k * 64u + lid] + sh[k * 64u + lid + stride]; }
 		}
 		workgroupBarrier();
 		stride = stride >> 1u;
 	}
 	if (lid == 0u) {
-		let wgIndex = wid.y * nwg.x + wid.x;
-		let base = wgIndex * 32u;
-		partials[base + 0u] = shM[0];
-		partials[base + 1u] = shDr[0];
-		partials[base + 2u] = shDg[0];
-		partials[base + 3u] = shDb[0];
-		partials[base + 4u] = shE[0];
-		partials[base + 5u] = shMinM[0];
-		partials[base + 6u] = shMinDr[0];
-		partials[base + 7u] = shMinDg[0];
-		partials[base + 8u] = shMinDb[0];
-		partials[base + 9u] = shMinE[0];
-		partials[base + 10u] = shMaxM[0];
-		partials[base + 11u] = shNeg[0];
-		partials[base + 12u] = shOver[0];
-		partials[base + 13u] = shMaxVel[0];
-		partials[base + 14u] = shPMin[0];
-		partials[base + 15u] = shPMax[0];
-		partials[base + 16u] = shMaxDiv[0];
-		partials[base + 17u] = shHeatIn[0];
-		partials[base + 18u] = shHeatOut[0];
-		partials[base + 19u] = shTMin[0];
-		partials[base + 20u] = shTMax[0];
-		partials[base + 21u] = shTSum[0];
-		partials[base + 22u] = shKin[0];
-		partials[base + 23u] = shTCnt[0];
+		let base = (wid.y * nwg.x + wid.x) * 40u;
+		for (var k = 0u; k < 33u; k++) { partials[base + k] = sh[k * 64u]; }
 	}
 }
 `;
 	// ---------- level 2 with kahan sums ----------
-	// plain sequential f32 summation here was the source of the false hud [warn]:
-	// measured error +0.035 on m=5055 and +25 on E=6.2e6 vs the f64 ledger.
 	shaders.statsReduceB=`
 @group(0) @binding(0) var<storage,read> partials: array<f32>;
 @group(0) @binding(1) var<storage,read_write> stats: array<f32>;
 @group(0) @binding(2) var<uniform> dims: vec4<u32>;
 
+fn kahanSlot(num: u32, slot: u32) -> f32 {
+	var s = 0.0;
+	var c = 0.0;
+	for (var i = 0u; i < num; i++) {
+		let y = partials[i * 40u + slot] - c;
+		let t = s + y;
+		c = (t - s) - y;
+		s = t;
+	}
+	return s;
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	if (gid.x != 0u) { return; }
-	let num = dims.x / 32u;
-	var cM = 0.0; var sM = 0.0;
-	var cDr = 0.0; var sDr = 0.0;
-	var cDg = 0.0; var sDg = 0.0;
-	var cDb = 0.0; var sDb = 0.0;
-	var cE = 0.0; var sE = 0.0;
+	let num = dims.x / 40u;
+	let sM = kahanSlot(num, 0u);
+	let sDr = kahanSlot(num, 1u);
+	let sDg = kahanSlot(num, 2u);
+	let sDb = kahanSlot(num, 3u);
+	let sE = kahanSlot(num, 4u);
+	let sIn = kahanSlot(num, 17u);
+	let sOut = kahanSlot(num, 18u);
+	let sTS = kahanSlot(num, 21u);
+	let sKin = kahanSlot(num, 22u);
+	let tCnt = kahanSlot(num, 23u);
 	var neg = 0.0; var over = 0.0;
 	var minM = 1e30; var minDr = 1e30; var minDg = 1e30; var minDb = 1e30; var minE = 1e30;
 	var maxM = -1e30; var maxVel = 0.0; var pMin = 1e30; var pMax = -1e30; var maxDiv = 0.0;
-	var cIn = 0.0; var sIn = 0.0; var cOut = 0.0; var sOut = 0.0;
-	var cTS = 0.0; var sTS = 0.0; var cKin = 0.0; var sKin = 0.0; var tCnt = 0.0;
 	var tMin = 1e30; var tMax = -1e30;
 	for (var i = 0u; i < num; i++) {
-		let base = i * 32u;
-		var y = partials[base + 0u] - cM; var t = sM + y; cM = (t - sM) - y; sM = t;
-		y = partials[base + 1u] - cDr; t = sDr + y; cDr = (t - sDr) - y; sDr = t;
-		y = partials[base + 2u] - cDg; t = sDg + y; cDg = (t - sDg) - y; sDg = t;
-		y = partials[base + 3u] - cDb; t = sDb + y; cDb = (t - sDb) - y; sDb = t;
-		y = partials[base + 4u] - cE; t = sE + y; cE = (t - sE) - y; sE = t;
-		y = partials[base + 17u] - cIn; t = sIn + y; cIn = (t - sIn) - y; sIn = t;
-		y = partials[base + 18u] - cOut; t = sOut + y; cOut = (t - sOut) - y; sOut = t;
-		y = partials[base + 21u] - cTS; t = sTS + y; cTS = (t - sTS) - y; sTS = t;
-		y = partials[base + 22u] - cKin; t = sKin + y; cKin = (t - sKin) - y; sKin = t;
-		tCnt = tCnt + partials[base + 23u];
+		let base = i * 40u;
 		tMin = min(tMin, partials[base + 19u]);
 		tMax = max(tMax, partials[base + 20u]);
 		neg = neg + partials[base + 11u];
@@ -901,11 +1041,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	stats[19u] = tMin; stats[20u] = tMax;
 	stats[21u] = select(0.0, sTS / tCnt, tCnt > 0.0);
 	stats[22u] = sKin;
+	for (var k = 0u; k < 9u; k++) { stats[23u + k] = kahanSlot(num, 24u + k); }
 }
 `;
 	// ---------- buoy field sample: one workgroup over the body footprint ----------
-	// six raw sums; the cpu twin is Fluid.core.buoy.sampleCpu. the body normalises by
-	// its own footprint area, so a rectangle clipped by a domain wall reads less fluid.
 	shaders.buoySample=`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;
@@ -980,7 +1119,7 @@ fn main(@builtin(local_invocation_index) lid: u32) {
 	}
 }
 `;
-	// ---------- view modes ----------
+	// ---------- view modes (0..7 + composable solid overlay + buoy overlay) ----------
 	shaders.toDisplay=`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var massTex: texture_storage_2d<rgba32float,read>;
@@ -1002,8 +1141,33 @@ fn hueRgb(hue: f32) -> vec3<f32> {
 	let c = clamp(abs(k * 6.0 - 3.0) - vec3<f32>(1.0), vec3<f32>(0.0), vec3<f32>(1.0));
 	return c;
 }
-// the body rectangle is drawn over every view mode: a smoky hull that still shows
-// the fluid inside it, tinted up to the sampled submerged fraction, amber outline.
+fn phaseColor(ph: u32) -> vec3<f32> {
+	if (ph == 0u) { return vec3<f32>(0.03, 0.04, 0.06); }
+	if (ph == 1u) { return vec3<f32>(0.72, 0.88, 1.00); }
+	if (ph == 2u) { return vec3<f32>(0.20, 0.78, 0.85); }
+	if (ph == 3u) { return vec3<f32>(0.12, 0.42, 0.88); }
+	if (ph == 4u) { return vec3<f32>(1.00, 0.58, 0.10); }
+	return vec3<f32>(0.95, 0.26, 0.45);
+}
+fn frozenAt(x: i32, y: i32, w: i32, h: i32) -> bool {
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return false; }
+	return textureLoad(flagsTex, vec2<i32>(x, y), 0).b > 0u;
+}
+fn solidOverlay(x: i32, y: i32, w: i32, h: i32, mode: i32, fl: vec4<u32>, base: vec4<f32>) -> vec4<f32> {
+	var rgb = base.rgb;
+	if (params.values[86] > 0.5 && mode != 5 && fl.b > 0u) {
+		let edge = !frozenAt(x - 1, y, w, h) || !frozenAt(x + 1, y, w, h)
+			|| !frozenAt(x, y - 1, w, h) || !frozenAt(x, y + 1, w, h);
+		let hatch = ((x + y) & 3) == 0;
+		rgb = mix(rgb, vec3<f32>(0.78, 0.92, 1.0), 0.12);
+		if (hatch) { rgb = mix(rgb, vec3<f32>(0.82, 0.94, 1.0), 0.36); }
+		if (edge) { rgb = mix(rgb, vec3<f32>(0.92, 0.98, 1.0), 0.82); }
+	}
+	if (fl.r > 0u && mode != 5 && mode != 7) {
+		rgb = mix(rgb, vec3<f32>(0.45, 0.35, 0.30), 0.72);
+	}
+	return vec4<f32>(rgb, 1.0);
+}
 fn buoyOverlay(x: i32, y: i32, base: vec4<f32>) -> vec4<f32> {
 	if (params.values[93] < 0.5) { return base; }
 	let bx = x - i32(params.values[88]);
@@ -1030,6 +1194,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let mode = i32(params.values[80]);
 	let mass = textureLoad(massTex, vec2<i32>(x, y));
 	let therm = textureLoad(thermTex, vec2<i32>(x, y));
+	let fl = textureLoad(flagsTex, vec2<i32>(x, y), 0);
 	let m = mass.a;
 	var out = vec4<f32>(0.02, 0.03, 0.04, 1.0);
 	if (mode == 0) {
@@ -1067,19 +1232,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		let t = clamp(log2(1.0 + div) / 10.0, 0.0, 1.0);
 		out = vec4<f32>(t * t, t, 0.15 + 0.5 * t, 1.0);
 	} else if (mode == 6) {
-		// thermal debug: signed T - T_ref, rising hot and sinking cold at a glance
 		if (m > params.values[58]) {
 			let u = clamp((therm.g - params.values[20]) / 50.0, -1.0, 1.0);
 			out = vec4<f32>(max(u, 0.0), 0.1 + 0.1 * (1.0 - abs(u)), max(-u, 0.0), 1.0);
 		}
+	} else if (mode == 7) {
+		var pc = phaseColor(fl.g);
+		if (fl.r > 0u) { pc = vec3<f32>(0.55, 0.30, 0.22); }
+		out = vec4<f32>(pc, 1.0);
 	} else {
-		// flags: painted walls over a mass greyscale
-		let wall = textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;
+		// mode 5: painted static walls (red) vs frozen substance (ice blue) over mass greyscale
 		let g = clamp(m, 0.0, 1.0);
 		out = vec4<f32>(g * 0.6, g * 0.6, g * 0.7, 1.0);
-		if (wall) { out = vec4<f32>(0.9, 0.25, 0.2, 1.0); }
+		if (fl.b > 0u) { out = vec4<f32>(0.55, 0.85, 1.0, 1.0); }
+		if (fl.r > 0u) { out = vec4<f32>(0.9, 0.25, 0.2, 1.0); }
 	}
-	textureStore(displayTex, vec2<i32>(x, y), buoyOverlay(x, y, out));
+	let over = solidOverlay(x, y, w, h, mode, fl, out);
+	textureStore(displayTex, vec2<i32>(x, y), buoyOverlay(x, y, over));
 }
 `;
 	shaders.renderVert=`
@@ -1089,11 +1258,6 @@ struct VSOut {
 };
 @vertex
 fn main(@builtin(vertex_index) vi: u32) -> VSOut {
-	// NDC Y is up (-1 bottom), framebuffer Y is down (0 top), texture sampled Y is down (0 top).
-	// Physics Y is up (0 bottom, N top) stored with low Y at low texel Y (0 top of storage = bottom physics).
-	// To make physics bottom appear at screen bottom (framebuffer bottom), sample low physics (texture top)
-	// from NDC bottom. So NDC bottom (-1) -> uv 0 (texture top), NDC top (+1 interpolated) -> uv 1 (texture bottom).
-	// The previous uv (0,1),(2,1),(0,-1) did the opposite (physics top at screen bottom) -> inverted draw.
 	var pos = array<vec2<f32>,3>(
 		vec2<f32>(-1.0, -1.0),
 		vec2<f32>(3.0, -1.0),
@@ -1115,7 +1279,6 @@ fn main(@builtin(vertex_index) vi: u32) -> VSOut {
 @group(0) @binding(1) var displayTex: texture_2d<f32>;
 @fragment
 fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-	// displayTex is (N+2)x(N+2) with a 1-texel ghost ring; inset UV so canvas maps to interior 1..N
 	let dims = textureDimensions(displayTex);
 	let n = vec2<f32>(f32(dims.x) - 2, f32(dims.y) - 2);
 	let tex = vec2<f32>(f32(dims.x), f32(dims.y));
@@ -1123,16 +1286,7 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 	return textureSample(displayTex, samp, uv2);
 }
 `;
-	// ---------- multigrid coarse level (0.6.0 t4) ----------
-	// one coarse level at N/2 for the long-wavelength pressure error. the fine
-	// red-black GS cannot damp it (amplification 1-O(1/N^2) per sweep), so 60
-	// sweeps at N=512 leave maxDiv 40-110 and a warm-started null-space drift
-	// that compresses mass (measured dam N=256: maxM 3.9). the coarse solve is
-	// cheap: Nc^2 is 1/4 of the fine grid.
-	// scaling: the fine operator is sum_faces w(p_n-p). a coarse cell covers 2x2
-	// fine cells, so the raw coarse stencil is 4x the physical operator; feeding
-	// it the *sum* of the 4 fine residuals (not the average) compensates. with
-	// the average the correction is 4x too small and the cycle loses to plain GS.
+	// ---------- multigrid coarse level (0.6.0 t4 + 0.5.0 solid compatibility) ----------
 	shaders.mgCoarsen=`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var massTex: texture_2d<f32>;
@@ -1143,26 +1297,26 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let w = i32(params.values[2]);
-	// stride S comes from params (slot 94); the coarse grid is ceil(N/S)
-	// in each direction. a fixed 2 here silently dropped most of the
-	// domain as soon as mgCoarsen moved to 4.
 	let S = max(2, i32(params.values[94]));
 	let nc = (w - 2) / S;
 	let xc = i32(gid.x);
 	let yc = i32(gid.y);
 	if (xc < 1 || xc > nc || yc < 1 || yc > nc) { return; }
 	var sum = 0.0;
-	var wall = 0u;
+	var openCount = 0u;
 	for (var oy = 0; oy < S; oy++) {
 		for (var ox = 0; ox < S; ox++) {
 			let xf = S * (xc - 1) + 1 + ox;
 			let yf = S * (yc - 1) + 1 + oy;
+			let fl = textureLoad(flagsTex, vec2<i32>(xf, yf), 0);
+			if ((fl.r | fl.b) > 0u) { continue; }
 			sum = sum + textureLoad(massTex, vec2<i32>(xf, yf), 0).a;
-			if (textureLoad(flagsTex, vec2<i32>(xf, yf), 0).r > 0u) { wall = 255u; }
+			openCount = openCount + 1u;
 		}
 	}
-	let inv = 1.0 / f32(S * S);
-	textureStore(massCDst, vec2<i32>(xc, yc), vec4<f32>(0.0, 0.0, 0.0, sum * inv));
+	let meanM = select(0.0, sum / f32(openCount), openCount > 0u);
+	let wall = select(0u, 255u, openCount == 0u);
+	textureStore(massCDst, vec2<i32>(xc, yc), vec4<f32>(0.0, 0.0, 0.0, meanM));
 	textureStore(flagsCDst, vec2<i32>(xc, yc), vec4<u32>(wall, 0u, 0u, 0u));
 }
 `;
@@ -1174,20 +1328,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(4) var flagsTex: texture_2d<u32>;
 @group(0) @binding(5) var divCDst: texture_storage_2d<r32float,write>;
 
-fn isWallR(x: i32, y: i32, w: i32, h: i32) -> bool {
-	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
-	return textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;
-}
 fn faceWR(x: i32, y: i32, nx: i32, ny: i32, w: i32, h: i32, rhoVac: f32) -> f32 {
 	if (nx < 1 || nx > w - 2 || ny < 1 || ny > h - 2) { return 0.0; }
-	if (textureLoad(flagsTex, vec2<i32>(nx, ny), 0).r > 0u) { return 0.0; }
+	let nf = textureLoad(flagsTex, vec2<i32>(nx, ny), 0);
+	if ((nf.r | nf.b) > 0u) { return 0.0; }
 	let ra = max(textureLoad(massTex, vec2<i32>(x, y), 0).a, rhoVac);
 	let rb = max(textureLoad(massTex, vec2<i32>(nx, ny), 0).a, rhoVac);
 	return 1.0 / (2.0 * ra * rb / (ra + rb));
 }
 fn residualAt(x: i32, y: i32, w: i32, h: i32, rhoVac: f32) -> f32 {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return 0.0; }
-	if (textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u) { return 0.0; }
+	let fl = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+	if ((fl.r | fl.b) > 0u) { return 0.0; }
 	let p = textureLoad(pressFine, vec2<i32>(x, y)).r;
 	let b = textureLoad(divsrcTex, vec2<i32>(x, y), 0).r;
 	var wsum = 0.0;
@@ -1229,9 +1381,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-	// bound to *coarse* params: values[2] is already mgNc+2, so the usable
-	// extent is w-2. dividing by 2 again zeroed only the top-left quarter
-	// and left stale corrections in the rest of the coarse grid.
 	let w = i32(params.values[2]);
 	let h = i32(params.values[3]);
 	let x = i32(gid.x);
@@ -1241,13 +1390,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	textureStore(pressC1, vec2<i32>(x, y), vec4<f32>(0.0, 0.0, 0.0, 0.0));
 }
 `;
-	// read_write r32float storage is core WebGPU (the only formats with
-	// read-write support), so the correction can be added in place without
-	// flipping the fine pressure parity that applyGrad's bind groups assume.
 	shaders.mgProlong=`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var pressC: texture_2d<f32>;
 @group(0) @binding(2) var pressFine: texture_storage_2d<r32float,read_write>;
+@group(0) @binding(3) var flagsTex: texture_2d<u32>;
+@group(0) @binding(4) var flagsCTex: texture_2d<u32>;
+
+fn sampleCoarse(cx: i32, cy: i32, base: f32) -> f32 {
+	if (textureLoad(flagsCTex, vec2<i32>(cx, cy), 0).r > 0u) { return base; }
+	return textureLoad(pressC, vec2<i32>(cx, cy), 0).r;
+}
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -1258,6 +1411,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let x = i32(gid.x);
 	let y = i32(gid.y);
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return; }
+	let fl = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+	if ((fl.r | fl.b) > 0u) { return; }
+	let hc = vec2<i32>((x - 1) / S + 1, (y - 1) / S + 1);
+	let base = textureLoad(pressC, hc, 0).r;
 	let invS = 1.0 / f32(S);
 	let xf = (f32(x) - 0.5) * invS + 0.5;
 	let yf = (f32(y) - 0.5) * invS + 0.5;
@@ -1269,10 +1426,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let x1 = clamp(xc + 1, 1, nc);
 	let y0 = clamp(yc, 1, nc);
 	let y1 = clamp(yc + 1, 1, nc);
-	let v00 = textureLoad(pressC, vec2<i32>(x0, y0), 0).r;
-	let v10 = textureLoad(pressC, vec2<i32>(x1, y0), 0).r;
-	let v01 = textureLoad(pressC, vec2<i32>(x0, y1), 0).r;
-	let v11 = textureLoad(pressC, vec2<i32>(x1, y1), 0).r;
+	let v00 = sampleCoarse(x0, y0, base);
+	let v10 = sampleCoarse(x1, y0, base);
+	let v01 = sampleCoarse(x0, y1, base);
+	let v11 = sampleCoarse(x1, y1, base);
 	let v0 = v00 + (v10 - v00) * fx;
 	let v1 = v01 + (v11 - v01) * fx;
 	let corr = v0 + (v1 - v0) * fy;

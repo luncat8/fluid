@@ -1,0 +1,702 @@
+Fluid test suite · quick profile · 11 suites (use default profile for the longer numerical histories) (including optional WebGPU parity)
+
+=== [1/11] eos.js ===
+PASS plateau boundaries: phase byte and T on both sides of E1..E4  8 boundary states
+PASS T(E) monotone non-decreasing over 20k samples
+PASS T(E) flat at T_melt inside the fusion interval
+PASS energyFromT round trips through every sensible branch  6 temperatures
+PASS rho* decreases continuously from rho_liq to rho_gas across phi_g  rho_liq=1.0000 rho_gas=0.0200 maxStep=4.67e-2
+PASS S: liquid overpack expands toward rho_liq  S=3.333
+PASS S: thin cold ambient (air tier) carries no source  S=0
+PASS S: vapor at its gas-law target is equilibrium  rho*=0.01865 m=0.01865 phi_g=1.000
+PASS S: under-dense vapor converges (condensation pull)  S=-10.000 rho*=0.01865
+PASS S: clamps at +-SMax  hi=5 lo=-5
+PASS eqDist: latent interval is a set (0 inside), point branches at the exact energy  mid=0 below=10.0
+ALL EOS TESTS PASSED
+PASS eos.js · 0.04 s
+
+=== [2/11] sharpness.js ===
+sharpness: dye front, N=256 steps=240 flux=0.5
+upwind_width=26 fct_width=8 improvement=3.25x
+fct_front_range=0.000e+0..0.800000 total_dye=42188.857860 total_mass=65536.000680 local_bound_violations=0
+fct_vs_upwind_dye_drift=6.307e-9
+random_2d: min=1.409e-7 local_bound_violations=0 correction_drift=3.127e-10
+PASS
+PASS sharpness.js · 4.99 s
+
+=== [3/11] transport-roundoff.js ===
+PASS f32 outflow margin: old overshoot reproduced; 100000 bounded samples
+PASS production CPU transport positivity/conservation, FCT on/off; WGSL structure matches
+PASS transport-roundoff.js · 0.10 s
+
+=== [4/11] gpu-mock.js ===
+PASS the buoy rectangle reaches the uniform block at the slots the wgsl reads  [151,373,16,64,0.5,1]
+PASS the uniform block holds every declared slot: 128 floats, 512 bytes
+PASS the 16x64 reference rectangle is exact on the reference grid  {"w":16,"h":64}
+PASS wgsl: 26 sources have balanced braces, parens and brackets
+PASS wgsl: every params.values[i] index is a declared slot in config.paramsOff  all indices resolve
+PASS wgsl: buoy_sample reads the mass texture, the velocity texture and one storage buffer
+PASS wgsl: buoy_sample is a single workgroup with a workgroup reduction
+PASS wgsl: the display overlay reads the body rectangle through the same slots
+PASS cpu sampler: sums the rectangle the gpu kernel walks, half of it blue  blue=4 count=16 uSum=32
+PASS cpu sampler: half a footprint of blue gives half submersion and neutral lift  sub=0.500 blue=0.250 aY=0
+PASS cpu sampler: the body follows the flow horizontally by drag, not by teleport  mean u=2
+PASS gpu pool has the buoy sample buffer and its readback twin  buoy=128B usage=140 read usage=9
+PASS the buoySample compute pipeline is compiled with the params struct prefix
+PASS WGSL pressure kernel retains opposite-color values between red/black sweeps  color gate and source-copy initialization are both present
+PASS the buoy field sample is requested every cfg.buoySampleEvery frames only  sample copies=4 over 16 frames, expected 4
+PASS the body marched every frame and ingested one readback per request  marches=16 samples=4
+PASS the readback reaches the body: half a footprint of blue reads as sub=0.5, neutral lift  sub=0.500 blue=0.250 ux=1.000 aY=0
+PASS every dispatch set a bind group, and the sample pass binds four resources  dispatches=9946 bindGroup calls=9946
+PASS the buoy sample buffer is copied back 24 bytes (6 floats) at a time  copies=4 sizes=24
+PASS the field sample runs after the sim steps and before the display pass  order=phaseEos>freezeVel>buoySample>toDisplay
+PASS the uniform buffer holds the live rect and substep count, not just cfg  substeps=2 rect=[17,44,4,8] show=1
+PASS the force kernel receives the live mean density in params slot 27  uniform=0.4466308653354645 cfg=0.4466308687988203
+PASS paused redraw pushes params too, so toggles show without a sim step
+PASS resize reuses the compiled pipelines and swaps the pool  modules +0 N=128 flags=67600 canvas=128
+PASS multigrid: coarse passes are encoded and ordered in the step  cycles=2 coarsen=2 restrict=4 prolong=4
+PASS multigrid: the coarse solve uses its own bound params and press textures  S=4 Nc=32 texW=34
+PASS no body outside the dam scenario, and the overlay switch follows  show=0
+PASS app frame loop: fixed steps when the policy is off, capped substeps when on  off ns=4/4 dt=0.00417 / on ns=24/24 dt=0.00069
+PASS no buffer or texture leaks across the two solvers (pools destroyed on destroy)  created buffers=32 textures=108
+PASS phase pool: 40-float partial stride, 128-byte stats buffer, rgba32float sfield, rg32float accum  statsPart=12960B
+PASS phase pipelines: phaseEos and freezeVel compiled and dispatched during reset priming
+PASS reset seeds CPU phase census matching scenario cells (ice + liquid = 64^2)  counts=0/754/0/3342/0/0
+PASS HUD snapshot includes 6-phase census, latent/momentum ledgers, and sSat counter  dg: total=734.8399976193905 exp=734.8399976193905 drift=0 [ok]
+PASS keyboard shortcut 'o' toggles solid overlay flag and marks view dirty  overlay 1 -> 0
+ALL GPU-MOCK CHECKS PASSED
+PASS gpu-mock.js · 0.10 s
+
+=== [5/11] browser-tests.js ===
+PASS browser diagnostics UI: five-case run, phase scenarios, scenario query, scripted paint, in-flight lock, report and clipboard copy
+PASS browser-tests.js · 0.04 s
+
+=== [6/11] hud.js ===
+PASS snapshot: exact minima, toggle context, honest rates, CFL/compression warnings, float applicability
+PASS hud.js · 0.03 s
+
+=== [7/11] input.js ===
+ok   right button does not paint or capture
+ok   primary down captures and focuses the canvas
+ok   primary down sets brush and coordinates
+ok   second pointer cannot steal, move or end a stroke
+ok   owning pointer moves in simulation coordinates
+ok   flick velocity remains clamped and smoothed
+ok   captured stroke survives leaving the canvas
+ok   one paint per flush uses the latest point
+ok   a flushed request is not replayed
+ok   paint requests reuse preallocated storage
+ok   captured movement outside the canvas is clamped
+ok   release clears capture and stirring
+ok   normal release preserves the final queued paint
+ok   lost capture ends stirring and drops pending paint
+ok   pointer cancellation ends stirring and drops pending paint
+ok   window blur ends an active stroke
+ok   window blur drops unflushed paint and clears held keys
+ok   unfocused numeric shortcut routes to the mode writer
+ok   form controls and links keep their native shortcuts
+ok   editable content keeps its keys
+ok   browser shortcuts, composition and handled events are ignored
+ok   holding space toggles pause only once
+ok   holding reset does not repeatedly rebuild the scenario
+ok   plain reset still works
+ok   pressure adjustment still allows key repeat
+ok   minimum-grid shortcut does not rebuild an unchanged grid
+ok   maximum-grid shortcut does not rebuild an unchanged grid
+ok   grid shortcut still resizes within bounds
+
+all 28 checks pass
+PASS input.js · 0.03 s
+
+=== [8/11] controls.js ===
+ok   grid and readout initialize from config
+ok   sync cannot snap a held grid thumb back
+ok   input previews the grid without reallocating textures
+ok   release commits one resize
+ok   same grid change does not rebuild twice
+ok   external grid changes sync when no drag owns the thumb
+ok   slider ownership is released on pointercancel
+ok   slider ownership is released on lostpointercapture
+ok   slider ownership is released on blur
+ok   slider ownership is released on window pointerup
+ok   slider ownership is released on window pointercancel
+ok   slider ownership is released on window blur
+ok   cancelled slider gestures do not commit a resize
+ok   auto-CFL checkbox initializes from the config
+ok   auto-CFL checkbox switches to fixed steps
+ok   fixed-step slider updates the shared policy immediately
+ok   fixed-step slider feeds the solver substep policy
+ok   pressure slider applies on input
+ok   keyboard pressure changes sync back to the slider
+ok   dam float is disabled outside its scenario
+ok   dam scenario enables the float control
+ok   FCT checkbox switches the actual solver configuration off
+ok   FCT checkbox switches the actual solver configuration on
+ok   gravity checkbox removes applied gravity
+ok   gravity checkbox restores applied gravity
+
+all 25 checks pass
+PASS controls.js · 0.03 s
+
+=== [9/11] ui.js ===
+ok   one label per mode
+ok   every label wraps a radio
+ok   group name and values
+ok   exactly one checked at boot
+ok   label text follows the input
+ok   change sets the mode
+ok   change marks the view dirty
+ok   one checked after click
+ok   setMode on the active mode returns before dirtying
+ok   setMode ignores unknown ids
+ok   key 5 routes through setMode
+ok   keyboard checks the radio
+ok   touch/stylus pointerover does not switch
+ok   touch/stylus leaves the checked radio alone
+ok   fine-pointer hover switches
+ok   hover checks exactly one radio
+ok   hybrid touch cannot trigger hover switching
+ok   hybrid pen cannot trigger hover switching
+ok   dragging over the view row does not switch modes
+ok   hover from the label text finds the radio
+ok   pointerover outside a label does not switch
+ok   change from a foreign input is ignored
+
+all 22 checks pass
+PASS ui.js · 0.03 s
+
+=== [10/11] performance.js ===
+PASS windowed counts, idle/paused rates, queue latency and rejection
+PASS real app loop: 144 Hz pacing, backpressure, paused redraw, single step
+PASS performance.js · 0.03 s
+
+=== [11/11] gpu-parity.mjs ===
+adapter: {"subgroupMatrixConfigs":[]}
+PASS dam transport/projection step 0 total-E parity  relative=0.00e+0
+PASS dam transport/projection step 0 mean-T parity  relative=0.00e+0
+PASS dam transport/projection step 0 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 0 E parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 0 T parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 0 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 0 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 0 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 0 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 0 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 0 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 0 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 0 flags exact  byte mismatches=0
+PASS dam transport/projection step 1 total-E parity  relative=3.43e-10
+PASS dam transport/projection step 1 mean-T parity  relative=2.64e-9
+PASS dam transport/projection step 1 mass parity  max_abs=1.19e-7 max_rel=4.81e-3 rms=1.10e-8 cells_over_tol=0
+PASS dam transport/projection step 1 E parity  max_abs=1.22e-4 max_rel=1.27e-7 rms=2.15e-5 cells_over_tol=0
+PASS dam transport/projection step 1 T parity  max_abs=6.10e-5 max_rel=2.08e-7 rms=1.63e-5 cells_over_tol=0
+PASS dam transport/projection step 1 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 1 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 1 velocity parity  max_abs=9.39e-7 max_rel=7.72e-4 rms=1.70e-7 cells_over_tol=0
+PASS dam transport/projection step 1 pressure parity  max_abs=7.93e-4 max_rel=7.96e-4 rms=2.50e-4 cells_over_tol=0
+PASS dam transport/projection step 1 flux parity  max_abs=3.96e-9 max_rel=7.73e-4 rms=7.16e-10 cells_over_tol=0
+PASS dam transport/projection step 1 divergence-source parity  max_abs=6.79e-5 max_rel=8.25e-4 rms=1.04e-5 cells_over_tol=0
+PASS dam transport/projection step 1 sfield parity  max_abs=2.38e-6 max_rel=5.00e-1 rms=1.21e-7 cells_over_tol=0
+PASS dam transport/projection step 1 flags exact  byte mismatches=0
+PASS dam transport/projection step 2 total-E parity  relative=2.61e-9
+PASS dam transport/projection step 2 mean-T parity  relative=5.70e-9
+PASS dam transport/projection step 2 mass parity  max_abs=2.38e-7 max_rel=4.83e-3 rms=1.59e-8 cells_over_tol=0
+PASS dam transport/projection step 2 E parity  max_abs=1.22e-4 max_rel=3.17e-7 rms=2.94e-5 cells_over_tol=0
+PASS dam transport/projection step 2 T parity  max_abs=9.16e-5 max_rel=3.12e-7 rms=2.31e-5 cells_over_tol=0
+PASS dam transport/projection step 2 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 2 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 2 velocity parity  max_abs=1.27e-6 max_rel=2.39e-4 rms=1.96e-7 cells_over_tol=0
+PASS dam transport/projection step 2 pressure parity  max_abs=8.54e-4 max_rel=2.09e-3 rms=2.58e-4 cells_over_tol=0
+PASS dam transport/projection step 2 flux parity  max_abs=5.31e-9 max_rel=2.39e-4 rms=8.52e-10 cells_over_tol=0
+PASS dam transport/projection step 2 divergence-source parity  max_abs=5.17e-4 max_rel=1.59e+0 rms=7.11e-5 cells_over_tol=0
+PASS dam transport/projection step 2 sfield parity  max_abs=4.77e-6 max_rel=1.00e+0 rms=1.86e-7 cells_over_tol=0
+PASS dam transport/projection step 2 flags exact  byte mismatches=0
+PASS dam transport/projection step 4 total-E parity  relative=9.88e-9
+PASS dam transport/projection step 4 mean-T parity  relative=6.00e-9
+PASS dam transport/projection step 4 mass parity  max_abs=3.58e-7 max_rel=5.58e-3 rms=2.58e-8 cells_over_tol=0
+PASS dam transport/projection step 4 E parity  max_abs=2.44e-4 max_rel=4.22e-7 rms=4.25e-5 cells_over_tol=0
+PASS dam transport/projection step 4 T parity  max_abs=1.22e-4 max_rel=4.17e-7 rms=3.23e-5 cells_over_tol=0
+PASS dam transport/projection step 4 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 4 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 4 velocity parity  max_abs=1.67e-6 max_rel=2.63e-4 rms=2.40e-7 cells_over_tol=0
+PASS dam transport/projection step 4 pressure parity  max_abs=3.74e-4 max_rel=8.02e-3 rms=1.68e-4 cells_over_tol=0
+PASS dam transport/projection step 4 flux parity  max_abs=7.45e-9 max_rel=2.63e-4 rms=1.04e-9 cells_over_tol=0
+PASS dam transport/projection step 4 divergence-source parity  max_abs=6.29e-4 max_rel=1.74e+0 rms=9.98e-5 cells_over_tol=0
+PASS dam transport/projection step 4 sfield parity  max_abs=7.15e-6 max_rel=1.00e+0 rms=3.21e-7 cells_over_tol=0
+PASS dam transport/projection step 4 flags exact  byte mismatches=0
+PASS dam transport/projection step 8 total-E parity  relative=1.17e-8
+PASS dam transport/projection step 8 mean-T parity  relative=1.73e-9
+PASS dam transport/projection step 8 mass parity  max_abs=4.17e-7 max_rel=1.71e-3 rms=4.23e-8 cells_over_tol=0
+PASS dam transport/projection step 8 E parity  max_abs=3.66e-4 max_rel=6.33e-7 rms=6.25e-5 cells_over_tol=0
+PASS dam transport/projection step 8 T parity  max_abs=1.53e-4 max_rel=5.21e-7 rms=4.36e-5 cells_over_tol=0
+PASS dam transport/projection step 8 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 8 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS dam transport/projection step 8 velocity parity  max_abs=4.53e-6 max_rel=1.11e-3 rms=5.17e-7 cells_over_tol=0
+PASS dam transport/projection step 8 pressure parity  max_abs=1.40e-3 max_rel=2.33e-3 rms=3.11e-4 cells_over_tol=0
+PASS dam transport/projection step 8 flux parity  max_abs=1.86e-8 max_rel=1.11e-3 rms=2.28e-9 cells_over_tol=0
+PASS dam transport/projection step 8 divergence-source parity  max_abs=1.40e-3 max_rel=4.32e-1 rms=1.46e-4 cells_over_tol=0
+PASS dam transport/projection step 8 sfield parity  max_abs=7.15e-6 max_rel=1.00e+0 rms=4.65e-7 cells_over_tol=0
+PASS dam transport/projection step 8 flags exact  byte mismatches=0
+PASS heated box step 0 total-E parity  relative=0.00e+0
+PASS heated box step 0 mean-T parity  relative=6.19e-9
+PASS heated box step 0 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 0 E parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 0 T parity  max_abs=3.05e-5 max_rel=1.01e-7 rms=7.29e-6 cells_over_tol=0
+PASS heated box step 0 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 0 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 0 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 0 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 0 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 0 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 0 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 0 flags exact  byte mismatches=0
+PASS heated box step 1 total-E parity  relative=2.23e-10
+PASS heated box step 1 mean-T parity  relative=6.19e-9
+PASS heated box step 1 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 1 E parity  max_abs=1.22e-4 max_rel=1.19e-7 rms=1.34e-5 cells_over_tol=0
+PASS heated box step 1 T parity  max_abs=6.10e-5 max_rel=1.90e-7 rms=8.32e-6 cells_over_tol=0
+PASS heated box step 1 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 1 heat-out parity  max_abs=1.86e-9 max_rel=1.17e-7 rms=2.40e-10 cells_over_tol=0
+PASS heated box step 1 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 1 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 1 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 1 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 1 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 1 flags exact  byte mismatches=0
+PASS heated box step 2 total-E parity  relative=2.23e-10
+PASS heated box step 2 mean-T parity  relative=5.62e-9
+PASS heated box step 2 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 2 E parity  max_abs=1.22e-4 max_rel=1.19e-7 rms=5.08e-6 cells_over_tol=0
+PASS heated box step 2 T parity  max_abs=3.05e-5 max_rel=1.01e-7 rms=7.18e-6 cells_over_tol=0
+PASS heated box step 2 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 2 heat-out parity  max_abs=3.73e-9 max_rel=1.62e-7 rms=5.06e-10 cells_over_tol=0
+PASS heated box step 2 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 2 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 2 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 2 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 2 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 2 flags exact  byte mismatches=0
+PASS heated box step 4 total-E parity  relative=2.23e-10
+PASS heated box step 4 mean-T parity  relative=6.37e-9
+PASS heated box step 4 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 4 E parity  max_abs=1.22e-4 max_rel=1.19e-7 rms=1.52e-5 cells_over_tol=0
+PASS heated box step 4 T parity  max_abs=6.10e-5 max_rel=1.95e-7 rms=8.23e-6 cells_over_tol=0
+PASS heated box step 4 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 4 heat-out parity  max_abs=7.45e-9 max_rel=1.21e-7 rms=9.17e-10 cells_over_tol=0
+PASS heated box step 4 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 4 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 4 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 4 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 4 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 4 flags exact  byte mismatches=0
+PASS heated box step 8 total-E parity  relative=2.23e-10
+PASS heated box step 8 mean-T parity  relative=5.44e-9
+PASS heated box step 8 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 8 E parity  max_abs=2.44e-4 max_rel=2.11e-7 rms=1.68e-5 cells_over_tol=0
+PASS heated box step 8 T parity  max_abs=3.05e-5 max_rel=1.01e-7 rms=7.29e-6 cells_over_tol=0
+PASS heated box step 8 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 8 heat-out parity  max_abs=2.98e-8 max_rel=1.83e-7 rms=1.65e-9 cells_over_tol=0
+PASS heated box step 8 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 8 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 8 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 8 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 8 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 8 flags exact  byte mismatches=0
+PASS heated box step 16 total-E parity  relative=2.23e-10
+PASS heated box step 16 mean-T parity  relative=5.34e-9
+PASS heated box step 16 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 16 E parity  max_abs=1.22e-4 max_rel=1.22e-7 rms=1.76e-5 cells_over_tol=0
+PASS heated box step 16 T parity  max_abs=3.05e-5 max_rel=1.01e-7 rms=7.88e-6 cells_over_tol=0
+PASS heated box step 16 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 16 heat-out parity  max_abs=5.96e-8 max_rel=1.84e-7 rms=3.75e-9 cells_over_tol=0
+PASS heated box step 16 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 16 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 16 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 16 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 16 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 16 flags exact  byte mismatches=0
+PASS heated box step 32 total-E parity  relative=2.23e-10
+PASS heated box step 32 mean-T parity  relative=3.84e-9
+PASS heated box step 32 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 32 E parity  max_abs=1.22e-4 max_rel=1.22e-7 rms=1.93e-5 cells_over_tol=0
+PASS heated box step 32 T parity  max_abs=3.05e-5 max_rel=1.04e-7 rms=7.56e-6 cells_over_tol=0
+PASS heated box step 32 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 32 heat-out parity  max_abs=1.19e-7 max_rel=1.81e-7 rms=9.61e-9 cells_over_tol=0
+PASS heated box step 32 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 32 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 32 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 32 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 32 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 32 flags exact  byte mismatches=0
+PASS heated box step 64 total-E parity  relative=2.23e-10
+PASS heated box step 64 mean-T parity  relative=6.18e-9
+PASS heated box step 64 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 64 E parity  max_abs=1.22e-4 max_rel=1.22e-7 rms=2.58e-5 cells_over_tol=0
+PASS heated box step 64 T parity  max_abs=3.05e-5 max_rel=1.03e-7 rms=9.99e-6 cells_over_tol=0
+PASS heated box step 64 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 64 heat-out parity  max_abs=2.95e-6 max_rel=9.13e-6 rms=1.61e-7 cells_over_tol=0
+PASS heated box step 64 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 64 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 64 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 64 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 64 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 64 flags exact  byte mismatches=0
+PASS heated box step 128 total-E parity  relative=2.79e-10
+PASS heated box step 128 mean-T parity  relative=4.78e-9
+PASS heated box step 128 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 128 E parity f32-long-run  max_abs=1.22e-4 max_rel=1.23e-7 rms=3.08e-5 cells_over_tol=0
+PASS heated box step 128 T parity f32-long-run  max_abs=6.10e-5 max_rel=1.90e-7 rms=1.04e-5 cells_over_tol=0
+PASS heated box step 128 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 128 heat-out parity  max_abs=1.27e-5 max_rel=2.07e-5 rms=5.93e-7 cells_over_tol=0
+PASS heated box step 128 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 128 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 128 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 128 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 128 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 128 flags exact  byte mismatches=0
+PASS heated box step 256 total-E parity  relative=5.57e-10
+PASS heated box step 256 mean-T parity  relative=4.87e-9
+PASS heated box step 256 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 256 E parity f32-long-run  max_abs=2.44e-4 max_rel=2.22e-7 rms=4.46e-5 cells_over_tol=0
+PASS heated box step 256 T parity f32-long-run  max_abs=6.10e-5 max_rel=1.95e-7 rms=1.28e-5 cells_over_tol=0
+PASS heated box step 256 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 256 heat-out parity  max_abs=2.79e-5 max_rel=2.52e-5 rms=1.55e-6 cells_over_tol=0
+PASS heated box step 256 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 256 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 256 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 256 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 256 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 256 flags exact  byte mismatches=0
+PASS heated box step 500 total-E parity  relative=1.34e-9
+PASS heated box step 500 mean-T parity  relative=2.44e-9
+PASS heated box step 500 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 500 E parity f32-long-run  max_abs=3.66e-4 max_rel=3.53e-7 rms=6.35e-5 cells_over_tol=0
+PASS heated box step 500 T parity f32-long-run  max_abs=9.16e-5 max_rel=2.98e-7 rms=1.72e-5 cells_over_tol=0
+PASS heated box step 500 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 500 heat-out parity  max_abs=6.01e-5 max_rel=3.36e-5 rms=4.38e-6 cells_over_tol=0
+PASS heated box step 500 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 500 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 500 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 500 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 500 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS heated box step 500 flags exact  byte mismatches=0
+PASS ice melt + advection step 0 total-E parity  relative=0.00e+0
+PASS ice melt + advection step 0 mean-T parity  relative=0.00e+0
+PASS ice melt + advection step 0 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 0 E parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 0 T parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 0 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 0 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 0 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 0 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 0 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 0 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 0 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 0 flags exact  byte mismatches=0
+PASS ice melt + advection step 1 total-E parity  relative=7.81e-10
+PASS ice melt + advection step 1 mean-T parity  relative=4.11e-9
+PASS ice melt + advection step 1 mass parity  max_abs=1.19e-7 max_rel=1.86e-7 rms=1.46e-8 cells_over_tol=0
+PASS ice melt + advection step 1 E parity  max_abs=1.22e-4 max_rel=1.32e-7 rms=3.11e-5 cells_over_tol=0
+PASS ice melt + advection step 1 T parity  max_abs=6.10e-5 max_rel=2.16e-7 rms=1.11e-5 cells_over_tol=0
+PASS ice melt + advection step 1 heat-in parity  max_abs=2.76e-7 max_rel=3.15e-6 rms=1.96e-8 cells_over_tol=0
+PASS ice melt + advection step 1 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 1 velocity parity  max_abs=6.38e-8 max_rel=4.08e-3 rms=9.74e-9 cells_over_tol=0
+PASS ice melt + advection step 1 pressure parity  max_abs=6.87e-5 max_rel=1.01e-4 rms=1.65e-5 cells_over_tol=0
+PASS ice melt + advection step 1 flux parity  max_abs=2.67e-10 max_rel=4.08e-3 rms=4.06e-11 cells_over_tol=0
+PASS ice melt + advection step 1 divergence-source parity  max_abs=4.77e-6 max_rel=7.10e-3 rms=1.09e-6 cells_over_tol=0
+PASS ice melt + advection step 1 sfield parity  max_abs=2.38e-6 max_rel=1.43e-1 rms=1.98e-7 cells_over_tol=0
+PASS ice melt + advection step 1 flags exact  byte mismatches=0
+PASS ice melt + advection step 2 total-E parity  relative=1.63e-9
+PASS ice melt + advection step 2 mean-T parity  relative=1.08e-8
+PASS ice melt + advection step 2 mass parity  max_abs=2.38e-7 max_rel=2.38e-7 rms=2.01e-8 cells_over_tol=0
+PASS ice melt + advection step 2 E parity  max_abs=1.83e-4 max_rel=1.99e-7 rms=4.26e-5 cells_over_tol=0
+PASS ice melt + advection step 2 T parity  max_abs=6.10e-5 max_rel=2.16e-7 rms=1.47e-5 cells_over_tol=0
+PASS ice melt + advection step 2 heat-in parity  max_abs=5.66e-7 max_rel=3.93e-4 rms=5.14e-8 cells_over_tol=0
+PASS ice melt + advection step 2 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 2 velocity parity  max_abs=1.91e-7 max_rel=2.01e-2 rms=3.54e-8 cells_over_tol=0
+PASS ice melt + advection step 2 pressure parity  max_abs=1.91e-4 max_rel=3.17e-4 rms=4.82e-5 cells_over_tol=0
+PASS ice melt + advection step 2 flux parity  max_abs=7.97e-10 max_rel=2.01e-2 rms=1.47e-10 cells_over_tol=0
+PASS ice melt + advection step 2 divergence-source parity  max_abs=6.65e-5 max_rel=1.81e+0 rms=1.11e-5 cells_over_tol=0
+PASS ice melt + advection step 2 sfield parity  max_abs=4.77e-6 max_rel=1.00e+0 rms=2.69e-7 cells_over_tol=0
+PASS ice melt + advection step 2 flags exact  byte mismatches=0
+PASS ice melt + advection step 4 total-E parity  relative=2.13e-10
+PASS ice melt + advection step 4 mean-T parity  relative=2.09e-8
+PASS ice melt + advection step 4 mass parity  max_abs=4.77e-7 max_rel=4.77e-7 rms=3.19e-8 cells_over_tol=0
+PASS ice melt + advection step 4 E parity  max_abs=2.44e-4 max_rel=2.65e-7 rms=6.20e-5 cells_over_tol=0
+PASS ice melt + advection step 4 T parity  max_abs=9.16e-5 max_rel=3.24e-7 rms=2.24e-5 cells_over_tol=0
+PASS ice melt + advection step 4 heat-in parity  max_abs=1.37e-6 max_rel=9.94e-4 rms=1.34e-7 cells_over_tol=0
+PASS ice melt + advection step 4 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 4 velocity parity  max_abs=4.09e-7 max_rel=6.09e-1 rms=7.48e-8 cells_over_tol=0
+PASS ice melt + advection step 4 pressure parity  max_abs=4.12e-4 max_rel=3.45e-3 rms=1.39e-4 cells_over_tol=0
+PASS ice melt + advection step 4 flux parity  max_abs=1.70e-9 max_rel=6.09e-1 rms=3.11e-10 cells_over_tol=0
+PASS ice melt + advection step 4 divergence-source parity  max_abs=9.53e-5 max_rel=1.67e+0 rms=2.04e-5 cells_over_tol=0
+PASS ice melt + advection step 4 sfield parity  max_abs=9.54e-6 max_rel=1.00e+0 rms=4.83e-7 cells_over_tol=0
+PASS ice melt + advection step 4 flags exact  byte mismatches=0
+PASS ice melt + advection step 8 total-E parity  relative=1.62e-8
+PASS ice melt + advection step 8 mean-T parity  relative=2.99e-8
+PASS ice melt + advection step 8 mass parity  max_abs=4.77e-7 max_rel=5.96e-7 rms=5.53e-8 cells_over_tol=0
+PASS ice melt + advection step 8 E parity  max_abs=3.05e-4 max_rel=3.31e-7 rms=8.96e-5 cells_over_tol=0
+PASS ice melt + advection step 8 T parity  max_abs=1.22e-4 max_rel=4.31e-7 rms=3.15e-5 cells_over_tol=0
+PASS ice melt + advection step 8 heat-in parity  max_abs=3.81e-6 max_rel=8.27e-3 rms=3.67e-7 cells_over_tol=0
+PASS ice melt + advection step 8 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 8 velocity parity  max_abs=1.03e-6 max_rel=1.06e+0 rms=2.23e-7 cells_over_tol=0
+PASS ice melt + advection step 8 pressure parity  max_abs=8.01e-4 max_rel=2.09e-3 rms=2.48e-4 cells_over_tol=0
+PASS ice melt + advection step 8 flux parity  max_abs=4.31e-9 max_rel=1.06e+0 rms=9.29e-10 cells_over_tol=0
+PASS ice melt + advection step 8 divergence-source parity  max_abs=1.29e-4 max_rel=1.72e+0 rms=2.79e-5 cells_over_tol=0
+PASS ice melt + advection step 8 sfield parity  max_abs=9.54e-6 max_rel=1.00e+0 rms=9.26e-7 cells_over_tol=0
+PASS ice melt + advection step 8 flags exact  byte mismatches=0
+PASS ice melt + advection step 16 total-E parity  relative=7.14e-8
+PASS ice melt + advection step 16 mean-T parity  relative=3.74e-8
+PASS ice melt + advection step 16 mass parity  max_abs=1.07e-6 max_rel=1.07e-6 rms=1.08e-7 cells_over_tol=0
+PASS ice melt + advection step 16 E parity  max_abs=5.49e-4 max_rel=5.96e-7 rms=1.45e-4 cells_over_tol=0
+PASS ice melt + advection step 16 T parity  max_abs=2.44e-4 max_rel=8.63e-7 rms=5.01e-5 cells_over_tol=0
+PASS ice melt + advection step 16 heat-in parity  max_abs=8.70e-6 max_rel=1.00e-1 rms=9.43e-7 cells_over_tol=0
+PASS ice melt + advection step 16 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS ice melt + advection step 16 velocity parity  max_abs=3.56e-6 max_rel=1.94e+0 rms=6.66e-7 cells_over_tol=0
+PASS ice melt + advection step 16 pressure parity  max_abs=2.72e-3 max_rel=2.43e-3 rms=1.13e-3 cells_over_tol=0
+PASS ice melt + advection step 16 flux parity  max_abs=1.48e-8 max_rel=1.94e+0 rms=2.78e-9 cells_over_tol=0
+PASS ice melt + advection step 16 divergence-source parity  max_abs=2.16e-4 max_rel=1.91e+0 rms=4.27e-5 cells_over_tol=0
+PASS ice melt + advection step 16 sfield parity  max_abs=2.15e-5 max_rel=1.00e+0 rms=1.92e-6 cells_over_tol=0
+PASS ice melt + advection step 16 flags exact  byte mismatches=0
+PASS jet vapor expansion step 0 total-E parity  relative=0.00e+0
+PASS jet vapor expansion step 0 mean-T parity  relative=8.78e-8
+PASS jet vapor expansion step 0 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS jet vapor expansion step 0 E parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS jet vapor expansion step 0 T parity  max_abs=9.16e-5 max_rel=1.83e-7 rms=3.24e-5 cells_over_tol=0
+PASS jet vapor expansion step 0 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS jet vapor expansion step 0 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS jet vapor expansion step 0 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS jet vapor expansion step 0 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS jet vapor expansion step 0 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS jet vapor expansion step 0 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS jet vapor expansion step 0 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS jet vapor expansion step 0 flags exact  byte mismatches=0
+PASS jet vapor expansion step 1 total-E parity  relative=4.99e-9
+PASS jet vapor expansion step 1 mean-T parity  relative=4.53e-8
+PASS jet vapor expansion step 1 mass parity  max_abs=2.98e-8 max_rel=3.46e-6 rms=3.93e-9 cells_over_tol=0
+PASS jet vapor expansion step 1 E parity  max_abs=6.10e-5 max_rel=2.26e-7 rms=1.04e-5 cells_over_tol=0
+PASS jet vapor expansion step 1 T parity  max_abs=7.02e-4 max_rel=1.40e-6 rms=4.76e-5 cells_over_tol=0
+PASS jet vapor expansion step 1 heat-in parity  max_abs=8.97e-8 max_rel=1.00e+0 rms=1.50e-8 cells_over_tol=0
+PASS jet vapor expansion step 1 heat-out parity  max_abs=1.79e-7 max_rel=1.00e+0 rms=1.69e-8 cells_over_tol=0
+PASS jet vapor expansion step 1 velocity parity  max_abs=5.07e-7 max_rel=3.25e-3 rms=4.70e-8 cells_over_tol=0
+PASS jet vapor expansion step 1 pressure parity  max_abs=4.01e-5 max_rel=6.98e-6 rms=1.65e-5 cells_over_tol=0
+PASS jet vapor expansion step 1 flux parity  max_abs=1.98e-9 max_rel=3.25e-3 rms=1.96e-10 cells_over_tol=0
+PASS jet vapor expansion step 1 divergence-source parity  max_abs=5.34e-5 max_rel=5.48e-4 rms=7.06e-6 cells_over_tol=0
+PASS jet vapor expansion step 1 sfield parity  max_abs=1.91e-6 max_rel=1.02e-7 rms=8.87e-8 cells_over_tol=0
+PASS jet vapor expansion step 1 flags exact  byte mismatches=0
+PASS jet vapor expansion step 2 total-E parity  relative=7.73e-9
+PASS jet vapor expansion step 2 mean-T parity  relative=4.62e-8
+PASS jet vapor expansion step 2 mass parity  max_abs=2.98e-8 max_rel=3.32e-6 rms=5.70e-9 cells_over_tol=0
+PASS jet vapor expansion step 2 E parity  max_abs=1.22e-4 max_rel=2.26e-7 rms=1.45e-5 cells_over_tol=0
+PASS jet vapor expansion step 2 T parity  max_abs=8.85e-4 max_rel=1.77e-6 rms=6.99e-5 cells_over_tol=0
+PASS jet vapor expansion step 2 heat-in parity  max_abs=2.38e-7 max_rel=1.00e+0 rms=3.78e-8 cells_over_tol=0
+PASS jet vapor expansion step 2 heat-out parity  max_abs=3.59e-7 max_rel=1.00e+0 rms=3.41e-8 cells_over_tol=0
+PASS jet vapor expansion step 2 velocity parity  max_abs=5.96e-7 max_rel=1.27e-2 rms=9.28e-8 cells_over_tol=0
+PASS jet vapor expansion step 2 pressure parity  max_abs=8.20e-5 max_rel=4.43e-5 rms=2.59e-5 cells_over_tol=0
+PASS jet vapor expansion step 2 flux parity  max_abs=2.56e-9 max_rel=1.27e-2 rms=3.85e-10 cells_over_tol=0
+PASS jet vapor expansion step 2 divergence-source parity  max_abs=2.69e-4 max_rel=1.88e+0 rms=3.08e-5 cells_over_tol=0
+PASS jet vapor expansion step 2 sfield parity  max_abs=3.81e-6 max_rel=2.04e-7 rms=1.25e-7 cells_over_tol=0
+PASS jet vapor expansion step 2 flags exact  byte mismatches=0
+PASS jet vapor expansion step 4 total-E parity  relative=1.50e-8
+PASS jet vapor expansion step 4 mean-T parity  relative=3.86e-8
+PASS jet vapor expansion step 4 mass parity  max_abs=5.96e-8 max_rel=6.05e-6 rms=8.27e-9 cells_over_tol=0
+PASS jet vapor expansion step 4 E parity  max_abs=1.83e-4 max_rel=4.52e-7 rms=2.04e-5 cells_over_tol=0
+PASS jet vapor expansion step 4 T parity  max_abs=1.22e-3 max_rel=2.38e-6 rms=9.46e-5 cells_over_tol=0
+PASS jet vapor expansion step 4 heat-in parity  max_abs=4.77e-7 max_rel=1.00e+0 rms=6.67e-8 cells_over_tol=0
+PASS jet vapor expansion step 4 heat-out parity  max_abs=5.38e-7 max_rel=1.00e+0 rms=6.74e-8 cells_over_tol=0
+PASS jet vapor expansion step 4 velocity parity  max_abs=2.15e-6 max_rel=3.34e-2 rms=2.29e-7 cells_over_tol=0
+PASS jet vapor expansion step 4 pressure parity  max_abs=1.56e-4 max_rel=2.44e-5 rms=5.94e-5 cells_over_tol=0
+PASS jet vapor expansion step 4 flux parity  max_abs=9.31e-9 max_rel=3.34e-2 rms=9.59e-10 cells_over_tol=0
+PASS jet vapor expansion step 4 divergence-source parity  max_abs=4.92e-4 max_rel=1.93e+0 rms=8.60e-5 cells_over_tol=0
+PASS jet vapor expansion step 4 sfield parity  max_abs=3.81e-6 max_rel=2.04e-7 rms=1.25e-7 cells_over_tol=0
+PASS jet vapor expansion step 4 flags exact  byte mismatches=0
+PASS jet vapor expansion step 8 total-E parity  relative=2.16e-8
+PASS jet vapor expansion step 8 mean-T parity  relative=1.78e-8
+PASS jet vapor expansion step 8 mass parity  max_abs=7.45e-8 max_rel=5.90e-6 rms=1.21e-8 cells_over_tol=0
+PASS jet vapor expansion step 8 E parity  max_abs=3.05e-4 max_rel=7.91e-7 rms=2.98e-5 cells_over_tol=0
+PASS jet vapor expansion step 8 T parity  max_abs=2.01e-3 max_rel=3.87e-6 rms=1.26e-4 cells_over_tol=0
+PASS jet vapor expansion step 8 heat-in parity  max_abs=1.26e-6 max_rel=1.00e+0 rms=1.49e-7 cells_over_tol=0
+PASS jet vapor expansion step 8 heat-out parity  max_abs=1.08e-6 max_rel=1.00e+0 rms=1.41e-7 cells_over_tol=0
+PASS jet vapor expansion step 8 velocity parity  max_abs=5.96e-6 max_rel=9.22e-3 rms=6.36e-7 cells_over_tol=0
+PASS jet vapor expansion step 8 pressure parity  max_abs=2.82e-4 max_rel=3.80e-6 rms=1.21e-4 cells_over_tol=0
+PASS jet vapor expansion step 8 flux parity  max_abs=2.51e-8 max_rel=9.22e-3 rms=2.66e-9 cells_over_tol=0
+PASS jet vapor expansion step 8 divergence-source parity  max_abs=9.17e-4 max_rel=1.95e+0 rms=1.75e-4 cells_over_tol=0
+PASS jet vapor expansion step 8 sfield parity  max_abs=3.81e-6 max_rel=2.07e-7 rms=1.61e-7 cells_over_tol=0
+PASS jet vapor expansion step 8 flags exact  byte mismatches=0
+PASS jet vapor expansion step 16 total-E parity  relative=3.38e-8
+PASS jet vapor expansion step 16 mean-T parity  relative=7.22e-9
+PASS jet vapor expansion step 16 mass parity  max_abs=1.30e-7 max_rel=1.31e-3 rms=1.78e-8 cells_over_tol=0
+PASS jet vapor expansion step 16 E parity  max_abs=3.05e-4 max_rel=1.53e-6 rms=4.13e-5 cells_over_tol=0
+PASS jet vapor expansion step 16 T parity  max_abs=2.44e-3 max_rel=4.69e-6 rms=1.81e-4 cells_over_tol=0
+PASS jet vapor expansion step 16 heat-in parity  max_abs=3.81e-6 max_rel=1.00e+0 rms=4.11e-7 cells_over_tol=0
+PASS jet vapor expansion step 16 heat-out parity  max_abs=3.95e-6 max_rel=1.00e+0 rms=3.08e-7 cells_over_tol=0
+PASS jet vapor expansion step 16 velocity parity  max_abs=2.17e-5 max_rel=1.82e-2 rms=1.70e-6 cells_over_tol=0
+PASS jet vapor expansion step 16 pressure parity  max_abs=5.65e-4 max_rel=2.50e-6 rms=1.91e-4 cells_over_tol=0
+PASS jet vapor expansion step 16 flux parity  max_abs=9.13e-8 max_rel=1.82e-2 rms=7.14e-9 cells_over_tol=0
+PASS jet vapor expansion step 16 divergence-source parity  max_abs=1.48e-3 max_rel=1.99e+0 rms=3.61e-4 cells_over_tol=0
+PASS jet vapor expansion step 16 sfield parity  max_abs=2.48e-5 max_rel=3.23e-4 rms=4.79e-7 cells_over_tol=0
+PASS jet vapor expansion step 16 flags exact  byte mismatches=0
+PASS rain boil/freeze cycle step 0 total-E parity  relative=0.00e+0
+PASS rain boil/freeze cycle step 0 mean-T parity  relative=6.72e-8
+PASS rain boil/freeze cycle step 0 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 0 E parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 0 T parity  max_abs=3.05e-5 max_rel=1.07e-7 rms=2.31e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 0 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 0 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 0 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 0 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 0 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 0 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 0 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 0 flags exact  byte mismatches=0
+PASS rain boil/freeze cycle step 1 total-E parity  relative=1.51e-9
+PASS rain boil/freeze cycle step 1 mean-T parity  relative=2.96e-8
+PASS rain boil/freeze cycle step 1 mass parity  max_abs=1.19e-7 max_rel=1.95e-7 rms=1.14e-8 cells_over_tol=0
+PASS rain boil/freeze cycle step 1 E parity  max_abs=2.44e-4 max_rel=2.01e-7 rms=3.01e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 1 T parity  max_abs=6.10e-5 max_rel=2.14e-7 rms=1.99e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 1 heat-in parity  max_abs=1.19e-7 max_rel=6.81e-8 rms=2.80e-8 cells_over_tol=0
+PASS rain boil/freeze cycle step 1 heat-out parity  max_abs=9.31e-10 max_rel=6.65e-8 rms=2.19e-10 cells_over_tol=0
+PASS rain boil/freeze cycle step 1 velocity parity  max_abs=8.26e-7 max_rel=1.96e-2 rms=1.38e-7 cells_over_tol=0
+PASS rain boil/freeze cycle step 1 pressure parity  max_abs=4.27e-4 max_rel=1.24e-5 rms=6.53e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 1 flux parity  max_abs=3.44e-9 max_rel=1.96e-2 rms=5.75e-10 cells_over_tol=0
+PASS rain boil/freeze cycle step 1 divergence-source parity  max_abs=4.58e-5 max_rel=1.38e-4 rms=8.00e-6 cells_over_tol=0
+PASS rain boil/freeze cycle step 1 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 1 flags exact  byte mismatches=0
+PASS rain boil/freeze cycle step 2 total-E parity  relative=9.81e-10
+PASS rain boil/freeze cycle step 2 mean-T parity  relative=1.91e-8
+PASS rain boil/freeze cycle step 2 mass parity  max_abs=1.79e-7 max_rel=3.26e-7 rms=1.72e-8 cells_over_tol=0
+PASS rain boil/freeze cycle step 2 E parity  max_abs=2.44e-4 max_rel=2.05e-7 rms=4.35e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 2 T parity  max_abs=9.16e-5 max_rel=2.51e-7 rms=2.17e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 2 heat-in parity  max_abs=4.77e-7 max_rel=3.88e-4 rms=6.80e-8 cells_over_tol=0
+PASS rain boil/freeze cycle step 2 heat-out parity  max_abs=1.86e-9 max_rel=6.69e-8 rms=4.38e-10 cells_over_tol=0
+PASS rain boil/freeze cycle step 2 velocity parity  max_abs=1.30e-6 max_rel=3.38e-1 rms=2.29e-7 cells_over_tol=0
+PASS rain boil/freeze cycle step 2 pressure parity  max_abs=8.54e-4 max_rel=8.77e-5 rms=1.25e-4 cells_over_tol=0
+PASS rain boil/freeze cycle step 2 flux parity  max_abs=5.42e-9 max_rel=3.38e-1 rms=9.53e-10 cells_over_tol=0
+PASS rain boil/freeze cycle step 2 divergence-source parity  max_abs=4.64e-4 max_rel=1.39e+0 rms=7.05e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 2 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 2 flags exact  byte mismatches=0
+PASS rain boil/freeze cycle step 4 total-E parity  relative=1.20e-9
+PASS rain boil/freeze cycle step 4 mean-T parity  relative=1.63e-8
+PASS rain boil/freeze cycle step 4 mass parity  max_abs=2.38e-7 max_rel=5.87e-7 rms=2.38e-8 cells_over_tol=0
+PASS rain boil/freeze cycle step 4 E parity  max_abs=4.88e-4 max_rel=4.08e-7 rms=6.60e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 4 T parity  max_abs=1.22e-4 max_rel=3.36e-7 rms=2.78e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 4 heat-in parity  max_abs=1.43e-6 max_rel=3.51e-2 rms=1.14e-7 cells_over_tol=0
+PASS rain boil/freeze cycle step 4 heat-out parity  max_abs=7.45e-9 max_rel=1.36e-7 rms=1.39e-9 cells_over_tol=0
+PASS rain boil/freeze cycle step 4 velocity parity  max_abs=1.18e-6 max_rel=3.71e-1 rms=2.23e-7 cells_over_tol=0
+PASS rain boil/freeze cycle step 4 pressure parity  max_abs=6.10e-4 max_rel=4.95e-5 rms=1.02e-4 cells_over_tol=0
+PASS rain boil/freeze cycle step 4 flux parity  max_abs=4.90e-9 max_rel=3.71e-1 rms=9.28e-10 cells_over_tol=0
+PASS rain boil/freeze cycle step 4 divergence-source parity  max_abs=5.34e-4 max_rel=1.86e+0 rms=9.65e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 4 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 4 flags exact  byte mismatches=0
+PASS rain boil/freeze cycle step 8 total-E parity  relative=9.79e-10
+PASS rain boil/freeze cycle step 8 mean-T parity  relative=4.85e-9
+PASS rain boil/freeze cycle step 8 mass parity  max_abs=3.59e-7 max_rel=5.78e-5 rms=3.28e-8 cells_over_tol=0
+PASS rain boil/freeze cycle step 8 E parity  max_abs=7.32e-4 max_rel=6.13e-7 rms=9.98e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 8 T parity  max_abs=1.83e-4 max_rel=5.04e-7 rms=3.55e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 8 heat-in parity  max_abs=2.86e-6 max_rel=2.12e-2 rms=2.46e-7 cells_over_tol=0
+PASS rain boil/freeze cycle step 8 heat-out parity  max_abs=1.49e-8 max_rel=1.39e-7 rms=2.48e-9 cells_over_tol=0
+PASS rain boil/freeze cycle step 8 velocity parity  max_abs=2.02e-6 max_rel=1.00e+0 rms=3.33e-7 cells_over_tol=0
+PASS rain boil/freeze cycle step 8 pressure parity  max_abs=4.88e-4 max_rel=2.53e-5 rms=6.76e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 8 flux parity  max_abs=8.40e-9 max_rel=1.00e+0 rms=1.39e-9 cells_over_tol=0
+PASS rain boil/freeze cycle step 8 divergence-source parity  max_abs=6.34e-4 max_rel=2.00e+0 rms=9.84e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 8 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS rain boil/freeze cycle step 8 flags exact  byte mismatches=0
+PASS rain boil/freeze cycle step 16 total-E parity  relative=3.48e-9
+PASS rain boil/freeze cycle step 16 mean-T parity  relative=1.72e-9
+PASS rain boil/freeze cycle step 16 mass parity  max_abs=6.32e-7 max_rel=8.25e-5 rms=5.44e-8 cells_over_tol=0
+PASS rain boil/freeze cycle step 16 E parity  max_abs=9.77e-4 max_rel=1.45e-6 rms=1.47e-4 cells_over_tol=0
+PASS rain boil/freeze cycle step 16 T parity  max_abs=2.75e-4 max_rel=7.49e-7 rms=4.90e-5 cells_over_tol=0
+PASS rain boil/freeze cycle step 16 heat-in parity  max_abs=7.63e-6 max_rel=1.46e-3 rms=6.63e-7 cells_over_tol=0
+PASS rain boil/freeze cycle step 16 heat-out parity  max_abs=1.49e-8 max_rel=7.27e-8 rms=2.48e-9 cells_over_tol=0
+PASS rain boil/freeze cycle step 16 velocity parity  max_abs=5.58e-6 max_rel=1.28e-1 rms=6.91e-7 cells_over_tol=0
+PASS rain boil/freeze cycle step 16 pressure parity  max_abs=1.22e-3 max_rel=2.42e-4 rms=2.56e-4 cells_over_tol=0
+PASS rain boil/freeze cycle step 16 flux parity  max_abs=2.32e-8 max_rel=1.28e-1 rms=2.88e-9 cells_over_tol=0
+PASS rain boil/freeze cycle step 16 divergence-source parity  max_abs=6.53e-4 max_rel=1.99e+0 rms=1.04e-4 cells_over_tol=0
+PASS rain boil/freeze cycle step 16 sfield parity  max_abs=2.25e-4 max_rel=4.71e-4 rms=6.20e-6 cells_over_tol=0
+PASS rain boil/freeze cycle step 16 flags exact  byte mismatches=0
+PASS arch frozen vault + MG step 0 total-E parity  relative=0.00e+0
+PASS arch frozen vault + MG step 0 mean-T parity  relative=0.00e+0
+PASS arch frozen vault + MG step 0 mass parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 0 E parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 0 T parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 0 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 0 heat-out parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 0 velocity parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 0 pressure parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 0 flux parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 0 divergence-source parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 0 sfield parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 0 flags exact  byte mismatches=0
+PASS arch frozen vault + MG step 1 total-E parity  relative=1.48e-9
+PASS arch frozen vault + MG step 1 mean-T parity  relative=5.41e-9
+PASS arch frozen vault + MG step 1 mass parity  max_abs=1.20e-7 max_rel=8.34e-6 rms=1.09e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 1 E parity  max_abs=6.10e-5 max_rel=8.85e-8 rms=1.73e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 1 T parity  max_abs=6.10e-5 max_rel=2.05e-7 rms=1.68e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 1 heat-in parity  max_abs=0.00e+0 max_rel=0.00e+0 rms=0.00e+0 cells_over_tol=0
+PASS arch frozen vault + MG step 1 heat-out parity  max_abs=5.68e-8 max_rel=6.18e-6 rms=8.51e-9 cells_over_tol=0
+PASS arch frozen vault + MG step 1 velocity parity  max_abs=5.53e-7 max_rel=1.05e-3 rms=9.86e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 1 pressure parity  max_abs=2.44e-4 max_rel=4.47e-4 rms=8.66e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 1 flux parity  max_abs=2.30e-9 max_rel=1.05e-3 rms=4.11e-10 cells_over_tol=0
+PASS arch frozen vault + MG step 1 divergence-source parity  max_abs=8.58e-5 max_rel=6.46e-4 rms=1.37e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 1 sfield parity  max_abs=2.38e-6 max_rel=8.26e-3 rms=9.92e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 1 flags exact  byte mismatches=0
+PASS arch frozen vault + MG step 2 total-E parity  relative=1.62e-9
+PASS arch frozen vault + MG step 2 mean-T parity  relative=1.02e-9
+PASS arch frozen vault + MG step 2 mass parity  max_abs=2.38e-7 max_rel=6.96e-6 rms=1.58e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 2 E parity  max_abs=1.22e-4 max_rel=1.77e-7 rms=2.55e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 2 T parity  max_abs=9.16e-5 max_rel=3.06e-7 rms=2.19e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 2 heat-in parity  max_abs=1.19e-7 max_rel=4.95e-5 rms=1.21e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 2 heat-out parity  max_abs=1.68e-7 max_rel=2.08e-2 rms=1.64e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 2 velocity parity  max_abs=8.01e-7 max_rel=2.08e-2 rms=1.38e-7 cells_over_tol=0
+PASS arch frozen vault + MG step 2 pressure parity  max_abs=1.60e-4 max_rel=1.06e-3 rms=4.68e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 2 flux parity  max_abs=3.33e-9 max_rel=2.08e-2 rms=5.76e-10 cells_over_tol=0
+PASS arch frozen vault + MG step 2 divergence-source parity  max_abs=5.80e-4 max_rel=6.43e-1 rms=5.43e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 2 sfield parity  max_abs=4.77e-6 max_rel=1.00e+0 rms=1.64e-7 cells_over_tol=0
+PASS arch frozen vault + MG step 2 flags exact  byte mismatches=0
+PASS arch frozen vault + MG step 4 total-E parity  relative=1.83e-9
+PASS arch frozen vault + MG step 4 mean-T parity  relative=5.20e-9
+PASS arch frozen vault + MG step 4 mass parity  max_abs=3.58e-7 max_rel=6.51e-6 rms=2.47e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 4 E parity  max_abs=1.83e-4 max_rel=2.66e-7 rms=3.60e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 4 T parity  max_abs=9.16e-5 max_rel=3.08e-7 rms=2.90e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 4 heat-in parity  max_abs=2.38e-7 max_rel=2.50e-3 rms=3.36e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 4 heat-out parity  max_abs=3.95e-7 max_rel=1.01e-4 rms=3.75e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 4 velocity parity  max_abs=2.03e-6 max_rel=1.30e+0 rms=1.88e-7 cells_over_tol=0
+PASS arch frozen vault + MG step 4 pressure parity  max_abs=4.43e-4 max_rel=3.60e-4 rms=1.30e-4 cells_over_tol=0
+PASS arch frozen vault + MG step 4 flux parity  max_abs=7.92e-9 max_rel=1.30e+0 rms=8.00e-10 cells_over_tol=0
+PASS arch frozen vault + MG step 4 divergence-source parity  max_abs=1.36e-3 max_rel=1.87e+0 rms=9.99e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 4 sfield parity  max_abs=7.15e-6 max_rel=5.00e-1 rms=2.83e-7 cells_over_tol=0
+PASS arch frozen vault + MG step 4 flags exact  byte mismatches=0
+PASS arch frozen vault + MG step 8 total-E parity  relative=1.20e-9
+PASS arch frozen vault + MG step 8 mean-T parity  relative=1.43e-9
+PASS arch frozen vault + MG step 8 mass parity  max_abs=4.12e-7 max_rel=1.46e-5 rms=3.57e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 8 E parity  max_abs=2.44e-4 max_rel=4.43e-7 rms=5.27e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 8 T parity  max_abs=1.83e-4 max_rel=6.14e-7 rms=3.85e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 8 heat-in parity  max_abs=9.54e-7 max_rel=1.21e-3 rms=9.92e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 8 heat-out parity  max_abs=1.10e-6 max_rel=8.16e-5 rms=9.99e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 8 velocity parity  max_abs=6.68e-6 max_rel=9.72e-2 rms=4.83e-7 cells_over_tol=0
+PASS arch frozen vault + MG step 8 pressure parity  max_abs=6.56e-4 max_rel=1.56e-3 rms=3.59e-4 cells_over_tol=0
+PASS arch frozen vault + MG step 8 flux parity  max_abs=2.75e-8 max_rel=9.72e-2 rms=2.03e-9 cells_over_tol=0
+PASS arch frozen vault + MG step 8 divergence-source parity  max_abs=1.43e-3 max_rel=2.25e-1 rms=1.32e-4 cells_over_tol=0
+PASS arch frozen vault + MG step 8 sfield parity  max_abs=7.15e-6 max_rel=7.32e-2 rms=2.87e-7 cells_over_tol=0
+PASS arch frozen vault + MG step 8 flags exact  byte mismatches=0
+PASS arch frozen vault + MG step 16 total-E parity  relative=8.38e-9
+PASS arch frozen vault + MG step 16 mean-T parity  relative=1.17e-8
+PASS arch frozen vault + MG step 16 mass parity  max_abs=5.36e-7 max_rel=7.42e-6 rms=4.79e-8 cells_over_tol=0
+PASS arch frozen vault + MG step 16 E parity  max_abs=3.66e-4 max_rel=6.20e-7 rms=7.01e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 16 T parity  max_abs=2.14e-4 max_rel=7.17e-7 rms=5.19e-5 cells_over_tol=0
+PASS arch frozen vault + MG step 16 heat-in parity  max_abs=3.81e-6 max_rel=3.61e-3 rms=3.27e-7 cells_over_tol=0
+PASS arch frozen vault + MG step 16 heat-out parity  max_abs=2.65e-6 max_rel=1.54e-4 rms=2.65e-7 cells_over_tol=0
+PASS arch frozen vault + MG step 16 velocity parity  max_abs=1.48e-5 max_rel=6.78e-2 rms=1.08e-6 cells_over_tol=0
+PASS arch frozen vault + MG step 16 pressure parity  max_abs=7.93e-4 max_rel=1.43e-4 rms=1.46e-4 cells_over_tol=0
+PASS arch frozen vault + MG step 16 flux parity  max_abs=5.96e-8 max_rel=6.78e-2 rms=4.54e-9 cells_over_tol=0
+PASS arch frozen vault + MG step 16 divergence-source parity  max_abs=4.12e-3 max_rel=6.33e-1 rms=2.93e-4 cells_over_tol=0
+PASS arch frozen vault + MG step 16 sfield parity  max_abs=7.15e-6 max_rel=9.52e-2 rms=3.23e-7 cells_over_tol=0
+PASS arch frozen vault + MG step 16 flags exact  byte mismatches=0
+PASS stats readback: 32-float phaseCounts + latentChargedE + auto PMin/PMax match CPU  counts=0/52/0/972/0/0 lat=0.00 P=[-98.8..98.8]
+PASS toDisplay mode 7 (phase map): renders distinct colors for ice, liquid, gas, and wall  distinct=6
+PASS toDisplay mode 5 (flags): distinguishes frozen solid, static wall, and open fluid  distinct=4
+PASS toDisplay solid overlay: toggling cfg.overlay updates frozen-cell pixels immediately  changed_pixels=52
+GPU/CPU DIAGNOSTICS PASSED; t8 aggregate E/T acceptance met
+PASS gpu-parity.mjs · 22.03 s
+
+PASS all 11 suites · 27.44 s

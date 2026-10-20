@@ -1,0 +1,67 @@
+Fluid browser diagnostics · 2026-10-20T04:35:19.809Z
+timer: performance.now() · crossOriginIsolated=true · observed quantum=0.005000ms
+gpu: nvidia ampere
+grid N=512 frames/scenario=600 frameDt=0.016666666666666666 pressureK=60 solver=MG substeps=auto FCT=1 gravity=300 scenarios=ice,cycle,jet,rain,arch
+timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.
+--- ice · OK ---
+m: total=262143.359375 exp=262144 drift=-0.0000024437904357910156 [warn]
+dr: total=11868.599609375 exp=11868.599734716117 drift=-1.0560733379138391e-8 [ok]
+dg: total=44997.19921875 exp=44997.199822962284 drift=-1.3427775205242936e-8 [ok]
+db: total=81348.59375 exp=81348.60170942545 drift=-9.784342056427898e-8 [ok]
+E: total=228493120 exp=228493110 drift=4.376499580228043e-8 [ok]
+min m=0.9994649291038513 dr=0.029983825981616974 dg=0.07995690405368805 db=0.19989192485809326 E=490
+maxM=1.0002044439315796 neg=0 over=0 maxDiv=0.0185394287109375 p[-12.770153045654297..4162.2177734375] maxVel=75.36774444580078
+phases vac=0 sol=44492 melt=0 liq=217652 boil=0 gas=0 | latentE=0 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.005555555555555556 K=60 mgS4x2(pre4/post8) ns=3/24 auto scenario=ice FCT=1 gravity=300
+frames/s=133.5 speed=2.23x CPU encode=0.13ms queue wait=7.33ms vCap=81 CFL bound=0.8374
+sampled peaks: maxDiv=0.8467707633972168 maxM=1.0023201704025269 over=19241 · divergence/compression are reported, not pass/fail gates
+--- cycle · OK ---
+m: total=77798.3984375 exp=77798.40014457703 drift=-2.1942315307189257e-8 [ok]
+dr: total=5103.908203125 exp=5103.9078994728625 drift=5.949404720827557e-8 [ok]
+dg: total=28388.3125 exp=28388.312033206224 drift=1.644316770269596e-8 [ok]
+db: total=57794.36328125 exp=57794.36384546757 drift=-9.762501564209112e-9 [ok]
+E: total=114848512 exp=114848895.08068848 drift=-0.000003335519146330703 [warn]
+min m=0.05197662115097046 dr=2.750311978161335e-9 dg=1.4784745872020721e-8 db=3.5390257835388184e-8 E=50.10551452636719
+maxM=1.0030336380004883 neg=0 over=1768 maxDiv=32.40623474121094 p[0..899028] maxVel=325.40771484375
+phases vac=0 sol=13192 melt=533 liq=155974 boil=90055 gas=2390 | latentE=190384288 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.0011111111111111111 K=60 mgS4x2(pre4/post8) ns=15/24 auto scenario=cycle FCT=1 gravity=300
+frames/s=43.3 speed=0.72x CPU encode=0.25ms queue wait=22.81ms vCap=405 CFL bound=0.7231
+sampled peaks: maxDiv=33.93663787841797 maxM=1.0171149969100952 over=36944 · divergence/compression are reported, not pass/fail gates
+--- jet · OK ---
+m: total=37375.83984375 exp=37375.840141147375 drift=-7.956941542550218e-9 [ok]
+dr: total=2830.74560546875 exp=2830.7456153696403 drift=-3.497626292161293e-9 [ok]
+dg: total=2799.986328125 exp=2799.9863203894347 drift=2.762715392009582e-9 [ok]
+db: total=4410.77587890625 exp=4410.775847222656 drift=7.183224694668822e-9 [ok]
+E: total=51521156 exp=51521093.40951538 drift=0.0000012148516360404116 [warn]
+min m=0.12701743841171265 dr=0.0003546983061823994 dg=0.005727127194404602 db=0.010826440528035164 E=139.9112091064453
+maxM=0.1523943841457367 neg=0 over=0 maxDiv=29.45709228515625 p[1399887.75..1406737.625] maxVel=253.2135009765625
+phases vac=0 sol=0 melt=0 liq=152143 boil=107544 gas=2457 | latentE=168791728 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.001388888888888889 K=60 mgS4x2(pre4/post8) ns=12/24 auto scenario=jet FCT=1 gravity=300
+frames/s=33.3 speed=0.55x CPU encode=0.29ms queue wait=29.77ms vCap=324 CFL bound=0.7034
+sampled peaks: maxDiv=29.45709228515625 maxM=0.2201327234506607 over=0 · divergence/compression are reported, not pass/fail gates
+--- rain · OK ---
+m: total=68070.3984375 exp=68070.39901733398 drift=-8.518151689214375e-9 [ok]
+dr: total=8756.6337890625 exp=8756.633588314056 drift=2.2925299040880203e-8 [ok]
+dg: total=29684.53125 exp=29684.531332969666 drift=-2.795047177827328e-9 [ok]
+db: total=52568.06640625 exp=52568.065366744995 drift=1.9774458078885518e-8 [ok]
+E: total=114562248 exp=114562613.52734375 drift=-0.000003190633772183943 [warn]
+min m=0.06709986180067062 dr=0.0018913557287305593 dg=0.003782712621614337 db=0.00630448292940855 E=37.60011291503906
+maxM=0.8057618141174316 neg=0 over=0 maxDiv=40.810546875 p[0..1183439.75] maxVel=189.10816955566406
+phases vac=0 sol=42436 melt=453 liq=110944 boil=107741 gas=570 | latentE=255383296 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.0023809523809523807 K=60 mgS4x2(pre4/post8) ns=7/24 auto scenario=rain FCT=1 gravity=300
+frames/s=67.9 speed=1.13x CPU encode=0.18ms queue wait=14.52ms vCap=189 CFL bound=0.9005
+sampled peaks: maxDiv=41.546688079833984 maxM=0.9560688138008118 over=0 · divergence/compression are reported, not pass/fail gates
+--- arch · OK ---
+m: total=127602.4453125 exp=127602.44876626134 drift=-2.706657570117739e-8 [ok]
+dr: total=27384.716796875 exp=27384.717570913956 drift=-2.826536200582893e-8 [ok]
+dg: total=34344.7890625 exp=34344.791240161285 drift=-6.340586756159645e-8 [ok]
+db: total=42858.890625 exp=42858.892296310514 drift=-3.899565351938712e-8 [ok]
+E: total=113443744 exp=113443782.85864258 drift=-3.4253655510187884e-7 [ok]
+min m=0.3497956693172455 dr=9.718860383145511e-9 dg=4.191917923890287e-9 db=9.100517672777642e-9 E=321.2926940917969
+maxM=1 neg=0 over=0 maxDiv=0.0645446702837944 p[-6717.353515625..4849.31005859375] maxVel=160.59315490722656
+phases vac=0 sol=29413 melt=398 liq=232333 boil=0 gas=0 | latentE=590205.125 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.0020833333333333333 K=60 mgS4x2(pre4/post8) ns=8/24 auto scenario=arch FCT=1 gravity=300
+frames/s=46.8 speed=0.78x CPU encode=0.23ms queue wait=21.14ms vCap=216 CFL bound=0.6691
+sampled peaks: maxDiv=6.413096904754639 maxM=1.055511713027954 over=7836 · divergence/compression are reported, not pass/fail gates
+
+Finished 5 scenarios · 59.23 s total.

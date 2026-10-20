@@ -25,6 +25,15 @@
 		const c=h2rgb(hue);
 		return [c[0]*sp+0.02,c[1]*sp+0.02,c[2]*sp+0.02];
 	}
-	Fluid.gpu.view={tempToRgb,pressureToRgb,velocityToRgb};
+	function phaseToRgb(phase,isWall){
+		if(isWall)return [0.55,0.30,0.22];
+		if(phase===0)return [0.03,0.04,0.06];
+		if(phase===1)return [0.72,0.88,1.00];
+		if(phase===2)return [0.20,0.78,0.85];
+		if(phase===3)return [0.12,0.42,0.88];
+		if(phase===4)return [1.00,0.58,0.10];
+		return [0.95,0.26,0.45];
+	}
+	Fluid.gpu.view={tempToRgb,pressureToRgb,velocityToRgb,phaseToRgb};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.view;
 })(globalThis);

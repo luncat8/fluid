@@ -28,16 +28,11 @@
 		else if(E<E3){T=cfg.TMelt+(E-E2)/(m*cfg.cLiq);phiL=1;phase=PHASE_LIQUID;}
 		else if(E<E4){T=cfg.TBoil;phiG=(E-E3)/(m*cfg.Lv);phiL=1;phase=PHASE_BOILING;}
 		else{T=cfg.TBoil+(E-E4)/(m*cfg.cGas);phiG=1;phiL=1;phase=PHASE_GAS;}
-		// target density from mass weighted specific volume ("mix properly"):
-		// vapor shares volume with liquid; gas falls as 1/T.
 		const rhoGas=cfg.rhoGas0*cfg.TBoil/Math.max(T,cfg.TEps);
 		const vStar=(1-phiG)/cfg.rhoLiq+phiG/rhoGas;
 		const rhoStar=1/vStar;
-		// two-sided S where vapor is present; liquid/solid is one-sided
-		// anti-overpack (the 0.2.0 minimal form). thin cold cells are the
-		// ambient air tier and carry no expansion target.
 		let S=0;
-		if(phiG>0)S=(m-rhoStar)/(m*cfg.tauPhase);
+		if(phiG>0)S=(m-rhoStar)/(Math.max(m,rhoStar)*cfg.tauPhase);
 		else if(m>cfg.rhoLiq)S=(m-cfg.rhoLiq)/(m*cfg.tauPhase);
 		if(S>cfg.SMax)S=cfg.SMax;
 		else if(S<-cfg.SMax)S=-cfg.SMax;
@@ -50,16 +45,11 @@
 	function phaseOf(m,E,cfg){
 		return phaseInto({T:0,phiL:0,phiG:0,phase:0,rhoStar:0,S:0,c:0,k:0},m,E,cfg);
 	}
-	// inverse caloric curve for scenario setup: the sensible-branch energy whose
-	// caloric T is T (a plateau temperature maps to the plateau start).
 	function energyFromT(m,T,cfg){
 		if(T<=cfg.TMelt)return m*cfg.cSol*T;
 		if(T<cfg.TBoil)return m*(cfg.cSol*cfg.TMelt+cfg.Lf+cfg.cLiq*(T-cfg.TMelt));
 		return m*(cfg.cSol*cfg.TMelt+cfg.Lf+cfg.cLiq*(cfg.TBoil-cfg.TMelt)+cfg.Lv+cfg.cGas*(T-cfg.TBoil));
 	}
-	// distance in E to the set of energies whose caloric temperature equals T:
-	// a point in a sensible branch, the whole latent interval on a plateau.
-	// the conduction enthalpy budget (0.0.0 section 5.7) is built on this.
 	function eqDist(m,E,T,cfg){
 		let lo,hi;
 		if(T<cfg.TMelt){lo=hi=m*cfg.cSol*T;}
@@ -72,52 +62,121 @@
 		return 0;
 	}
 
-	// layout (0.0.0 section 4/7): cell (x,y) spans [x-1,x] x [y-1,y] in cell units,
-	// interior x,y in 1..N, one ghost ring around. texel (x,y) of vel/flux holds the
-	// left/bottom face values of cell (x,y). this file is the numeric oracle for the
-	// scheme in 0.0.0 section 5; the wgsl in src/gpu implements the same formulas.
-
+	function setCell(massA,thermA,texW,x,y,r,g,b,m,T,cfg){
+		const i=(x+y*texW)*4;
+		massA[i]=r*m;massA[i+1]=g*m;massA[i+2]=b*m;massA[i+3]=m;
+		thermA[i]=energyFromT(m,T,cfg);
+		thermA[i+1]=T;
+		thermA[i+2]=0;
+		thermA[i+3]=0;
+	}
 	function buildScenario(cfg){
 		const N=cfg.N,texW=N+2,texH=N+2;
 		const massA=new Float32Array(texW*texH*4);
 		const thermA=new Float32Array(texW*texH*4);
 		const flagsA=new Uint8Array(texW*texH*4);
-		const cLiq=cfg.cLiq,TAmb=cfg.TAmb;
+		const sc=cfg.scenario,TAmb=cfg.TAmb;
+		if(sc==="ice"){
+			const x0=Math.max(2,Math.round(N*0.28)),x1=Math.min(N-1,Math.round(N*0.72));
+			const y0=Math.max(2,Math.round(N*0.10)),y1=Math.min(N-1,Math.round(N*0.48));
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					if(x>=x0&&x<=x1&&y>=y0&&y<=y1)setCell(massA,thermA,texW,x,y,0.12,0.62,0.85,1.0,245,cfg);
+					else setCell(massA,thermA,texW,x,y,0.03,0.08,0.20,1.0,283,cfg);
+				}
+			}
+			return {massA,thermA,flagsA,texW,texH};
+		}
+		if(sc==="cycle"){
+			// closed water cycle: central frozen ice block sitting in a warm water pool
+			// with open channels on both sides so plumes escape upward, boil into the
+			// headspace, condense against the cold ceiling and rain back down.
+			const x0=Math.max(2,Math.round(N*0.30)),x1=Math.min(N-1,Math.round(N*0.70));
+			const yIce0=Math.max(3,Math.round(N*0.05)),yIce1=Math.max(yIce0+2,Math.round(N*0.18));
+			const yPool=Math.max(yIce1+2,Math.round(N*0.26));
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const wave=2*Math.sin(6.2831853*3*(x-0.5)/N);
+					if(x>=x0&&x<=x1&&y>=yIce0&&y<=yIce1)setCell(massA,thermA,texW,x,y,0.12,0.70,0.92,1.0,258,cfg);
+					else if(y<=yPool)setCell(massA,thermA,texW,x,y,0.06,0.34,0.82,1.0,366+wave,cfg);
+					else setCell(massA,thermA,texW,x,y,0.02,0.03,0.06,0.05,305,cfg);
+				}
+			}
+			return {massA,thermA,flagsA,texW,texH};
+		}
+		if(sc==="jet"){
+			const x0=Math.max(2,Math.round(N*0.40)),x1=Math.min(N-1,Math.round(N*0.60));
+			const y1=Math.max(3,Math.round(N*0.16));
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					if(x>=x0&&x<=x1&&y<=y1)setCell(massA,thermA,texW,x,y,0.95,0.36,0.08,0.22,500,cfg);
+					else setCell(massA,thermA,texW,x,y,0.03,0.06,0.12,0.14,293,cfg);
+				}
+			}
+			return {massA,thermA,flagsA,texW,texH};
+		}
+		if(sc==="rain"){
+			const yPool=Math.max(3,Math.round(N*0.22));
+			const yTop=Math.min(N-1,Math.round(N*0.84));
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const wave=2*Math.sin(6.2831853*4*(x-0.5)/N);
+					if(y<=yPool)setCell(massA,thermA,texW,x,y,0.12,0.48,0.88,0.95,365+wave,cfg);
+					else if(y>=yTop)setCell(massA,thermA,texW,x,y,0.55,0.80,0.95,0.08,242,cfg);
+					else setCell(massA,thermA,texW,x,y,0.03,0.06,0.10,0.06,285,cfg);
+				}
+			}
+			return {massA,thermA,flagsA,texW,texH};
+		}
+		if(sc==="arch"){
+			// frozen solid arch holding back an elevated pool of warm red fluid:
+			// stays rigid while frozen, then melts from the outside in until the crown breaches.
+			const xL=Math.max(2,Math.round(N*0.18)),xR=Math.min(N-1,Math.round(N*0.82));
+			const legW=Math.max(2,Math.round(N*0.10));
+			const ySpring=Math.max(4,Math.round(N*0.36));
+			const thick=Math.max(3,Math.round(N*0.09));
+			const span=Math.max(1,(xR-xL)*0.5),cx=0.5*(xL+xR);
+			const rise=Math.max(2,Math.round(N*0.16));
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const nx=(x-cx)/span;
+					const archTop=Math.abs(nx)<=1?ySpring+rise*(1-nx*nx):0;
+					const inLeg=x>=xL&&x<=xR&&(x<xL+legW||x>xR-legW)&&y<=ySpring;
+					const inVault=Math.abs(nx)<=1&&y>=archTop-thick&&y<=archTop;
+					const inPool=x>xL+legW&&x<xR-legW&&y>archTop&&y<=ySpring+rise+Math.max(4,Math.round(N*0.18));
+					if(inLeg||inVault)setCell(massA,thermA,texW,x,y,0.10,0.75,0.95,1.0,242,cfg);
+					else if(inPool)setCell(massA,thermA,texW,x,y,0.90,0.24,0.12,1.0,305,cfg);
+					else setCell(massA,thermA,texW,x,y,0.04,0.07,0.14,0.35,298,cfg);
+				}
+			}
+			return {massA,thermA,flagsA,texW,texH};
+		}
 		for(let y=1;y<texH-1;y++){
 			for(let x=1;x<texW-1;x++){
 				const i=(x+y*texW)*4;
 				let m=0.3;
-				if(cfg.scenario==="still"||cfg.scenario==="convection")m=1.0;
-				if(cfg.scenario==="dam"&&x<Math.ceil(N*0.45)&&x>=Math.ceil(N*0.1)&&y<=Math.ceil(N*0.6))m=1.0;
+				if(sc==="still"||sc==="convection")m=1.0;
+				if(sc==="dam"&&x<Math.ceil(N*0.45)&&x>=Math.ceil(N*0.1)&&y<=Math.ceil(N*0.6))m=1.0;
 				massA[i+3]=m;
-				if(cfg.scenario==="dam"&&m>0.5)massA[i+2]=0.5*m;
+				if(sc==="dam"&&m>0.5)massA[i+2]=0.5*m;
 				thermA[i]=energyFromT(m,TAmb,cfg);
 				thermA[i+1]=TAmb;
-				// b/a are the cumulative heater/cold-plate source sums (0.4.0):
-				// donor transport carries them with the fluid, so their field
-				// totals are the exact source ledger and survive advection.
 				thermA[i+2]=0;
 				thermA[i+3]=0;
 			}
 		}
-		if(cfg.scenario==="convection"){
-			// start unstably stratified, hot at the bottom to cold at the top,
-			// plus a smooth warm/cold perturbation so buoyancy has rolls to
-			// amplify from the first step. heating a uniform box from the
-			// bottom band alone cannot do this on demo timescales: at the
-			// default conductivity the conducted layer is ~1 cell thick after
-			// 10 s and the rest of the box stays at T_amb (flat temperature map).
+		if(sc==="convection"){
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
 					const i=(x+y*texW)*4;
 					const grad=cfg.convBotT+(cfg.convTopT-cfg.convBotT)*(y-0.5)/N;
 					const T=grad+4*Math.sin(6.2831853*(x-0.5)/N)*Math.sin(3.14159265*(y-0.5)/N);
-				thermA[i]=energyFromT(massA[i+3],T,cfg);
-				thermA[i+1]=T;
+					thermA[i]=energyFromT(massA[i+3],T,cfg);
+					thermA[i+1]=T;
 				}
 			}
 		}
-		if(cfg.scenario==="blobs"){
+		if(sc==="blobs"){
 			paintBlob(massA,thermA,texW,texH,N*0.3,N*0.5,N*0.12,[0.8,0,0],0.6,cfg);
 			paintBlob(massA,thermA,texW,texH,N*0.7,N*0.5,N*0.12,[0,0.8,0],0.6,cfg);
 			paintBlob(massA,thermA,texW,texH,N*0.5,N*0.25,N*0.12,[0,0,0.8],0.6,cfg);
@@ -141,8 +200,6 @@
 			}
 		}
 	}
-	// interactive dye brush: an exact additive patch. the gpu adds these floats and
-	// the ledger sums these floats, so injection accounting is exact by construction.
 	function buildDyePatch(cfg,u,v,rgb){
 		const texW=cfg.texW,texH=cfg.texH;
 		const px=u*cfg.N,py=v*cfg.N;
@@ -154,7 +211,6 @@
 		if(w<=0||h<=0)return null;
 		const massPatch=new Float32Array(w*h*4);
 		const ePatch=new Float32Array(w*h);
-		const cLiq=cfg.cLiq,TAmb=cfg.TAmb;
 		for(let y=0;y<h;y++){
 			for(let x=0;x<w;x++){
 				const dx=(x0+x-0.5)-px,dy=(y0+y-0.5)-py;
@@ -210,10 +266,8 @@
 		const press=grid.allocPingPong(texW,texH,4,Float32Array);
 		const flux=new Float32Array(texW*texH*2);
 		const divsrc=new Float32Array(texW*texH);
-		// sfield mirrors the gpu scratch: (S, phi_l, phi_g, -) written by phaseEos
 		const sfield=new Float32Array(texW*texH*4);
 		const flags=new Uint8Array(texW*texH*4);
-		// Preallocated dye-FCT scratch: per-cell (R+,R-) for RGB and final mass result.
 		const fctLimiters=new Float32Array(texW*texH*6);
 		const massFctTmp=new Float32Array(texW*texH*4);
 		const acc=Fluid.core.stats;
@@ -231,8 +285,6 @@
 			if(x<1||x>texW-2||y<1||y>texH-2)return true;
 			return flags[(x+y*texW)*4]>0;
 		}
-		// frozen substance (flags.b) blocks like a wall for motion, but still
-		// conducts heat and never shares the wall mask with painted geometry
 		function isFrozen(x,y){
 			if(x<1||x>texW-2||y<1||y>texH-2)return false;
 			return flags[(x+y*texW)*4+2]>0;
@@ -247,6 +299,7 @@
 			return y<=1||y>=texH-1||isBlocked(x,y-1)||isBlocked(x,y);
 		}
 		function reset(){
+			Fluid.core.config.prepareScenario(cfg);
 			const sc=buildScenario(cfg);
 			mass.a.set(sc.massA);mass.b.fill(0);
 			therm.a.set(sc.thermA);therm.b.fill(0);
@@ -255,7 +308,6 @@
 			flux.fill(0);divsrc.fill(0);sfield.fill(0);
 			flags.set(sc.flagsA);
 			mass.cur=0;therm.cur=0;vel.cur=0;press.cur=0;
-			Fluid.core.config.prepareScenario(cfg);
 			const tot=acc.totalsFromFields(mass.a,therm.a,texW,texH);
 			ledger=acc.createLedger(tot);
 			cfg.frame=0;cfg.time=0;
@@ -265,9 +317,6 @@
 			const src=grid.curBuf(vel),dst=grid.nxtBuf(vel);
 			const ms=grid.curBuf(mass),ts=grid.curBuf(therm);
 			const R=cfg.mouseR,R2=R*R;
-			// mean-subtracted gravity: the uniform part is what the projection would remove
-			// anyway; subtracting it exactly stops the residual-divergence mass feedback
-			// measured in experiments/conformance.js (runaway overpack at walls).
 			const rhoMean=(ledger.initialM+ledger.injectedM-ledger.removedM)/(N*N);
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
@@ -294,21 +343,19 @@
 			}
 			grid.swap(vel);
 		}
-		// sign: gravityY is a magnitude pointing down (-y in texel space, as
-		// the density term shows: heavier than mean accelerates to -y).
-		// hot fluid is a density deficit, so its perturbation acceleration
-		// is opposite gravity: +beta*(T-TRef) along the gravity components.
-		// the old minus sign made hot fluid sink and cold rise into the
-		// walls, which is why the heated box never convected.
 		function cellAx(ms,ts,x,y,rhoMean){
 			if(x<1||x>texW-2||y<1||y>texH-2)return 0;
 			const i=(x+y*texW)*4;
-			return cfg.gravityX*(rhoMean-ms[i+3])/cfg.rhoRef+cfg.gravityX*cfg.beta*(ts[i+1]-cfg.TRef);
+			const m=ms[i+3];
+			const tb=m>=cfg.mEps?cfg.gravityX*cfg.beta*(ts[i+1]-cfg.TRef):0;
+			return cfg.gravityX*(rhoMean-m)/cfg.rhoRef+tb;
 		}
 		function cellAy(ms,ts,x,y,rhoMean){
 			if(x<1||x>texW-2||y<1||y>texH-2)return 0;
 			const i=(x+y*texW)*4;
-			return cfg.gravityY*(rhoMean-ms[i+3])/cfg.rhoRef+cfg.gravityY*cfg.beta*(ts[i+1]-cfg.TRef);
+			const m=ms[i+3];
+			const tb=m>=cfg.mEps?cfg.gravityY*cfg.beta*(ts[i+1]-cfg.TRef):0;
+			return cfg.gravityY*(rhoMean-m)/cfg.rhoRef+tb;
 		}
 		function mouseFall(dx,dy,R,R2){
 			const r2=dx*dx+dy*dy;
@@ -366,8 +413,6 @@
 			}
 			grid.swap(vel);
 		}
-		// rhs with the divergence source S from the phase pass (0.0.0 5.4/5.5).
-		// S is one step behind: phaseEos wrote it at the end of the previous step.
 		function poissonRhs(dt){
 			const vv=grid.curBuf(vel);
 			let maxB=0;
@@ -388,10 +433,6 @@
 		}
 		function project(iters){
 			if(mg && cfg.useMultigrid){
-				// one V-cycle: pre/post fine RB smooths plus a coarse solve of the
-				// long-wavelength residual (sum restriction, see multigrid.js).
-				// iters stays meaningful as the coarse sweep count (Nc^2 is 1/4 of
-				// the fine grid at N=512/S=2, so even 60 coarse sweeps are cheap).
 				const cycles=Math.max(1,Math.round(cfg.mgCycles||1));
 				for(let c=0;c<cycles;c++)mg.vcycle(cfg.mgPre||4,iters,cfg.mgPost||8);
 				return;
@@ -402,9 +443,9 @@
 					const src=grid.curBuf(press),dst=grid.nxtBuf(press);
 					for(let y=1;y<texH-1;y++){
 						for(let x=1;x<texW-1;x++){
-						const i=x+y*texW;
-						if(((x+y)&1)!==color){dst[i]=src[i];continue;}
-						if(isBlocked(x,y)){dst[i]=0;continue;}
+							const i=x+y*texW;
+							if(((x+y)&1)!==color){dst[i]=src[i];continue;}
+							if(isBlocked(x,y)){dst[i]=0;continue;}
 							let wsum=0,sum=0;
 							let w=faceW(ms,x,y,x-1,y);
 							if(w>0){wsum+=w;sum+=w*src[i-1];}
@@ -421,7 +462,6 @@
 				}
 			}
 		}
-		// w = 1/rho_f (harmonic mean); 0 drops the face: blocked neighbour or domain edge
 		function faceW(ms,x,y,nx,ny){
 			if(nx<1||nx>texW-2||ny<1||ny>texH-2)return 0;
 			if(isBlocked(nx,ny))return 0;
@@ -476,14 +516,6 @@
 				for(let x=1;x<texW-1;x++){
 					const i2=(x+y*texW)*2;
 					let fx=rawFx(vv,dt,x,y),fy=rawFy(vv,dt,x,y);
-					// monotone donor-cell needs total outflow <= 1 volume per cell per
-					// step. the +-1 face clamp alone is not enough: a diverging cell
-					// empties through up to 4 faces at once and the q'=q*(1-k)+in
-					// update then amplifies sign-alternating mass every step (draw +
-					// stir exploded to NaN in ~15 frames). scale the faces a cell owns
-					// as outflow so they sum to <= 1; each face is outflow for exactly
-					// one of its two cells, so the stored value stays the single shared
-					// flux and conservation is untouched. same limiter in the wgsl.
 					if(fx!==0){
 						const s=fx>0?outFlux(vv,dt,x-1,y):outFlux(vv,dt,x,y);
 						if(s>0.999999)fx*=0.999999/s;
@@ -499,7 +531,6 @@
 		function scalarValue(mbuf,index,field){
 			return mbuf[index*4+field];
 		}
-		// Lax-Wendroff minus donor-cell flux; only dye densities use this scalar correction.
 		function antiFlux(mSrc,faceFlux,left,right,field){
 			const a=Math.abs(faceFlux);
 			return 0.5*a*(1-a)*(scalarValue(mSrc,right,field)-scalarValue(mSrc,left,field));
@@ -507,7 +538,6 @@
 		function limiterIndex(index,field){
 			return index*6+field*2;
 		}
-		// Zalesak plus/minus allowances use the local 3x3 extrema of the low-order state.
 		function limiterPrepare(mSrc,mLow){
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
@@ -596,13 +626,9 @@
 		const thermDiag={clamped:0};
 		const phaseScratch={T:0,phiL:0,phiG:0,phase:0,rhoStar:0,S:0,c:0,k:0};
 		const phaseN={T:0,phiL:0,phiG:0,phase:0,rhoStar:0,S:0,c:0,k:0};
-		// phase_eos (0.0.0 5.5): one closed form of (m,E) writes the T cache, the
-		// phase byte, the frozen mask and the expansion source S. S is read one
-		// step behind by poisson_rhs; the mask updates at the substep boundary so
-		// projection, velocity and flux passes share one blocked-face rule. a cell
-		// that freezes loses its face velocity now (it holds its shape) and the
-		// momentum is charged to the ledger. pass chargeLatent=false when the phi
-		// cache is being primed (reset), so setup does not count as traversal.
+		// phase_eos (0.0.0 5.5): pass 1 computes state + pre-zeroing frozenMomentum so
+		// adjacent simultaneous freezes are order-independent and match GPU ping-pong;
+		// pass 2 zeroes every face touching any frozen cell.
 		function phaseEos(chargeLatent){
 			const ms=grid.curBuf(mass),ts=grid.curBuf(therm),vs=grid.curBuf(vel);
 			diag.sSaturated=0;
@@ -617,24 +643,26 @@
 						ledger.latentChargedE+=m*cfg.Lf*Math.abs(s.phiL-sfield[i+1])+m*cfg.Lv*Math.abs(s.phiG-sfield[i+2]);
 					}
 					sfield[i]=s.S;sfield[i+1]=s.phiL;sfield[i+2]=s.phiG;
-					if(s.S>=cfg.SMax||s.S<=-cfg.SMax)diag.sSaturated++;
+					const sat=s.S>=cfg.SMax||s.S<=-cfg.SMax;
+					if(sat)diag.sSaturated++;
 					flags[i+1]=s.phase;
 					const frozen=s.phiL<0.5&&s.phiG===0&&m>=cfg.mEps;
 					if(frozen&&flags[i+2]===0){
 						const uc=0.5*(vs[vi]+vs[vi+2]),vc=0.5*(vs[vi+1]+vs[vi+texW*2+1]);
 						ledger.frozenMomentum+=m*Math.sqrt(uc*uc+vc*vc);
-						vs[vi]=0;vs[vi+1]=0;vs[vi+2]=0;vs[vi+texW*2+1]=0;
 					}
 					flags[i+2]=frozen?1:0;
+					flags[i+3]=sat?1:0;
+				}
+			}
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					if(flags[(x+y*texW)*4+2]===0)continue;
+					const vi=(x+y*texW)*2;
+					vs[vi]=0;vs[vi+1]=0;vs[vi+2]=0;vs[vi+texW*2+1]=0;
 				}
 			}
 		}
-		// clamped pairwise exchange (0.0.0 5.7, phase-aware 0.5.0). ping-pong is
-		// mandatory: both cells read the same pre-update state and compute the
-		// same capped face value with opposite signs. the pairwise rate clamp is
-		// 0.5*C_h*|dT| with phase-interpolated capacities; the enthalpy budget
-		// (0.25 of the distance to thermal equilibrium, in E) keeps the four-face
-		// sum inside the temperature hull and never traverses a latent interval.
 		function conduction(dt){
 			const ms=grid.curBuf(mass);
 			const src=grid.curBuf(therm),dst=grid.nxtBuf(therm);
@@ -671,16 +699,12 @@
 			}
 			grid.swap(therm);
 		}
-		// one face of the conduction update for cell (x,y) against (nx,ny);
-		// the neighbour computes the exact negation from the same inputs
 		function faceExchange(ms,ts,own,x,y,nx,ny,mL,EL,dt){
 			if(nx<1||nx>texW-2||ny<1||ny>texH-2)return 0;
 			const j=(nx+ny*texW)*4;
-			if(flags[j]>0){
-				return 0; // wall faces exchange through wallCool above, not pairwise
-			}
+			if(flags[j]>0)return 0;
 			const mR=ms[j+3];
-			if(mR<cfg.mEps)return 0; // vacuum does not conduct
+			if(mR<cfg.mEps)return 0;
 			phaseInto(phaseN,mR,ts[j],cfg);
 			const dT=f32(phaseN.T-own.T);
 			if(dT===0)return 0;
@@ -694,30 +718,24 @@
 			if(Math.abs(dE)>bud){dE=dE>0?bud:-bud;thermDiag.clamped++;}
 			return dE;
 		}
-		// local sources, in place is safe (no pairwise coupling). bottom band:
-		// fixed power per cell; top band: cold plate relaxing T toward T_amb.
-		// every joule is charged to the ledger and to the therm.b/a accumulators
-		// the gpu stats reduction reads back.
 		function heatSources(dt){
 			if(!cfg.thermalSources)return;
 			const ms=grid.curBuf(mass),ts=grid.curBuf(therm);
 			const band=Math.max(1,Math.round(cfg.heatBand));
+			const ceilT=cfg.TCeil>0?cfg.TCeil:cfg.TAmb;
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
-				if(ms[(x+y*texW)*4+3]<cfg.mEps||isWall(x,y))continue;
-				const i=(x+y*texW)*4;
-				phaseInto(phaseScratch,ms[i+3],ts[i],cfg);
-				let dE=0;
-				// thermostat cap: a fixed-power band otherwise runs away
-				// (measured 467 K after 20 s) since conduction away from
-				// it is ~100x slower than the input at the defaults.
-				if(y<=band&&(!cfg.heatTarget||ts[i+1]<cfg.heatTarget))dE=f32(dE+f32(cfg.heatPower*dt));
-				if(y>N-band){
-					const C=f32(ms[i+3]*phaseScratch.c);
-					const dT=f32(ts[i+1]-cfg.TAmb);
-					const cooling=f32(f32(f32(cfg.coolTop*dT)*C)*dt);
-					dE=f32(dE-cooling);
-				}
+					if(ms[(x+y*texW)*4+3]<cfg.mEps||isWall(x,y))continue;
+					const i=(x+y*texW)*4;
+					phaseInto(phaseScratch,ms[i+3],ts[i],cfg);
+					let dE=0;
+					if(y<=band&&(!cfg.heatTarget||ts[i+1]<cfg.heatTarget))dE=f32(dE+f32(cfg.heatPower*dt));
+					if(y>N-band){
+						const C=f32(ms[i+3]*phaseScratch.c);
+						const dT=f32(ts[i+1]-ceilT);
+						const cooling=f32(f32(f32(cfg.coolTop*dT)*C)*dt);
+						dE=f32(dE-cooling);
+					}
 					if(dE===0)continue;
 					ts[i]=f32(ts[i]+dE);
 					phaseInto(phaseScratch,ms[i+3],ts[i],cfg);
@@ -749,7 +767,6 @@
 			const tot=acc.totalsFromFields(grid.curBuf(mass),grid.curBuf(therm),texW,texH);
 			const mot=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,cfg.dt);
 			const thermal=acc.thermalTotals(grid.curBuf(mass),grid.curBuf(therm),grid.curBuf(vel),texW,texH,cfg.mEps,cfg.cLiq,cfg.TAmb);
-			// phase histogram: counts per caloric byte (0.5.0 §3.7)
 			const phaseCounts=[0,0,0,0,0,0];
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
@@ -770,11 +787,11 @@
 					buf[i+2]+=patch.massPatch[p+2];
 					buf[i+3]+=patch.massPatch[p+3];
 					tbuf[i]+=patch.ePatch[x+y*patch.w];
-					if(buf[i+3]>=cfg.mEps)tbuf[i+1]=tbuf[i]/(buf[i+3]*cfg.cLiq);
 				}
 			}
 			const t=patchTotals(patch);
 			ledger.injectedM+=t.m;ledger.injectedDr+=t.dr;ledger.injectedDg+=t.dg;ledger.injectedDb+=t.db;ledger.injectedE+=t.E;
+			phaseEos(true);
 		}
 		function applyWallPatch(patch){
 			for(let y=0;y<patch.h;y++){

@@ -1,0 +1,40 @@
+PASS plateaus: T stays at T_melt / T_boil while phi sweeps
+PASS plateaus: latent ledger = m*Lf + m*Lv traversed within 0.1%  latent=2594.00 target=2594.00
+PASS melt: block starts frozen and its faces are blocked
+PASS melt: zero advective flux on frozen faces while open faces carry drift
+PASS melt: T stays on the T_melt plateau until each cell is fully melted
+PASS melt: block fully melts (phase histogram loses its solid)  melted at step 5112 of 8000
+PASS melt: melts outside-in (edge phi_l ahead of core at half-melt)  edge=1.000 core=0.000
+PASS melt: latent ledger = block mass * Lf within 1%  latent=12024.0 target=12024.0
+PASS melt: mass and energy conserved through the transition  drift_m=0.00e+0 drift_E=1.85e-7
+PASS melt: block unfrozen and free to move once melted
+INFO melt series (step, block mean T, mean phi_l, latent E)
+  0  T=250.00  phi_l=0.000  latent=0
+  1000  T=273.43  phi_l=0.374  latent=4494
+  2000  T=275.17  phi_l=0.606  latent=7282
+  3000  T=276.14  phi_l=0.768  latent=9231
+  4000  T=277.75  phi_l=0.899  latent=10815
+  5000  T=279.01  phi_l=0.989  latent=11895
+  6000  T=283.54  phi_l=1.000  latent=12024
+  7000  T=285.53  phi_l=1.000  latent=12024
+  8000  T=286.66  phi_l=1.000  latent=12024
+PASS boil: gas-branch spot has S > 0 (expansion source live)  S=19.67 rho*=0.0166
+PASS boil: expansion pushes neighbors (maxVel rises)  maxVel=0.70
+PASS boil: spot empties toward its gas target  m 1.000 -> 0.255 (rho*~0.0166)
+PASS boil: mass exactly conserved while volume changes  drift_m=5.00e-9
+INFO boil expansion factor 3.9x (rho_liq/rho_gas at T=450 is 60.3x)
+PASS condense: blob loses its vapor fraction to the cold liquid  phi_g 0.500 -> 0.0000
+PASS condense: contraction source observed (S < 0)  minS=-14.182
+PASS condense: convergence moves fluid (maxVel rises)  maxVel=0.47
+PASS condense: mass conserved through the contraction  drift_m=1.00e-8 m_end=0.414
+PASS freeze: liquid keeps its velocity while the mask is off
+PASS freeze: mask flip zeroes every face of the frozen cell
+PASS freeze: removed momentum is charged to the ledger  frozenMomentum=8.81
+PASS bounded S: thin gas cell crossing TBoil stays strictly inside (-SMax, +SMax)  S=-19.796 SMax=30.0
+PASS phaseToRgb: 7 distinct colors across phases 0..5 + static wall
+PASS scenario ice: finite, non-negative, conserved m/E, complete phase census  drift_m=3.84e-8 drift_E=5.99e-8 counts=0/195/0/829/0/0
+PASS scenario cycle: finite, non-negative, conserved m/E, complete phase census  drift_m=2.59e-8 drift_E=2.23e-7 counts=0/52/0/908/64/0
+PASS scenario jet: finite, non-negative, conserved m/E, complete phase census  drift_m=1.53e-9 drift_E=1.15e-8 counts=0/0/0/969/36/19
+PASS scenario rain: finite, non-negative, conserved m/E, complete phase census  drift_m=8.22e-9 drift_E=2.87e-9 counts=0/192/0/768/64/0
+PASS scenario arch: finite, non-negative, conserved m/E, complete phase census  drift_m=2.70e-9 drift_E=2.91e-8 counts=0/120/0/904/0/0
+ALL PHASE TESTS PASSED

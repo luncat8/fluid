@@ -10,6 +10,7 @@ const root = path.resolve(__dirname, "..");
 require(path.join(root, "src/core/config.js"));
 require(path.join(root, "src/core/grid.js"));
 require(path.join(root, "src/core/stats.js"));
+require(path.join(root, "src/core/multigrid.js"));
 const solverMod = require(path.join(root, "src/core/solver.js"));
 const cfg0 = Fluid.core.config.defaults;
 
@@ -228,7 +229,9 @@ function testCondense() {
 		"phi_g " + phi0.toFixed(3) + " -> " + phi1.toFixed(4));
 	check("condense: contraction source observed (S < 0)", minS < -0.01,
 		"minS=" + minS.toFixed(3));
-	check("condense: convergence moves fluid (maxVel rises)", maxVel > 0.5,
+	// Converged Poisson peak is 0.472 (RB K=300 gives 0.4724, MG gives 0.4700;
+	// only unconverged RB K=10 overshot to 0.5057).
+	check("condense: convergence moves fluid (maxVel rises)", maxVel > 0.4,
 		"maxVel=" + maxVel.toFixed(2));
 	check("condense: mass conserved through the contraction", driftM < 1e-6,
 		"drift_m=" + driftM.toExponential(2) + " m_end=" + m1.toFixed(3));
@@ -252,11 +255,42 @@ function testFreezeFlip() {
 		"frozenMomentum=" + sim.ledger.frozenMomentum.toFixed(2));
 }
 
+// 6. symmetric vapor source bound, view palette twin, and all 5 phase scenarios
+function testPhaseScenariosAndViews() {
+	const cfg = makeCfg({ N: 32 });
+	const viewMod = require("../src/gpu/view.js");
+	// Thin air cell heated across TBoil must stay strictly inside (-SMax, +SMax), never saturating
+	const thinHot = solverMod.phaseOf(2e-4, solverMod.energyFromT(2e-4, 380, cfg), cfg);
+	check("bounded S: thin gas cell crossing TBoil stays strictly inside (-SMax, +SMax)",
+		Math.abs(thinHot.S) < cfg.SMax,
+		"S=" + thinHot.S.toFixed(3) + " SMax=" + cfg.SMax.toFixed(1));
+	// Phase colormap twin produces distinct colors across all 6 phases + static wall
+	const seen = new Set();
+	for (let p = 0; p < 6; p++) seen.add(viewMod.phaseToRgb(p, false).join(","));
+	seen.add(viewMod.phaseToRgb(3, true).join(","));
+	check("phaseToRgb: 7 distinct colors across phases 0..5 + static wall", seen.size === 7);
+	for (const sc of ["ice", "cycle", "jet", "rain", "arch"]) {
+		const scCfg = makeCfg({ N: 32, scenario: sc, pressureIters: 6, useMultigrid: true });
+		Fluid.core.config.prepareScenario(scCfg);
+		const sim = solverMod.create(scCfg);
+		for (let step = 0; step < 30; step++) sim.step(1 / 120);
+		const st = sim.stats();
+		const exp = Fluid.core.stats.writeExpectedTotals({ m: 0, dr: 0, dg: 0, db: 0, E: 0 }, st.ledger);
+		const driftM = Math.abs(Fluid.core.stats.driftRel(st.tot.sumM, exp.m));
+		const driftE = Math.abs(Fluid.core.stats.driftRel(st.tot.sumE, exp.E));
+		const countSum = st.phaseCounts.reduce((a, b) => a + b, 0);
+		check("scenario " + sc + ": finite, non-negative, conserved m/E, complete phase census",
+			driftM < 1e-6 && driftE < 1e-6 && st.tot.cntNeg === 0 && countSum === 32 * 32,
+			"drift_m=" + driftM.toExponential(2) + " drift_E=" + driftE.toExponential(2) + " counts=" + st.phaseCounts.join("/"));
+	}
+}
+
 testPlateauSweep();
 testMeltBlock();
 testBoilExpansion();
 testCondense();
 testFreezeFlip();
+testPhaseScenariosAndViews();
 
 if (failures) {
 	console.log("FAILED " + failures + " phase checks");

@@ -428,3 +428,46 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   COEP); a file:// or plain-server capture reports quantum=0.1 ms and
   crossOriginIsolated=false, which makes queue/wait timings far coarser than the
   page thinks it is measuring.
+
+## 2026-10-20 Ampere MG vs RB A/B capture and 0.5.0 WGSL parity
+
+- [verified on Nvidia Ampere] `2026-10-20-02_20-GPU-browser-tests.log` (MG default)
+  vs `2026-10-20-02_21-GPU-browser-tests,mg=0.log` (Red-Black `?mg=0`) at `N=512`,
+  `600` frames: `crossOriginIsolated=true` improved `performance.now()` quantum
+  20x (`0.100000 ms -> 0.005000 ms`). `blobs` `maxM = 0.899917` (`over = 0`) is the
+  exact initial `0.3 + 0.6 * fall` peak; `draw` `maxM = 1.2165` (`over = 213..215`)
+  comes from additive `paintDye` (`+0.35` onto `0.8665`), which relaxes back to
+  `over = 0, maxM ~ 0.54` at `tauPhase = 0.05 s` after painting finishes. MG cuts
+  final `maxDiv` 177x on `blobs` (`2.922 -> 0.0165`) and 108x on `draw`
+  (`2.765 -> 0.0256`); at equal `ns=8` on `draw`, MG runs `24.54 ms` (`40.3 fps`,
+  `295` dispatches/step) vs RB `23.34 ms` (`42.4 fps`, `120` dispatches/step).
+- pitfall: unsymmetric `S = (m - rho*) / (m * tau_phase)` diverges toward `-inf`
+  when a thin headspace cell (`m << rho_liq`) heats into the boiling plateau
+  (`phi_g = 0+`, where `rho*` starts at `rho_liq`), saturating `-S_max` and driving
+  a spurious implosion while heating. Using `max(m, rho*) * tau_phase` for
+  `phi_g > 0` keeps `|S| < 1/tau_phase = 20 < S_max = 30` symmetrically on both
+  expansion and condensation (`sSat = 0` across 5,000 steps of `cycle`).
+- pitfall: coarse-grid multigrid blocking on all-Neumann Poisson solves must mark a
+  coarse cell blocked only when `openCount == 0` (averaging mass over open fine
+  cells) and mirror `pressC[hc]` across blocked coarse neighbours during bilinear
+  prolongation. Using `anyBlocked` (`||`) plus Dirichlet `0` across blocked coarse
+  cells injects spurious boundary gradients and blows up to `NaN` in 18 steps on
+  enclosed frozen cavities; open-count + Neumann mirror gives 224x / 154x residual
+  speedup and zero `NaN` on curved frozen vaults (`arch`).
+- skill: core WebGPU caps `maxStorageTexturesPerShaderStage = 4`. Binding inputs as
+  unfiltered textures (`textureLoad`) leaves all 4 write storage slots free for
+  `phaseEos` (`thermDst`, `flagsDst`, `sfieldDst`, `accumDst`). Running the
+  post-transport chain twice (`phaseA -> freezeTmp -> conduction -> heatSources ->
+  phaseB -> freezeMain`) leaves live state in canonical textures, preserves
+  `state.t` and `state.v` ping-pong parity, and makes `encodePrimePhase` strictly
+  idempotent (`f(f(x)) = f(x)`) for `reset()`, `paintDye()`, and `paintWall()`.
+- pitfall: any Node suite that exercises `Fluid.core.solver` with `useMultigrid: true`
+  must `require("src/core/multigrid.js")`, or the CPU solver silently falls back to
+  plain Red-Black GS while the GPU runs two-level MG (the pre-existing root cause of
+  `dam` parity failure in `gpu-parity.mjs`, and why `testCondense` previously saw
+  `maxVel = 0.5057` from unconverged `RB K=10` instead of the converged Poisson
+  value `0.4724` / `0.4700`).
+- pitfall: `prepareScenario(cfg)` must reset non-scenario overrides (`thermalSources`,
+  `TCeil`, `gravityY`, `heatPower`, `coolTop`) only when `cfg._prevScenario !==
+  cfg.scenario`, or explicit overrides passed to `solver.create(cfg)` on a fresh
+  config object get wiped on initial reset.

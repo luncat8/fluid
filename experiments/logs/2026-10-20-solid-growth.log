@@ -1,0 +1,8 @@
+PASS stefan 1D: ice front grows monotonically into liquid  s(1.25s)=3.22 -> s(7.5s)=8.31 cells
+PASS stefan 1D: front depth log-log slope matches t^0.5 within +-0.08  slope=0.5294 target=0.5000
+PASS stefan 1D: mass and energy conserved through solidification (f32 machine precision)  drift_m=0.00e+0 drift_E=7.54e-8
+PASS plume + crust: cold ceiling grows a frozen solid crust while convective flow runs underneath  frozenTop=328 maxVel=1.839
+PASS plume + crust: mass and energy ledger conserved with open heat sink/source  drift_m=-7.46e-7 drift_E=-5.33e-7
+PASS solid arch: overhangs open chamber under gravity without sagging (u=v=0 inside frozen crown)  frozen=447/471
+PASS solid arch + MG: finite pressure and conserved mass with non-aligned frozen geometry  p=[-343.71..502.43] drift_m=5.43e-9
+ALL SOLID-GROWTH TESTS PASSED

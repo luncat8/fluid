@@ -140,6 +140,9 @@
 			}else if(k==="f"){
 				cfg.fctLimiter=cfg.fctLimiter?0:1;
 				cfg._dirty=true;
+			}else if(k==="o"){
+				cfg.overlay=cfg.overlay>0?0:1;
+				cfg._dirty=true;
 			}else if(k==="c"){
 				cfg.paintColor=((cfg.paintColor||0)+1)%DYE_COLORS.length;
 			}else if(k==="b"){
