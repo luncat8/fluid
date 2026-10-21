@@ -8,6 +8,30 @@ const { performance } = require("node:perf_hooks");
 
 require("../src/core/config.js");
 const realConfig = globalThis.Fluid.core.config;
+{
+	const jet = Object.assign({}, realConfig.defaults, {
+		N: 64, texW: 66, texH: 66, scenario: "jet", productCycleGate: 1
+	});
+	realConfig.prepareScenario(jet);
+	assert.equal(jet.mgCycles, 1, "jet ships one V-cycle under the product gate");
+	jet.scenario = "dam";
+	realConfig.prepareScenario(jet);
+	assert.equal(jet.mgCycles, 2, "leaving jet restores two cycles");
+	jet.scenario = "cycle";
+	realConfig.prepareScenario(jet);
+	assert.equal(jet.mgCycles, 2, "cycle stays on two V-cycles");
+	const pinned = Object.assign({}, realConfig.defaults, {
+		N: 64, texW: 66, texH: 66, scenario: "jet", productCycleGate: 1,
+		mgCycles: 2, mgCyclesPinned: 1
+	});
+	realConfig.prepareScenario(pinned);
+	assert.equal(pinned.mgCycles, 2, "a pinned cycles query is not overwritten");
+	const oracle = Object.assign({}, realConfig.defaults, {
+		N: 64, texW: 66, texH: 66, scenario: "jet", mgCycles: 2
+	});
+	realConfig.prepareScenario(oracle);
+	assert.equal(oracle.mgCycles, 2, "oracle scripts without the product gate keep the knob they set");
+}
 const html = fs.readFileSync(path.join(__dirname, "browser-tests.html"), "utf8");
 const inline = /<script>([\s\S]*?)<\/script>/.exec(html);
 assert.ok(inline, "browser harness inline script exists");
@@ -53,7 +77,8 @@ const stats = {
 	cntNeg: 0,
 	cntOver: 0,
 	motion: { maxVel: 0, maxDiv: 0.1, pMin: -1, pMax: 1 },
-	diag: { sSaturated: 0, poissonRes: 0.02, poissonRhs: 40, poissonRel: 0.0005 }
+		diag: { sSaturated: 0, poissonRes: 0.02, poissonRhs: 40, poissonRel: 0.0005,
+			poissonDrift: 36, poissonDriftRel: 0.9 }
 };
 const device = {
 	queue: { onSubmittedWorkDone: () => Promise.resolve() },
@@ -136,12 +161,12 @@ vm.runInNewContext(inline[1], context, { filename: "browser-tests.html:inline" }
 		.filter(name => queryElements["case-" + name].checked);
 	assert.deepEqual(selected, ["blobs", "draw"], "scenario query prefill selects a reproducible subset");
 	assert.match(elements.out.textContent, /phases vac=0 sol=0 melt=0 liq=0 boil=0 gas=0 \| latentE=0 fMom=0 sSat=0/);
-	assert.match(elements.out.textContent, /poisson: res=0\.02 rhs=40 true=0\.0005/,
-		"the report carries the true poisson residual, not only maxDiv");
-	assert.match(elements.out.textContent, /gpu memory: /,
-		"the report carries the a5 field-pool footprint line (n/a is a valid value here)");
-	assert.match(elements.out.textContent, /sampled peaks: .*poissonTrue=0\.0005/,
-		"the sampled peak line follows the residual channel");
+	assert.match(elements.out.textContent, /poisson: res=0\.02 rhs=40 true=0\.0005 drift=0\.9/,
+		"the report carries the solve residual and the post-step drift");
+	assert.match(elements.out.textContent, /gpu memory estimate: /,
+		"the report shows an informational pool allocation estimate");
+	assert.match(elements.out.textContent, /sampled peaks: .*poissonTrue=0\.0005 at frame=1 absRes=0\.02 rhs=40 drift=0\.9 at frame=1 driftRes=36/,
+		"the sampled peak line retains solve and drift residuals with their frames");
 	console.log("PASS browser diagnostics UI: five-case run, phase scenarios, scenario query, scripted paint, in-flight lock, report and clipboard copy");
 })().catch(error => {
 	console.error(error);

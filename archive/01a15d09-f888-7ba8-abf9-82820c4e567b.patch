@@ -1,0 +1,2019 @@
+diff --git a/0.6.0-plan.md b/0.6.0-plan.md
+index 70c88db..3688f87 100644
+--- a/0.6.0-plan.md
++++ b/0.6.0-plan.md
+@@ -4,14 +4,27 @@ status: in progress. t1 (guarded timestamp-query profiling in HUD + browser
+ report) done; t4 was completed as part of 0.5.0 (two-level multigrid is the
+ default solver, red-black remains as mg=0). t11 adopted the coarse sweep count
+ (20, was 60) after the N=512 Ampere runs and the pinned-dt oracle rows; the
+-cycle count stays 2. t2 is done: every solver candidate has a fixed-policy
++cycle count stays 2 except jet, which ships 1. t2 is done: every solver candidate has a fixed-policy
+ (ns=4) hardware row, the auto-policy rows and N=1024 are recorded, and the
+ hardware report carries the true Poisson residual so an A/B is not blind in
+ boiling flow. the fixed-policy N=1024 row is recorded in the 2026-10-21 capture set.
+ Memory remains reported but is not a product constraint; solver quality and believable
+-fluid behavior must not be traded for a smaller footprint. Still open: investigate
+-boiling-flow residual spikes. The current third-level candidates failed the same-state
+-quality gate and were rejected; do not port them to the GPU.
++fluid behavior must not be traded for a smaller footprint. The boiling residual spike
++in the 2026-10-21 fixed-dt cycle capture (poissonTrue=26 at frame 301, absRes=5.0e4,
++rhs=1.9e3) is coefficient drift, not a failed solve: it grows with K (68/49/26/15)
++while the settled residual orders the other way, the auto-policy rows do not spike,
++and the CPU cycle at N=128 hits the same event at the same sim time (step 1170,
++t=4.9 s): post-step residual / solve rhs = 668, and 1.2e4 times the solve residual.
++`true` is now the residual of the system just solved; `drift` is the old post-step
++number. Do not raise K or add a level to chase `drift`. The third-level candidates
++failed the same-state quality gate and stay rejected. The split is confirmed on
++device (`experiments/logs/2026-10-21-07_19-GPU-browser-tests.log`): the frame-301
++spike moved bit-exactly into `drift` (26.11078936008509, driftRes=49994.73828125)
++and `true` peaks at 0.141 on frame 1. One cycle is rejected for dam, blobs and
++cycle. Jet ships 1 cycle. The auto-policy row
++(`experiments/logs/2026-10-21-jet-auto-GPU-browser-tests.log`) is 75.4 fps at
++ns=12, press 0.607 ms, settled true 0.0036. The 49 fps miss is closed on this
++machine.
+ depends on: 0.5.0 (a complete sim to optimize; optimizing earlier measures the wrong thing)
+ milestone: draft.txt "fast, stable, good for interactive games"
+ 
+@@ -115,15 +128,26 @@ benchmarks:
+ 	variants now: cycle count (1 vs 2), smoother counts (pre/post), coarse K;
+ 	            later: 3+ levels, damped-jacobi smoother
+ 	decision: adopt the variant that reaches residual 1e-3 at N=512 in the least gpu time.
+-	the residual that counts is the true Poisson residual (residualNorm/divBefore
+-	on the oracle): divAfter floors at max|S| in boiling scenarios and hides
+-	solver quality entirely (measured, mg-work logs). both numbers are now hardware
+-	measurable: the stats reduction carries max|b - L p| and max|b| (slots 32/33) and
+-	browser-tests.html prints them as `poisson: res= rhs= true=`, where `true` is the
+-	same ratio the oracle rows quote. on the gpu the residual comes from the operator
+-	in mgRestrict, evaluated at frame end with the last substep's pressure and the
+-	post-phase mass/flags; that is also when the oracle reads it, so the two agree.
+-	cost: one extra texture read per cell in a pass that runs every 30 frames.
++	the residual that counts is the true Poisson residual of the system just solved
++	(diag.poissonRes/divBefore, captured at the end of project, before transport):
++	divAfter floors at max|S| in boiling scenarios and hides solver quality entirely
++	(measured, mg-work logs). calling residualNorm() after step() is not that number:
++	transport and phase change the face weights, and one changed face next to a
++	hydrostatic jump reads as a huge residual (dam N=64, end/solve=556 at a step whose
++	solve/rhs is 1.4e-4). the hardware report prints both: slots 32/33 are the solve
++	(`poisson: res= rhs= true=`), slots 34/35 are the post-step reading (`drift=`).
++	the 2026-10-21 fixed-dt cycle spike (true=26 at frame 301) is the drift column.
++	the CPU cycle at N=128 hits the same event (step 1170, t=4.9 s, post-step residual
++	1.2e4 times the solve). confirmed on the same Ampere box, same preset, after the
++	split (`2026-10-21-07_19`): drift=26.11078936008509 at frame 301,
++	driftRes=49994.73828125, identical to the pre-split absRes; end-of-run drift
++	equals the old true (0.009715138446710316) while the solve reads 0.00877. the
++	sampled `true` peak is 0.141 at frame 1. mass, phases, pressure range and maxDiv
++	match the pre-split capture to the printed digits, so the trajectory did not move.
++	it anti-correlates with solver work, so it must not rank a candidate. cost of the
++	solve capture: two dispatches on the sampled frame's last substep, inside the
++	press timestamp group, before transport. the 07_19 press sample is 0.03 ms above
++	the pre-split row; that is the extra reduce, not a solver change.
+ 	measured on the CPU oracle (experiments/logs/2026-10-20-mg-samestate*.log,
+ 	mg-work*.log; pinned dt=1/240; the controlled rows run one step from a shared
+ 	warm state because a multi-step peak metric follows the trajectory):
+@@ -149,14 +173,34 @@ benchmarks:
+ 	only 23 %, while one cycle removed buys 49 % of press. that is why the cycle
+ 	count, not a smaller K, is the next lever, and why a third level (which shrinks
+ 	both terms) beats a fourth tuning of K.
+-	1 cycle is NOT adopted: at N=128 it leaves relRes 7.7e-3 (dam) and 4.3e-3 (blobs),
+-	21-22x the 2-cycle row and above the 1e-3 bar; the fixed-policy hardware row
+-	agrees (blobs sampled maxDiv 2.81 -> 6.27, dam ends the 600 frames with 1191
+-	overpacked cells where every 2-cycle row ends with 0). it is +53 % fps on cycle
+-	and +56 % on jet, and residual-neutral there in the oracle, so a scenario- or
+-	phase-conditional single cycle stays open as a *gated* option, not a default
+-	(the damage is phase- and grid-dependent, so only the worst case can set a
+-	default). the `true` channel added above is what a re-trial of it needs.
++	1 cycle is NOT the default. at N=128 it leaves relRes 7.7e-3 (dam) and 4.3e-3
++	(blobs), 21-22x the 2-cycle row and above the 1e-3 bar; the fixed-policy hardware
++	row agrees (blobs sampled maxDiv 2.81 -> 6.27, dam ends the 600 frames with 1191
++	overpacked cells where every 2-cycle row ends with 0). the old "residual-neutral
++	in jet/cycle" claim was the post-step column, and a same-state step inherits a
++	2-cycle pressure. re-measured on the solve residual
++	(`experiments/logs/2026-10-21-mg-cycle-gate.log`): dam/blobs solve is 18-19x worse
++	while drift moves only 5-11 %; cycle is 1.00x on one inherited step and 27x on a
++	trajectory that has been 1-cycle the whole time (peakDivA 37x), which matches the
++	hardware maxDiv 30 -> 122. jet is the only neutral row (solve 1.03x same-state,
++	1.00x over its own 180 steps).
++	adopted for jet only, after the fixed-ns pair on the new true column
++	(`2026-10-21-08_02` and `...1`, N=512, ns=4, K20, Ampere):
++	- settled true 0.01145 -> 0.01000 (not worse), drift 0.0123 -> 0.0106
++	- sampled true peak is the frame-1 cold start, 0.067 -> 0.124. it does not
++	  persist; both rows' drift equals true there, so it is a first solve, not
++	  coefficient drift. not a ranking.
++	- maxDiv 27.87 -> 23.70, end maxDiv 22.29 -> 21.18, maxVel 109.62 -> 109.54,
++	  over=0, conservation unchanged. pressure span 4458 -> 4369; the mean shift
++	  is the Neumann null space, not a different gradient.
++	- fps 104.8 -> 157.6, press 1.219 -> 0.641 ms/substep.
++	the product gate lives in prepareScenario and is off unless the app or the
++	browser harness sets productCycleGate, so oracle scripts keep the knob they
++	named. `&cycles=` pins the count. the auto row is in: 75.4 fps, ns still 12
++	(maxVel 260 vs 256), press 0.607 vs 1.155, the same 47 % cut as the fixed
++	pair. settled true 0.00362, drift 0.00399. frame-1 true 0.258 is the cold
++	start again. E drift 1.22e-6 is the same warn band as the 2-cycle auto row
++	(1.35e-6), not a new leak. do not extend the gate.
+ 	a2 note: on multi-step rows the K=20 default reads rel 3.1e-4 (N=64), 7.7e-4
+ 	(N=128) and 1.9e-3 (N=256); K=40 reads 2.5e-4, 4.6e-4 and 8.8e-4, so it is the
+ 	fallback that holds the 1e-3 bar at every measured resolution. K=40 now has its
+@@ -177,6 +221,12 @@ benchmarks:
+ 	decision: adopt if the stirred vortex decay improves by >= 25 % for <= 15 % extra frame
+ 	time. mac-cormack can produce overshoot, so the limiter is mandatory and the min/max
+ 	watchdog must stay at 0.
++	cpu trial, not adopted (`experiments/logs/2026-10-21-vortex-decay.log`, N=64,
++	cfg.macCormack default 0, GPU ignores the flag): a 1 s window cannot clear a
++	1.25x retained-KE bar because semi-Lagrangian has only lost 12 %. at 4 s with
++	projection, retained KE is 0.672 -> 0.961 (1.43x) and the clamp watchdog is 0.
++	the unprojected row is not the decision: both schemes fall apart once divergence
++	accumulates. device frame time is not measured, so the 15 % bar is still open.
+ 	vorticity confinement is a force, not an advection change: cheap, big visual payoff for
+ 	games, default off until measured.
+ 
+@@ -249,7 +299,10 @@ benchmarks:
+ 	(experiments/mg-work.js, mg-work2.js); it is the denominator for 4.1
+ - [x] t4 multigrid V cycle (cpu first, then wgsl), residual and time comparison
+ 	(done in 0.5.0; experiments/multigrid.js)
+-- [ ] t5 mac-cormack + limiter for velocity (cpu first, then wgsl), vortex decay metric
++- [ ] t5 mac-cormack + limiter for velocity (cpu first, then wgsl), vortex decay metric.
++	CPU 4 s projected row keeps 1.43x the kinetic energy, watchdog 0, not adopted:
++	the shader does not implement it and the frame-time bar is unmeasured.
++	`node experiments/vortex-decay.js 64 960`
+ - [ ] t6 vorticity confinement force
+ - [ ] t7 half-float trials per field, with drift, true-residual, divergence, and timing
+ 	checks. Adopt only when speed improves and realistic behavior remains ok; any
+@@ -262,6 +315,10 @@ benchmarks:
+ 	fallback keeps its 60 fine sweeps)
+ - [ ] t12 record everything measured (including what did not help) in
+ 	findings-pitfalls-skills.md and experiments/logs
++- [x] t15 boiling residual spike. Confirmed on device: the frame-301 spike moved
++	bit-exactly into `drift` (26.11078936008509, driftRes=49994.73828125) and `true`
++	peaks at 0.141 on frame 1. Log: `experiments/logs/2026-10-21-07_19-GPU-browser-tests.log`.
++	CPU proof: `node experiments/residual-spike.js`.
+ - [x] t14 CPU oracle trial of a third multigrid level. The N=128 dam case regressed
+ 	post-projection divergence by about 9x; cycle's true residual regressed 16-24 %.
+ 	Rejected: no GPU port or hardware row. Results and rerun command:
+@@ -300,5 +357,7 @@ benchmarks:
+ 	noise. measure over 300 frames, discard the first 60, report median, p95 and 1 % low.
+ - an unpinned substep policy silently rewrites the baseline: the same solver at 4 and 8
+ 	substeps differs by ~2x. every before/after pair names the policy and the observed ns.
++- ranking a boiling solver by the sampled poissonTrue peak from a capture dated before
++	the solve/drift split. that peak is coefficient drift and grows with pressure amplitude.
+ - readback stalls look like sim cost in a submit-time measurement. keep GPU timestamp
+ 	numbers and wall-clock submit numbers in separate columns.
+diff --git a/archive/0.6.0-cycle-gate-worklog.md b/archive/0.6.0-cycle-gate-worklog.md
+new file mode 100644
+index 0000000..b8daaf5
+--- /dev/null
++++ b/archive/0.6.0-cycle-gate-worklog.md
+@@ -0,0 +1,78 @@
++# 0.6.0 one-cycle gate, re-measured on the solve residual
++
++date: 2026-10-21
++plan: 0.6.0-plan.md section 4.1
++evidence:
++	experiments/logs/2026-10-21-07_19-GPU-browser-tests.log
++	experiments/logs/2026-10-21-mg-cycle-gate.log
++	experiments/logs/2026-10-21-04_23-GPU-browser-tests.log
++	experiments/logs/2026-10-21-04_23-GPU-browser-tests1.log
++
++## why
++
++The device split is confirmed, so the old "1 cycle is residual-neutral in jet and
++cycle" sentence can be checked on the residual that counts. That sentence came
++from `residualNorm()` after `step()` on one step inherited from a 2-cycle warmup.
++
++## result
++
++`node experiments/mg-cycle-gate.js`, dt=1/240, N=128, K20, pre4/post8.
++
++Same-state, one step after 180 steps at K60:
++
++- dam solve 18.1x, drift 1.05x. The old column hid the regression; divAfter did not.
++- blobs solve 18.9x, drift 1.11x. Same.
++- jet solve 1.03x, rel 1.00x.
++- cycle solve 1.00x. This is the inherited-pressure row, and it is not the decision.
++
++Own trajectory, 90 warmup + 90 measured:
++
++- jet peakSolve 1.00x, peakDivA 1.00x, over=0.
++- cycle peakSolve 27.4x (0.037 -> 1.02), peakDivA 36.9x (17 -> 626).
++
++1 cycle stays rejected for dam, blobs, and cycle. Jet is the only neutral row.
++Not adopted: the hardware `true` pair does not exist yet. The fixed-ns jet rows
++from 04_23 already match on maxVel (109.5 vs 109.6), over=0, and maxDiv
++(23.7 vs 27.9), with +54 % fps, but their poissonTrue is the drift column.
++
++## device pair
++
++`2026-10-21-08_02` is 2 cycles, `...1` is 1 cycle. Same machine, N=512, ns=4,
++K20, 600 frames, new true column.
++
++- settled true 0.01145 -> 0.01000. drift 0.01229 -> 0.01057.
++- frame-1 true 0.0671 -> 0.1238, and drift equals true on both. cold start only.
++- maxDiv 27.87 -> 23.70, end 22.29 -> 21.18. maxVel 109.62 -> 109.54. over=0.
++- pressure span 4458 -> 4369. the mean moved; the gradient did not.
++- conservation ok on both. phases within a few thousand cells of 262144.
++- fps 104.8 -> 157.6. press 1.219 -> 0.641 ms/substep.
++
++Adopted for jet only. The frame-1 gap is a first solve, not a persistent
++regression, and the settled residual is the number the plan ranks. Dam, blobs
++and cycle stay at 2. The gate is `productCycleGate` so a re-run of the oracle
++scripts still uses the cycle count those logs named. `&cycles=` pins an A/B.
++
++## auto confirmation
++
++`experiments/logs/2026-10-21-jet-auto-GPU-browser-tests.log`, N=512, auto,
++K20, 600 frames, the product gate (mgS4x1). Against the 05_55 2-cycle auto row:
++
++- fps 49.3 -> 75.4. frame 20.3 ms -> 13.3 ms. a1 holds for jet on this machine.
++- ns stayed 12. maxVel 256 -> 260, so the policy did not add substeps.
++- press 1.155 -> 0.607, a 47 % cut, the same fraction as the fixed pair.
++- settled true 0.00362, drift 0.00399. the old end true (0.00546) was the
++  post-step number; the new drift is smaller, not larger.
++- frame-1 true 0.258, drift 0.258. cold start, same as the fixed pair.
++- end maxDiv 22.9 -> 21.0. sampled peak 25.2 -> 29.9. one sample, not a
++  trajectory blowup.
++- E drift 1.22e-6 [warn] vs 1.35e-6 [warn]. same band. mass and dye stay ok.
++- over=0. phases within a few hundred cells of the 2-cycle row.
++
++The gate stands. Do not extend it.
++
++## next
++
++t5 has a CPU row and is not adopted. At 4 s with projection, MacCormack keeps
++1.43x the kinetic energy and the clamp watchdog is 0
++(`experiments/logs/2026-10-21-vortex-decay.log`). The flag stays off until the
++WGSL matches and a device frame-time row is inside 15 %.
+diff --git a/archive/0.6.0-residual-spike-worklog.md b/archive/0.6.0-residual-spike-worklog.md
+new file mode 100644
+index 0000000..d6a3988
+--- /dev/null
++++ b/archive/0.6.0-residual-spike-worklog.md
+@@ -0,0 +1,90 @@
++# 0.6.0 boiling residual spike
++
++date: 2026-10-21
++plan: 0.6.0-plan.md (t15)
++evidence:
++	experiments/logs/2026-10-21-05_47-GPU-browser-tests.log
++	experiments/logs/2026-10-21-05_55-GPU-browser-tests.log
++	experiments/logs/2026-10-21-07_19-GPU-browser-tests.log
++	experiments/logs/2026-10-21-residual-spike.log
++
++## review
++
++t14 asked for a device capture that named the frame of the cycle residual spike.
++It arrived: fixed ns=4, dt=1/240, N=512, K20, two cycles, frame 301,
++absRes=49995, rhs=1915, true=26.11. The same run ends at true=0.0097. The
++auto-policy capture from the same machine does not spike (peaks 0.18-0.39, all
++at frame 1). Across the earlier fixed rows the peak grows with solver work:
++K60 68, K40 49, K20 26, 1-cycle 15, while the settled residual orders the other
++way (0.0079 / 0.0083 / 0.0097 / 0.013). A failed solve cannot do that.
++
++## what the spike is
++
++The reported residual was `b - L p` with `b` and `p` from the projection and
++`L` from mass and flags after transport and phase. A face weight that changes
++between those two moments, times a hydrostatic pressure jump, is the whole
++number. rhoVac=0.001 makes an emptied neighbor a weight of ~500.
++
++CPU proof (`experiments/residual-spike.js`):
++
++- drop one cell of a linear field to rhoVac: residual x499 (1.0e3 -> 5.0e5)
++- melt a blocked cell inside a uniform p=5e4: residual 0 -> 2.0e5
++- dam N=64, step 10: end/solve=556, solve/rhs=1.4e-4
++- dam N=128, 600 steps: max drift/solve=767, drift/rhs=0.36 at step 276,
++  solve/rhs stays 0.073
++- cycle N=128, 1400 steps: no spike through 2.5 s, then at step 1170
++  (t=4.875 s) the post-step residual is 1.2e4 times the solve and 668 times
++  the solve rhs. The hardware spike is the same scenario at the same sim time
++  (frame 301 is t=5.0 s, 1204 substeps). Its 26 is post-step residual over the
++  post-step rhs, sampled every 30 frames at N=512, so it is a sample of this
++  event rather than the same quotient. Jet at N=128 over 2.5 s does not spike.
++
++More K makes a larger pressure, so a larger drift. That is why the spike
++anti-correlates with the solve. The auto policy uses a smaller dt, moves less
++mass per step, and does not spike. No solver change follows from the spike.
++
++## changes
++
++- GPU: on a stats frame, the last substep reduces the residual after the
++  projection and before transport into stats slots 32/33. The existing stats
++  pass still evaluates the post-step operator and now writes that to slots
++  34/35. The two reductions do not share a bind group (`layout: "auto"`).
++- CPU: `project()` stores `diag.poissonRes/poissonRhs`. `stats()` reports that
++  as the solve and recomputes the post-step value as `poissonDrift`. The printed
++  drift ratio uses the post-step rhs, so it is the number the older logs called
++  `true`. A freeze can inflate it; health reads `true`, not `drift`.
++- Report, HUD snapshot and the log table print `drift` next to `true`. The
++  capture header says which is which.
++- Defaults unchanged. Third level stays rejected.
++
++## validation
++
++- `node experiments/residual-spike.js` passes (synthetic + dam N=64 wiring:
++  stored residual matches the pre-transport recompute).
++- `node experiments/run-all.js --quick`: 12/12.
++- `node experiments/gpu-mock.js`: the reduce is absent when stats are off, and
++  on a stats frame it runs once, after the last `applyGrad` and before
++  `advectMass`. WGSL brace/slot check passes.
++- Device confirmation: `experiments/logs/2026-10-21-07_19-GPU-browser-tests.log`,
++  same preset as `05_47` (cycle, N=512, ns=4, K20, 600 frames, Ampere).
++
++## device confirmation
++
++The split reads the pre-transport fields. Against `05_47`, which is the same
++trajectory to the printed digits (mass, phases, p[0..125940.546875], maxDiv):
++
++- frame 301 moved intact: drift=26.11078936008509, driftRes=49994.73828125,
++  the old absRes. 49994.73828125 / 26.11078936008509 = 1914.7157, the old rhs.
++- end of run: old `true` 0.009715138446710316 is the new `drift`. The solve is
++  res=16.50, rhs=1882.04, true=0.00877.
++- sampled true peak is 0.141 at frame 1 (cold start), not the boil.
++- press 1.193 vs 1.162 ms and stats 0.303 vs 0.275 ms. The extra reduce sits in
++  the press group on sampled frames. fps 104.2 vs 107.5 is run variance; the
++  reduce is not a frame-time change.
++
++## next
++
++The re-trial is in `archive/0.6.0-cycle-gate-worklog.md`. One cycle is rejected
++for dam, blobs, and cycle. Jet ships 1 cycle after the 08_02 pair. The open
++fps check is `python3 run_gpu_capture.py jet-auto`. Mac-cormack (t5) does not
++wait on that.
+diff --git a/experiments/browser-tests.html b/experiments/browser-tests.html
+index 974fa22..e1194e0 100644
+--- a/experiments/browser-tests.html
++++ b/experiments/browser-tests.html
+@@ -176,12 +176,14 @@
+ 			log("maxM=" + stats.maxM + " neg=" + stats.cntNeg + " over=" + stats.cntOver +
+ 				" maxDiv=" + stats.motion.maxDiv + " p[" + stats.motion.pMin + ".." + stats.motion.pMax +
+ 				"] maxVel=" + stats.motion.maxVel);
+-			// solver quality in the units plan 4.1 judges; maxDiv above floors at max|S|
+-			// in boiling flow, this channel does not
++			// true is the system just solved. drift is that pressure after transport
++			// and phase: a large drift with a small true is coefficient change.
+ 			const poisson = stats.diag && stats.diag.poissonRes !== undefined;
++			const driftRel = stats.diag && stats.diag.poissonDriftRel !== undefined
++				? stats.diag.poissonDriftRel : 0;
+ 			log("poisson: " + (poisson
+ 				? "res=" + stats.diag.poissonRes + " rhs=" + stats.diag.poissonRhs +
+-				  " true=" + stats.diag.poissonRel
++				  " true=" + stats.diag.poissonRel + " drift=" + driftRel
+ 				: "no residual channel (stats slots 32/33)"));
+ 			const pc = stats.phaseCounts || [0, 0, 0, 0, 0, 0];
+ 			const lat = stats.ledger ? stats.ledger.latentChargedE : 0;
+@@ -201,6 +203,8 @@
+ 			log("sampled peaks: maxDiv=" + sampled.maxDiv + " maxM=" + sampled.maxM + " over=" + sampled.maxOver +
+ 				" poissonTrue=" + sampled.maxPoisson + " at frame=" + sampled.maxPoissonFrame +
+ 				" absRes=" + sampled.maxPoissonRes + " rhs=" + sampled.poissonRhsAtPeak +
++				" drift=" + sampled.maxDrift + " at frame=" + sampled.maxDriftFrame +
++				" driftRes=" + sampled.maxDriftRes +
+ 				" · divergence/compression are reported, not pass/fail gates");
+ 		}
+ 		function readSettings() {
+@@ -257,7 +261,11 @@
+ 			if (query.has("ns")) cfg.substepsFixed = Math.max(1, Math.min(cfg.substepMax,
+ 				Math.round(Number(query.get("ns")) || cfg.substepsFixed)));
+ 			if (query.has("s")) cfg.mgCoarsen = Math.max(2, Math.round(Number(query.get("s")) || 4));
+-			if (query.has("cycles")) cfg.mgCycles = Math.max(1, Math.round(Number(query.get("cycles")) || 2));
++			cfg.productCycleGate = 1;
++			if (query.has("cycles")) {
++				cfg.mgCycles = Math.max(1, Math.round(Number(query.get("cycles")) || 2));
++				cfg.mgCyclesPinned = 1;
++			}
+ 			if (query.has("pre")) cfg.mgPre = Math.max(1, Math.round(Number(query.get("pre")) || 4));
+ 			if (query.has("post")) cfg.mgPost = Math.max(1, Math.round(Number(query.get("post")) || 8));
+ 			if (query.has("k")) Fluid.core.config.setSolverIters(cfg, Math.max(1, Math.round(Number(query.get("k")) || 60)));
+@@ -279,7 +287,8 @@
+ 			let queueMs = 0;
+ 			let lastNs = 1;
+ 			const sampled = { maxDiv: 0, maxM: 0, maxOver: 0, maxPoisson: 0,
+-				maxPoissonFrame: 0, maxPoissonRes: 0, poissonRhsAtPeak: 0 };
++				maxPoissonFrame: 0, maxPoissonRes: 0, poissonRhsAtPeak: 0,
++				maxDrift: 0, maxDriftFrame: 0, maxDriftRes: 0 };
+ 			const GROUP_COUNT = 8;
+ 			const profAcc = { samples: 0, substeps: 0, ms: new Float64Array(GROUP_COUNT), lastFrame: -1 };
+ 			function takeProfile() {
+@@ -338,6 +347,11 @@
+ 						sampled.maxPoissonRes = stats.diag.poissonRes || 0;
+ 						sampled.poissonRhsAtPeak = stats.diag.poissonRhs || 0;
+ 					}
++					if (stats.diag && (stats.diag.poissonDriftRel || 0) > sampled.maxDrift) {
++						sampled.maxDrift = stats.diag.poissonDriftRel || 0;
++						sampled.maxDriftFrame = stats.frame;
++						sampled.maxDriftRes = stats.diag.poissonDrift || 0;
++					}
+ 				}
+ 				if (gpuErrors.length) throw new Error(gpuErrors.join("\n"));
+ 				if ((frame + 1) % progressEvery === 0 || frame === frames - 1) {
+@@ -416,6 +430,10 @@
+ 					" substeps=" + (cfg.substepsAuto ? "auto" : cfg.substepsFixed + " fixed") +
+ 					" FCT=" + cfg.fctLimiter + " gravity=" + cfg.gravityY + " scenarios=" + settings.scenarios.join(","));
+ 				log("timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.");
++				log("poisson note: true is the residual of the system just solved, before transport, over the solve rhs. drift is that pressure read after transport and phase, over the post-step rhs — the ratio older logs called true. a large drift with a small true is coefficient change, not a failed solve.");
++				log(cfg.mgCyclesPinned
++					? "cycle gate: pinned by &cycles=; the jet default is not applied."
++					: "cycle gate: jet uses 1 V-cycle; dam, blobs and cycle stay at 2.");
+ 				if (cfg.gpuTiming > 0) {
+ 					const tsOk = !!(gpu.features && gpu.features.has("timestamp-query"));
+ 					log("gpu timestamps: " + (tsOk
+diff --git a/experiments/browser-tests.js b/experiments/browser-tests.js
+index 10d1ea8..bc24f3f 100644
+--- a/experiments/browser-tests.js
++++ b/experiments/browser-tests.js
+@@ -8,6 +8,30 @@ const { performance } = require("node:perf_hooks");
+ 
+ require("../src/core/config.js");
+ const realConfig = globalThis.Fluid.core.config;
++{
++	const jet = Object.assign({}, realConfig.defaults, {
++		N: 64, texW: 66, texH: 66, scenario: "jet", productCycleGate: 1
++	});
++	realConfig.prepareScenario(jet);
++	assert.equal(jet.mgCycles, 1, "jet ships one V-cycle under the product gate");
++	jet.scenario = "dam";
++	realConfig.prepareScenario(jet);
++	assert.equal(jet.mgCycles, 2, "leaving jet restores two cycles");
++	jet.scenario = "cycle";
++	realConfig.prepareScenario(jet);
++	assert.equal(jet.mgCycles, 2, "cycle stays on two V-cycles");
++	const pinned = Object.assign({}, realConfig.defaults, {
++		N: 64, texW: 66, texH: 66, scenario: "jet", productCycleGate: 1,
++		mgCycles: 2, mgCyclesPinned: 1
++	});
++	realConfig.prepareScenario(pinned);
++	assert.equal(pinned.mgCycles, 2, "a pinned cycles query is not overwritten");
++	const oracle = Object.assign({}, realConfig.defaults, {
++		N: 64, texW: 66, texH: 66, scenario: "jet", mgCycles: 2
++	});
++	realConfig.prepareScenario(oracle);
++	assert.equal(oracle.mgCycles, 2, "oracle scripts without the product gate keep the knob they set");
++}
+ const html = fs.readFileSync(path.join(__dirname, "browser-tests.html"), "utf8");
+ const inline = /<script>([\s\S]*?)<\/script>/.exec(html);
+ assert.ok(inline, "browser harness inline script exists");
+@@ -53,7 +77,8 @@ const stats = {
+ 	cntNeg: 0,
+ 	cntOver: 0,
+ 	motion: { maxVel: 0, maxDiv: 0.1, pMin: -1, pMax: 1 },
+-	diag: { sSaturated: 0, poissonRes: 0.02, poissonRhs: 40, poissonRel: 0.0005 }
++		diag: { sSaturated: 0, poissonRes: 0.02, poissonRhs: 40, poissonRel: 0.0005,
++			poissonDrift: 36, poissonDriftRel: 0.9 }
+ };
+ const device = {
+ 	queue: { onSubmittedWorkDone: () => Promise.resolve() },
+@@ -136,12 +161,12 @@ vm.runInNewContext(inline[1], context, { filename: "browser-tests.html:inline" }
+ 		.filter(name => queryElements["case-" + name].checked);
+ 	assert.deepEqual(selected, ["blobs", "draw"], "scenario query prefill selects a reproducible subset");
+ 	assert.match(elements.out.textContent, /phases vac=0 sol=0 melt=0 liq=0 boil=0 gas=0 \| latentE=0 fMom=0 sSat=0/);
+-	assert.match(elements.out.textContent, /poisson: res=0\.02 rhs=40 true=0\.0005/,
+-		"the report carries the true poisson residual, not only maxDiv");
++	assert.match(elements.out.textContent, /poisson: res=0\.02 rhs=40 true=0\.0005 drift=0\.9/,
++		"the report carries the solve residual and the post-step drift");
+ 	assert.match(elements.out.textContent, /gpu memory estimate: /,
+ 		"the report shows an informational pool allocation estimate");
+-	assert.match(elements.out.textContent, /sampled peaks: .*poissonTrue=0\.0005 at frame=1 absRes=0\.02 rhs=40/,
+-		"the sampled peak line retains the frame and absolute residual/RHS for investigation");
++	assert.match(elements.out.textContent, /sampled peaks: .*poissonTrue=0\.0005 at frame=1 absRes=0\.02 rhs=40 drift=0\.9 at frame=1 driftRes=36/,
++		"the sampled peak line retains solve and drift residuals with their frames");
+ 	console.log("PASS browser diagnostics UI: five-case run, phase scenarios, scenario query, scripted paint, in-flight lock, report and clipboard copy");
+ })().catch(error => {
+ 	console.error(error);
+diff --git a/experiments/gpu-log-table.js b/experiments/gpu-log-table.js
+index e648240..d1533ac 100644
+--- a/experiments/gpu-log-table.js
++++ b/experiments/gpu-log-table.js
+@@ -14,8 +14,9 @@ const RE = {
+ 	fps: /^frames\/s=([\d.]+)/,
+ 	gpu: /^gpu timing \((\d+) samples\):.*press=([\d.]+).*step sum=([\d.]+)/,
+ 	peaks: /^sampled peaks: maxDiv=(\S+) maxM=(\S+) over=(\d+)/,
+-	poisson: /^poisson: res=(\S+) rhs=(\S+) true=(\S+)/,
+-	peaksPoisson: /poissonTrue=(\S+)/
++	poisson: /^poisson: res=(\S+) rhs=(\S+) true=(\S+)(?: drift=(\S+))?/,
++	peaksPoisson: /poissonTrue=(\S+)/,
++	peaksDrift: / drift=(\S+) at frame=/
+ };
+ 
+ function number(v) {
+@@ -50,8 +51,10 @@ function parse(file) {
+ 		if (peaks) { Object.assign(row, { maxDiv: number(peaks[1]), maxM: number(peaks[2]), over: +peaks[3] }); }
+ 		const pp = RE.peaksPoisson.exec(line);
+ 		if (pp) row.peakTrue = number(pp[1]);
++		const pd = RE.peaksDrift.exec(line);
++		if (pd) row.peakDrift = number(pd[1]);
+ 		const pz = RE.poisson.exec(line);
+-		if (pz) Object.assign(row, { res: number(pz[1]), rhs: number(pz[2]), trueRel: number(pz[3]) });
++		if (pz) Object.assign(row, { res: number(pz[1]), rhs: number(pz[2]), trueRel: number(pz[3]), drift: pz[4] === undefined ? undefined : number(pz[4]) });
+ 	}
+ 	const stamp = /(\d\d_\d\d)-GPU-browser-tests/.exec(file);
+ 	for (const row of rows) {
+@@ -82,18 +85,22 @@ function main() {
+ 		if (!groups.has(k)) groups.set(k, []);
+ 		groups.get(k).push(row);
+ 	}
+-	const head = ["log", "scenario", "K", "cyc", "policy", "ns", "fps", "press", "step", "press%", "maxDiv", "poissonTrue"];
++	const head = ["log", "scenario", "K", "cyc", "policy", "ns", "fps", "press", "step", "press%", "maxDiv", "poissonTrue", "drift"];
+ 	const lines = [head.join(csv ? "," : "\t")];
+ 	for (const [k, list] of groups) {
+ 		lines.push("");
+ 		lines.push("# " + k + (list.length < 2 ? "  (no peer: not comparable)" : "  · % vs first row"));
++		if (list.some(r => r.peakDrift !== undefined) && list.some(r => r.peakDrift === undefined && r.peakTrue !== undefined)) {
++			lines.push("# poissonTrue on a row with no drift column is the post-step number; do not rank it against the solve");
++		}
+ 		const base = list[0];
+ 		for (const row of list) {
+ 			const cells = [
+ 				row.log, row.scenario, row.K, row.cycles, row.policy, row.ns,
+ 				fmt(row.fps, 1), fmt(row.press, 3), fmt(row.sum, 3),
+ 				fmt(100 * row.press / row.sum, 1),
+-				fmt(row.maxDiv, 3), row.peakTrue === undefined ? "-" : row.peakTrue.toExponential(2)
++				fmt(row.maxDiv, 3), row.peakTrue === undefined ? "-" : row.peakTrue.toExponential(2),
++				row.peakDrift === undefined ? "-" : row.peakDrift.toExponential(2)
+ 			];
+ 			if (list.length > 1 && row !== base) {
+ 				cells[6] += " (" + (100 * (row.fps / base.fps - 1)).toFixed(1) + "%)";
+diff --git a/experiments/gpu-mock.js b/experiments/gpu-mock.js
+index 671ae24..75bbac2 100644
+--- a/experiments/gpu-mock.js
++++ b/experiments/gpu-mock.js
+@@ -209,6 +209,21 @@ async function testPlumbing() {
+ 			solver.pool.mgS === cfg.mgCoarsen && solver.pool.mgNc === Math.floor(solver.pool.N / cfg.mgCoarsen) &&
+ 			new Float32Array(solver.pool.mgParams._buf)[2] === solver.pool.mgTexW,
+ 			"S=" + solver.pool.mgS + " Nc=" + solver.pool.mgNc + " texW=" + solver.pool.mgTexW);
++		check("solve residual is not captured on a non-stats frame",
++			count("poissonReduceA") === 0 && count("poissonReduceB") === 0,
++			"reduceA=" + count("poissonReduceA"));
++		sink.pipeOrder.length = 0;
++		solver.frame(cfg.frameDt / 2, 2, true);
++		const order2 = sink.pipeOrder;
++		const count2 = (name) => order2.filter(p => p === name).length;
++		const gradAt = order2.lastIndexOf("applyGrad");
++		const redAt = order2.lastIndexOf("poissonReduceA");
++		const massAt = order2.lastIndexOf("advectMass");
++		check("solve residual is reduced once, after the last projection and before transport",
++			count2("poissonReduceA") === 1 && count2("poissonReduceB") === 1 &&
++			gradAt >= 0 && gradAt < redAt && redAt < massAt,
++			"grad=" + gradAt + " reduce=" + redAt + " mass=" + massAt +
++			" counts=" + count2("poissonReduceA") + "/" + count2("poissonReduceB"));
+ 	}
+ 
+ 	// the body must go away with the scenario
+@@ -289,6 +304,9 @@ function testWgsl() {
+ 			Fluid.gpu.passes.encodeBuoySample.toString()));
+ 	check("wgsl: the display overlay reads the body rectangle through the same slots",
+ 		/values\[88\]/.test(sh.toDisplay) && /values\[93\]/.test(sh.toDisplay) && /buoyOverlay\(/.test(sh.toDisplay));
++	check("wgsl: solve residual writes slots 32/33, post-step drift writes 34/35",
++		/stats\[32u\] = maxRes/.test(sh.poissonReduceB) && /stats\[33u\] = maxRhs/.test(sh.poissonReduceB) &&
++		/stats\[34u\] = maxRes/.test(sh.statsReduceB) && !/stats\[32u\] = maxRes/.test(sh.statsReduceB));
+ }
+ 
+ // ---- 4. cpu sampler: the twin the kernel mirrors, on a known field ----
+diff --git a/experiments/logs/2026-10-21-07_19-GPU-browser-tests.log b/experiments/logs/2026-10-21-07_19-GPU-browser-tests.log
+new file mode 100644
+index 0000000..a0aab26
+--- /dev/null
++++ b/experiments/logs/2026-10-21-07_19-GPU-browser-tests.log
+@@ -0,0 +1,24 @@
++Fluid browser diagnostics · 2026-10-21T07:19:32.186Z
++timer: performance.now() · crossOriginIsolated=true · observed quantum=0.005000ms
++gpu: nvidia ampere
++grid N=512 frames/scenario=600 frameDt=0.016666666666666666 pressureK=20 coarse solver=MG substeps=4 fixed FCT=1 gravity=300 scenarios=cycle
++timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.
++poisson note: true is the residual of the system just solved, before transport, over the solve rhs. drift is that pressure read after transport and phase, over the post-step rhs — the ratio older logs called true. a large drift with a small true is coefficient change, not a failed solve.
++gpu timestamps: on (profiled frames split compute passes; read group proportions, fps is slightly pessimistic)
++gpu memory estimate: 52.9 MB logical / 55.3 MB worst case (textures 52.2 MB x27, buffers 0.6 MB x8)
++--- cycle · OK ---
++m: total=77798.40625 exp=77798.40014457703 drift=7.84774874841484e-8 [ok]
++dr: total=5103.90771484375 exp=5103.9078994728625 drift=-3.617406820784122e-8 [ok]
++dg: total=28388.3125 exp=28388.312033206224 drift=1.644316770269596e-8 [ok]
++db: total=57794.36328125 exp=57794.36384546757 drift=-9.762501564209112e-9 [ok]
++E: total=115025304 exp=115025299.0123291 drift=4.3361512130500015e-8 [ok]
++min m=0.05261080339550972 dr=0.0009966451907530427 dg=0.001494968426413834 db=0.002989936852827668 E=50.71682357788086
++maxM=1.0050482749938965 neg=0 over=2910 maxDiv=30.336454391479492 p[0..125940.546875] maxVel=108.83729553222656
++poisson: res=16.49969482421875 rhs=1882.0391845703125 true=0.00876692417431563 drift=0.009715138446710316
++phases vac=0 sol=13193 melt=533 liq=165212 boil=80001 gas=3205 | latentE=186863936 fMom=0 sSat=0
++statsFrame#600 frame#600 N=512 dt=0.004166666666666667 K=20 coarse mgS4x2(pre4/post8) ns=4/24 fixed scenario=cycle FCT=1 gravity=300
++frames/s=104.2 speed=1.74x CPU encode=0.18ms queue wait=9.38ms vCap=108 CFL bound=0.9070
++sampled peaks: maxDiv=30.336454391479492 maxM=1.0050482749938965 over=23943 poissonTrue=0.14060301564186306 at frame=1 absRes=21.600717544555664 rhs=153.62911987304688 drift=26.11078936008509 at frame=301 driftRes=49994.73828125 · divergence/compression are reported, not pass/fail gates
++gpu timing (21 samples): vel=0.025 rhs=0.012 press=1.193 trans=0.119 phase=0.151 ms/substep · step sum=1.500 · disp=0.019 render=0.003 ms/frame · stats=0.303 ms/sampled frame
++
++Finished 1 scenarios · 6.12 s total.
+diff --git a/experiments/logs/2026-10-21-08_02-GPU-browser-tests.log b/experiments/logs/2026-10-21-08_02-GPU-browser-tests.log
+new file mode 100644
+index 0000000..8f0dcdb
+--- /dev/null
++++ b/experiments/logs/2026-10-21-08_02-GPU-browser-tests.log
+@@ -0,0 +1,24 @@
++Fluid browser diagnostics · 2026-10-21T08:02:21.183Z
++timer: performance.now() · crossOriginIsolated=true · observed quantum=0.005000ms
++gpu: nvidia ampere
++grid N=512 frames/scenario=600 frameDt=0.016666666666666666 pressureK=20 coarse solver=MG substeps=4 fixed FCT=1 gravity=300 scenarios=jet
++timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.
++poisson note: true is the residual of the system just solved, before transport, over the solve rhs. drift is that pressure read after transport and phase, over the post-step rhs — the ratio older logs called true. a large drift with a small true is coefficient change, not a failed solve.
++gpu timestamps: on (profiled frames split compute passes; read group proportions, fps is slightly pessimistic)
++gpu memory estimate: 52.9 MB logical / 55.3 MB worst case (textures 52.2 MB x27, buffers 0.6 MB x8)
++--- jet · OK ---
++m: total=37375.83984375 exp=37375.840141147375 drift=-7.956941542550218e-9 [ok]
++dr: total=2830.74560546875 exp=2830.7456153696403 drift=-3.497626292161293e-9 [ok]
++dg: total=2799.986328125 exp=2799.9863203894347 drift=2.762715392009582e-9 [ok]
++db: total=4410.77587890625 exp=4410.775847222656 drift=7.183224694668822e-9 [ok]
++E: total=51566472 exp=51566473.15951538 drift=-2.2485838371620606e-8 [ok]
++min m=0.08129268139600754 dr=0.0023104671854525805 dg=0.004678898490965366 db=0.009152431972324848 E=140.79600524902344
++maxM=0.16667412221431732 neg=0 over=0 maxDiv=22.288053512573242 p[193252.3125..197710.21875] maxVel=109.61531829833984
++poisson: res=8.44690990447998 rhs=737.6297607421875 true=0.011451422317858865 drift=0.012286615189362703
++phases vac=0 sol=0 melt=0 liq=155092 boil=105355 gas=1697 | latentE=178341168 fMom=0 sSat=0
++statsFrame#600 frame#600 N=512 dt=0.004166666666666667 K=20 coarse mgS4x2(pre4/post8) ns=4/24 fixed scenario=jet FCT=1 gravity=300
++frames/s=104.8 speed=1.75x CPU encode=0.15ms queue wait=9.37ms vCap=108 CFL bound=0.9135
++sampled peaks: maxDiv=27.871540069580078 maxM=0.21988296508789062 over=0 poissonTrue=0.06714866127821126 at frame=1 absRes=11.920289039611816 rhs=177.5208740234375 drift=0.06713765905094787 at frame=1 driftRes=11.918335914611816 · divergence/compression are reported, not pass/fail gates
++gpu timing (21 samples): vel=0.037 rhs=0.009 press=1.219 trans=0.118 phase=0.138 ms/substep · step sum=1.521 · disp=0.009 render=0.009 ms/frame · stats=0.290 ms/sampled frame
++
++Finished 1 scenarios · 5.88 s total.
+diff --git a/experiments/logs/2026-10-21-08_02-GPU-browser-tests1.log b/experiments/logs/2026-10-21-08_02-GPU-browser-tests1.log
+new file mode 100644
+index 0000000..9255874
+--- /dev/null
++++ b/experiments/logs/2026-10-21-08_02-GPU-browser-tests1.log
+@@ -0,0 +1,24 @@
++Fluid browser diagnostics · 2026-10-21T08:02:36.750Z
++timer: performance.now() · crossOriginIsolated=true · observed quantum=0.005000ms
++gpu: nvidia ampere
++grid N=512 frames/scenario=600 frameDt=0.016666666666666666 pressureK=20 coarse solver=MG substeps=4 fixed FCT=1 gravity=300 scenarios=jet
++timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.
++poisson note: true is the residual of the system just solved, before transport, over the solve rhs. drift is that pressure read after transport and phase, over the post-step rhs — the ratio older logs called true. a large drift with a small true is coefficient change, not a failed solve.
++gpu timestamps: on (profiled frames split compute passes; read group proportions, fps is slightly pessimistic)
++gpu memory estimate: 52.9 MB logical / 55.3 MB worst case (textures 52.2 MB x27, buffers 0.6 MB x8)
++--- jet · OK ---
++m: total=37375.83984375 exp=37375.840141147375 drift=-7.956941542550218e-9 [ok]
++dr: total=2830.74560546875 exp=2830.7456153696403 drift=-3.497626292161293e-9 [ok]
++dg: total=2799.986328125 exp=2799.9863203894347 drift=2.762715392009582e-9 [ok]
++db: total=4410.77587890625 exp=4410.775847222656 drift=7.183224694668822e-9 [ok]
++E: total=51640576 exp=51640577.44076538 drift=-2.7899869681202018e-8 [ok]
++min m=0.08132972568273544 dr=0.0023283958435058594 dg=0.004676477983593941 db=0.009174770675599575 E=140.888916015625
++maxM=0.16689321398735046 neg=0 over=0 maxDiv=21.181638717651367 p[96558.8359375..100927.5] maxVel=109.54402923583984
++poisson: res=6.725828647613525 rhs=672.6239624023438 true=0.009999388995288773 drift=0.010572289919186198
++phases vac=0 sol=0 melt=0 liq=156120 boil=104383 gas=1641 | latentE=178233456 fMom=0 sSat=0
++statsFrame#600 frame#600 N=512 dt=0.004166666666666667 K=20 coarse mgS4x1(pre4/post8) ns=4/24 fixed scenario=jet FCT=1 gravity=300
++frames/s=157.6 speed=2.63x CPU encode=0.14ms queue wait=6.18ms vCap=108 CFL bound=0.9129
++sampled peaks: maxDiv=23.70012664794922 maxM=0.22000987827777863 over=0 poissonTrue=0.12377122902888342 at frame=1 absRes=21.894695281982422 rhs=176.896484375 drift=0.12376018796717492 at frame=1 driftRes=21.892742156982422 · divergence/compression are reported, not pass/fail gates
++gpu timing (21 samples): vel=0.029 rhs=0.016 press=0.641 trans=0.116 phase=0.146 ms/substep · step sum=0.947 · disp=0.006 render=0.000 ms/frame · stats=0.287 ms/sampled frame
++
++Finished 1 scenarios · 3.96 s total.
+diff --git a/experiments/logs/2026-10-21-jet-auto-GPU-browser-tests.log b/experiments/logs/2026-10-21-jet-auto-GPU-browser-tests.log
+new file mode 100644
+index 0000000..3d896e0
+--- /dev/null
++++ b/experiments/logs/2026-10-21-jet-auto-GPU-browser-tests.log
+@@ -0,0 +1,25 @@
++Fluid browser diagnostics · pasted jet-auto capture, 2026-10-21
++timer: performance.now() · crossOriginIsolated=true · observed quantum=0.005000ms
++gpu: nvidia ampere
++grid N=512 frames/scenario=600 frameDt=0.016666666666666666 pressureK=20 coarse solver=MG substeps=auto FCT=1 gravity=300 scenarios=jet
++timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.
++poisson note: true is the residual of the system just solved, before transport, over the solve rhs. drift is that pressure read after transport and phase, over the post-step rhs — the ratio older logs called true. a large drift with a small true is coefficient change, not a failed solve.
++cycle gate: jet uses 1 V-cycle; dam, blobs and cycle stay at 2.
++gpu timestamps: on (profiled frames split compute passes; read group proportions, fps is slightly pessimistic)
++gpu memory estimate: 52.9 MB logical / 55.3 MB worst case (textures 52.2 MB x27, buffers 0.6 MB x8)
++--- jet · OK ---
++m: total=37375.83984375 exp=37375.840141147375 drift=-7.956941542550218e-9 [ok]
++dr: total=2830.74560546875 exp=2830.7456153696403 drift=-3.497626292161293e-9 [ok]
++dg: total=2799.986083984375 exp=2799.9863203894347 drift=-8.443079095556565e-8 [ok]
++db: total=4410.775390625 exp=4410.775847222656 drift=-1.0351867150517032e-7 [ok]
++E: total=51503352 exp=51503289.34701538 drift=0.0000012164851102422134 [warn]
++min m=0.1257103681564331 dr=0.00047157175140455365 dg=0.0057951342314481735 db=0.010637547820806503 E=139.7083740234375
++maxM=0.151315838098526 neg=0 over=0 maxDiv=20.96466064453125 p[237900.875..243637.53125] maxVel=259.9297790527344
++poisson: res=4.849372863769531 rhs=1341.075439453125 true=0.003616032865195898 drift=0.0039888679684947055
++phases vac=0 sol=0 melt=0 liq=152896 boil=106680 gas=2568 | latentE=164509328 fMom=0 sSat=0
++statsFrame#600 frame#600 N=512 dt=0.001388888888888889 K=20 coarse mgS4x1(pre4/post8) ns=12/24 auto scenario=jet FCT=1 gravity=300
++frames/s=75.4 speed=1.26x CPU encode=0.19ms queue wait=13.04ms vCap=324 CFL bound=0.7220
++sampled peaks: maxDiv=29.890220642089844 maxM=0.22108997404575348 over=0 poissonTrue=0.25770828664461826 at frame=1 absRes=36.479576110839844 rhs=141.5537567138672 drift=0.2577289832871378 at frame=1 driftRes=36.482505798339844 · divergence/compression are reported, not pass/fail gates
++gpu timing (21 samples): vel=0.035 rhs=0.010 press=0.607 trans=0.106 phase=0.157 ms/substep · step sum=0.915 · disp=0.009 render=0.006 ms/frame · stats=0.278 ms/sampled frame
++
++Finished 1 scenarios · 8.12 s total.
+diff --git a/experiments/logs/2026-10-21-mg-cycle-gate.log b/experiments/logs/2026-10-21-mg-cycle-gate.log
+new file mode 100644
+index 0000000..e2ab4bc
+--- /dev/null
++++ b/experiments/logs/2026-10-21-mg-cycle-gate.log
+@@ -0,0 +1,27 @@
++mg-cycle-gate · dt=0.004166666666666667 · solve is pre-transport, drift is residualNorm after step
++== same-state dam N=128 (180 warmup at K60, then one step) ==
++  c2k20 solve=4.280e-4 drift=7.744e-2 rel=4.305e-4 divA=2.092e-1
++  c1k20 solve=7.745e-3 drift=8.101e-2 rel=7.743e-3 divA=3.763e+0
++  c1/c2  solve=18.10x drift=1.05x rel=17.99x divA=17.99x
++== same-state blobs N=128 (180 warmup at K60, then one step) ==
++  c2k20 solve=2.256e-4 drift=2.809e-2 rel=2.255e-4 divA=2.560e-2
++  c1k20 solve=4.274e-3 drift=3.110e-2 rel=4.274e-3 divA=4.852e-1
++  c1/c2  solve=18.94x drift=1.11x rel=18.95x divA=18.95x
++== same-state jet N=128 (180 warmup at K60, then one step) ==
++  c2k20 solve=2.914e-2 drift=2.999e-2 rel=2.737e-1 divA=1.877e+1
++  c1k20 solve=2.994e-2 drift=3.125e-2 rel=2.746e-1 divA=1.883e+1
++  c1/c2  solve=1.03x drift=1.04x rel=1.00x divA=1.00x
++== same-state cycle N=128 (180 warmup at K60, then one step) ==
++  c2k20 solve=3.779e-2 drift=3.779e-2 rel=4.159e-1 divA=1.695e+1
++  c1k20 solve=3.779e-2 drift=3.779e-2 rel=4.159e-1 divA=1.695e+1
++  c1/c2  solve=1.00x drift=1.00x rel=1.00x divA=1.00x
++== trajectory jet N=128 (90 own warmup + 90 measured) ==
++  c2k20  peakSolve=2.784e-2 peakDrift=2.784e-2 peakRel=2.861e-1 peakDivA=1.886e+1 maxM=0.2079 over=0 cpu=85.1ms
++  c1k20  peakSolve=2.782e-2 peakDrift=2.782e-2 peakRel=2.859e-1 peakDivA=1.892e+1 maxM=0.2078 over=0 cpu=68.1ms
++  c1/c2  peakSolve=1.00x peakDrift=1.00x peakRel=1.00x peakDivA=1.00x
++== trajectory cycle N=128 (90 own warmup + 90 measured) ==
++  c2k20  peakSolve=3.731e-2 peakDrift=3.731e-2 peakRel=4.155e-1 peakDivA=1.694e+1 maxM=1.0003 over=0 cpu=81.7ms
++  c1k20  peakSolve=1.021e+0 peakDrift=1.027e+0 peakRel=1.021e+0 peakDivA=6.256e+2 maxM=1.0004 over=0 cpu=66.1ms
++  c1/c2  peakSolve=27.35x peakDrift=27.52x peakRel=2.46x peakDivA=36.94x
++done
++rerun: node experiments/mg-cycle-gate.js
+diff --git a/experiments/logs/2026-10-21-residual-spike.log b/experiments/logs/2026-10-21-residual-spike.log
+new file mode 100644
+index 0000000..9bfc75a
+--- /dev/null
++++ b/experiments/logs/2026-10-21-residual-spike.log
+@@ -0,0 +1,13 @@
++residual-spike · dt=1/240 · K20 2-cycle · solve residual vs post-step drift
++synthetic weight jump: before=1.000e+3 after emptying one neighbor to rhoVac=4.995e+5 ratio=499
++synthetic melt: frozen residual=0 after melt inside p=5e4 = 2.000e+5
++dam N=64 40 steps: worst end/solve=5.56e+2 at step 10, solve=2.429e-2, end=1.352e+1, solve/rhs=1.356e-4
++cycle N=128 600 steps: maxSolve/rhs=2.06e-1 maxDrift/rhs=2.06e-1 at step 1 maxDrift/solve=1.00 (no spike in 2.5 s)
++jet   N=128 600 steps: maxSolve/rhs=5.85e-2 maxDrift/rhs=5.85e-2 at step 1 maxDrift/solve=1.18
++dam   N=128 600 steps: maxSolve/rhs=7.26e-2 maxDrift/rhs=3.56e-1 at step 276 maxDrift/solve=7.67e+2
++cycle N=128 1400 steps: maxSolve/rhs=2.06e-1 at step 1
++  at step 1170 (t=4.875 s) post-step residual / solve rhs = 6.68e+2, post-step / solve = 1.17e+4
++  same scenario and same sim time as the hardware frame-301 spike.
++  the report column `drift` is post-step residual / post-step rhs (the old `true` formula), not this 668.
++rerun: node experiments/residual-spike.js
++       node experiments/residual-spike.js --traj 128 1400 --only cycle
+diff --git a/experiments/logs/2026-10-21-vortex-decay.log b/experiments/logs/2026-10-21-vortex-decay.log
+new file mode 100644
+index 0000000..4aae981
+--- /dev/null
++++ b/experiments/logs/2026-10-21-vortex-decay.log
+@@ -0,0 +1,17 @@
++vortex-decay · N=64 · dt=1/240 · Gaussian vortex, gravity 0, viscosity 0, still box
++kept = KE/KE0 after one projected seed. watchdog is post-clamp extrema.
++
++steps=240 (1 s)
++  advect only:        sl=0.8545  mc=0.9896  ratio=1.158  limited=9303  overshoot=0
++  advect + project:   sl=0.8845  mc=0.9893  ratio=1.119  limited=1290  overshoot=0
++  a 1.25x retained-KE bar is unreachable here: sl has not lost 20 %.
++
++steps=960 (4 s)
++  advect only:        sl=0.1074  mc=0.2267  ratio=2.110  limited=470819  overshoot=0
++  advect + project:   sl=0.6720  mc=0.9606  ratio=1.429  limited=2758   overshoot=0
++  cpu step 12.42 -> 14.70 ms (+18 %). that is the reference solver, not the GPU.
++
++decision row is advect+project at 4 s: retained KE +43 %, watchdog 0.
++not adopted. cfg.macCormack stays 0. the GPU shader does not read the flag,
++and the 15 % frame-time bar is a device number.
++rerun: node experiments/vortex-decay.js 64 960
+diff --git a/experiments/mg-cycle-gate.js b/experiments/mg-cycle-gate.js
+new file mode 100644
+index 0000000..a884ab6
+--- /dev/null
++++ b/experiments/mg-cycle-gate.js
+@@ -0,0 +1,121 @@
++"use strict";
++// 0.6.0 re-trial of 1 vs 2 V-cycles on the residual that counts.
++// solve = diag.poissonRes/divBefore, captured in project() before transport.
++// drift = residualNorm()/divBefore after step(), the old post-step column.
++// rel   = divAfter/divBefore.
++// Hardware already rejects 1 cycle as a default: dam ends overpacked, cycle
++// maxDiv goes 30 -> 122. This asks whether jet's solve is actually neutral,
++// which that old column could not say. It does not adopt anything.
++// run: node experiments/mg-cycle-gate.js | tee experiments/logs/<date>-mg-cycle-gate.log
++
++const path = require("node:path");
++const root = path.resolve(__dirname, "..");
++require(path.join(root, "src/core/config.js"));
++require(path.join(root, "src/core/grid.js"));
++require(path.join(root, "src/core/stats.js"));
++require(path.join(root, "src/core/multigrid.js"));
++const solverMod = require(path.join(root, "src/core/solver.js"));
++const cfg0 = Fluid.core.config.defaults;
++const DT = 1 / 240;
++const REFERENCE = { mgCycles: 2, mgPre: 4, mgPost: 8, mgCoarseIters: 60 };
++const C2 = { mgCycles: 2, mgPre: 4, mgPost: 8, mgCoarseIters: 20 };
++const C1 = { mgCycles: 1, mgPre: 4, mgPost: 8, mgCoarseIters: 20 };
++
++function make(scenario, N, over) {
++	const cfg = Object.assign({}, cfg0, over, { N, scenario });
++	cfg.texW = N + 2;
++	cfg.texH = N + 2;
++	Fluid.core.config.prepareScenario(cfg);
++	return { cfg, sim: solverMod.create(cfg) };
++}
++function read(sim) {
++	const b = Math.max(sim.diag.divBefore, 1e-30);
++	const driftRes = sim.mg ? sim.mg.residualNorm() : 0;
++	return {
++		divB: b,
++		divA: sim.diag.divAfter,
++		rel: sim.diag.pressureResidual,
++		solve: (sim.diag.poissonRes || 0) / b,
++		drift: driftRes / b
++	};
++}
++function sameState(scenario, N, warmup) {
++	const out = {};
++	for (const item of [{ name: "c2k20", over: C2 }, { name: "c1k20", over: C1 }]) {
++		const { cfg, sim } = make(scenario, N, {});
++		Object.assign(cfg, REFERENCE);
++		for (let s = 0; s < warmup; s++) sim.step(DT);
++		Object.assign(cfg, item.over);
++		sim.step(DT);
++		out[item.name] = read(sim);
++	}
++	return out;
++}
++function trajectory(scenario, N, warmup, measure, over) {
++	const { sim } = make(scenario, N, over);
++	for (let s = 0; s < warmup; s++) sim.step(DT);
++	let peakSolve = 0, peakRel = 0, peakDivA = 0, peakDrift = 0;
++	const t0 = Date.now();
++	for (let s = 0; s < measure; s++) {
++		sim.step(DT);
++		const r = read(sim);
++		if (r.solve > peakSolve) peakSolve = r.solve;
++		if (r.rel > peakRel) peakRel = r.rel;
++		if (r.divA > peakDivA) peakDivA = r.divA;
++		if (r.drift > peakDrift) peakDrift = r.drift;
++	}
++	const st = sim.stats();
++	return {
++		peakSolve, peakRel, peakDivA, peakDrift,
++		maxM: st.tot.maxM, over: st.tot.cntOver,
++		ms: (Date.now() - t0) / measure
++	};
++}
++function exp(v) {
++	return v.toExponential(3);
++}
++function ratio(a, b) {
++	return b > 0 ? (a / b).toFixed(2) + "x" : "n/a";
++}
++function printSame(scenario, N, warmup, rows) {
++	console.log("== same-state " + scenario + " N=" + N + " (" + warmup + " warmup at K60, then one step) ==");
++	for (const name of ["c2k20", "c1k20"]) {
++		const r = rows[name];
++		console.log("  " + name +
++			" solve=" + exp(r.solve) +
++			" drift=" + exp(r.drift) +
++			" rel=" + exp(r.rel) +
++			" divA=" + exp(r.divA));
++	}
++	console.log("  c1/c2  solve=" + ratio(rows.c1k20.solve, rows.c2k20.solve) +
++		" drift=" + ratio(rows.c1k20.drift, rows.c2k20.drift) +
++		" rel=" + ratio(rows.c1k20.rel, rows.c2k20.rel) +
++		" divA=" + ratio(rows.c1k20.divA, rows.c2k20.divA));
++}
++function printTraj(scenario, N, warmup, measure, name, r) {
++	console.log("  " + name.padEnd(6) +
++		" peakSolve=" + exp(r.peakSolve) +
++		" peakDrift=" + exp(r.peakDrift) +
++		" peakRel=" + exp(r.peakRel) +
++		" peakDivA=" + exp(r.peakDivA) +
++		" maxM=" + r.maxM.toFixed(4) +
++		" over=" + r.over +
++		" cpu=" + r.ms.toFixed(1) + "ms");
++}
++
++console.log("mg-cycle-gate · dt=" + DT + " · solve is pre-transport, drift is residualNorm after step");
++const sameJobs = [["dam", 128, 180], ["blobs", 128, 180], ["jet", 128, 180], ["cycle", 128, 180]];
++for (const job of sameJobs) printSame(job[0], job[1], job[2], sameState(job[0], job[1], job[2]));
++const trajJobs = [["jet", 128, 90, 90], ["cycle", 128, 90, 90]];
++for (const job of trajJobs) {
++	console.log("== trajectory " + job[0] + " N=" + job[1] + " (" + job[2] + " own warmup + " + job[3] + " measured) ==");
++	const a = trajectory(job[0], job[1], job[2], job[3], C2);
++	const b = trajectory(job[0], job[1], job[2], job[3], C1);
++	printTraj(job[0], job[1], job[2], job[3], "c2k20", a);
++	printTraj(job[0], job[1], job[2], job[3], "c1k20", b);
++	console.log("  c1/c2  peakSolve=" + ratio(b.peakSolve, a.peakSolve) +
++		" peakDrift=" + ratio(b.peakDrift, a.peakDrift) +
++		" peakRel=" + ratio(b.peakRel, a.peakRel) +
++		" peakDivA=" + ratio(b.peakDivA, a.peakDivA));
++}
++console.log("done");
+diff --git a/experiments/mg-defaults.js b/experiments/mg-defaults.js
+index 28f2cc3..eed281b 100644
+--- a/experiments/mg-defaults.js
++++ b/experiments/mg-defaults.js
+@@ -8,7 +8,7 @@
+ // experiments/mg-samestate.js for that (one step from a shared warm state).
+ // The pinned dt still keeps the substep auto-policy out of the comparison.
+ // The judge is the true Poisson residual from 0.6.0 section 4.1:
+-//   true = mg.residualNorm()/divBefore   (operator units, the 4.1 judge)
++//   true = mg.residualNorm()/divBefore after step() (includes post-step drift)
+ //   rel  = divAfter/divBefore            (the a2 divergence ratio); roughly
+ //          dt*true, but the two maxima need not land on the same cell
+ // Rows:
+diff --git a/experiments/mg-samestate.js b/experiments/mg-samestate.js
+index e103393..ab104cf 100644
+--- a/experiments/mg-samestate.js
++++ b/experiments/mg-samestate.js
+@@ -7,7 +7,8 @@
+ //      node experiments/mg-samestate.js --n512
+ //
+ // rel = divAfter/divBefore (the a2 ratio), true = mg.residualNorm()/divBefore
+-// (the 0.6.0 4.1 judge, operator units). rel is roughly dt*true, but the two
++// after step() (operator units, includes post-step drift; diag.poissonRes is
++// the solve). rel is roughly dt*true, but the two
+ // maxima need not land on the same cell, so do not convert one into the other.
+ // The multi-step counterpart, where each config warms up on its own and the
+ // peak metric follows the trajectory, is experiments/mg-defaults.js.
+diff --git a/experiments/mg-work2.js b/experiments/mg-work2.js
+index 2daec4c..629941c 100644
+--- a/experiments/mg-work2.js
++++ b/experiments/mg-work2.js
+@@ -3,8 +3,9 @@
+ // run: node experiments/mg-work2.js | tee experiments/logs/<date>-mg-work2.log
+ //
+ // Round 1 used divAfter, which in boiling scenarios floors at max|S| and hides
+-// solver quality. This round reports the true Poisson residual
+-// mg.residualNorm()/divBefore after each projection, sweeps the coarse
++// solver quality. This round reports mg.residualNorm()/divBefore after step(),
++// which includes post-step coefficient drift (see residual-spike.js;
++// diag.poissonRes is the solve). It sweeps the coarse
+ // iteration count K at the current 2-cycle setting on dam (S = 0, the
+ // discriminating case), and bisects the cycle blowup round 1 found at
+ // pre2/post4 (fields went NaN: maxM read 0 because NaN loses every max).
+diff --git a/experiments/residual-spike.js b/experiments/residual-spike.js
+new file mode 100644
+index 0000000..02ed1cc
+--- /dev/null
++++ b/experiments/residual-spike.js
+@@ -0,0 +1,171 @@
++"use strict";
++// The fixed-dt cycle capture (2026-10-21-05_47) reported poissonTrue=26 at frame
++// 301. That number was the post-step operator (mass and flags after transport
++// and phase) applied to the pressure solved before transport. A face weight that
++// moves by O(1) next to a hydrostatic jump reads as a huge residual even when
++// the solve itself was tight. diag.poissonRes is the solve; the recompute after
++// step() is the drift.
++//
++// run: node experiments/residual-spike.js
++//      node experiments/residual-spike.js --traj 128 400
++
++const assert = require("node:assert/strict");
++const path = require("node:path");
++const root = path.resolve(__dirname, "..");
++require(path.join(root, "src/core/config.js"));
++require(path.join(root, "src/core/grid.js"));
++require(path.join(root, "src/core/stats.js"));
++require(path.join(root, "src/core/multigrid.js"));
++const solverMod = require(path.join(root, "src/core/solver.js"));
++const mg = Fluid.core.multigrid;
++const cfg0 = Fluid.core.config.defaults;
++const DT = 1 / 240;
++
++function make(scenario, N) {
++	const cfg = Object.assign({}, cfg0, {
++		N, scenario, substepsAuto: false, substepsFixed: 4, useMultigrid: true,
++		mgCycles: 2, mgPre: 4, mgPost: 8, mgCoarseIters: 20
++	});
++	cfg.texW = N + 2;
++	cfg.texH = N + 2;
++	Fluid.core.config.prepareScenario(cfg);
++	return { cfg, sim: solverMod.create(cfg) };
++}
++function residual(sim, cfg) {
++	return mg.computeResidual(
++		Fluid.core.grid.curBuf(sim.press), sim.divsrc, Fluid.core.grid.curBuf(sim.mass),
++		sim.flags, sim.texW, sim.texH, cfg.rhoVac, null);
++}
++function fillOpen(mass, texW, texH, rho) {
++	for (let y = 1; y < texH - 1; y++) {
++		for (let x = 1; x < texW - 1; x++) mass[(x + y * texW) * 4 + 3] = rho;
++	}
++}
++function weightJump() {
++	const texW = 10, texH = 10;
++	const press = new Float32Array(texW * texH);
++	const div = new Float32Array(texW * texH);
++	const mass = new Float32Array(texW * texH * 4);
++	const flags = new Uint8Array(texW * texH * 4);
++	const rhoVac = cfg0.rhoVac;
++	fillOpen(mass, texW, texH, 1);
++	// a linear field is not a solution at the wall, so compare the same field
++	// before and after one interior cell empties. the jump is the weight change.
++	for (let y = 1; y < texH - 1; y++) {
++		for (let x = 1; x < texW - 1; x++) press[x + y * texW] = 1000 * x;
++	}
++	const before = mg.computeResidual(press, div, mass, flags, texW, texH, rhoVac, null);
++	mass[(4 + 4 * texW) * 4 + 3] = rhoVac;
++	const after = mg.computeResidual(press, div, mass, flags, texW, texH, rhoVac, null);
++	console.log("  weight jump  before=" + before.toExponential(3) +
++		"  after rhoVac neighbor=" + after.toExponential(3) +
++		"  ratio=" + (after / Math.max(before, 1e-12)).toExponential(2));
++	assert.ok(after > before * 100, "emptying one neighbor must inflate the residual, " + after + " vs " + before);
++}
++function meltFlip() {
++	const texW = 10, texH = 10;
++	const press = new Float32Array(texW * texH);
++	const div = new Float32Array(texW * texH);
++	const mass = new Float32Array(texW * texH * 4);
++	const flags = new Uint8Array(texW * texH * 4);
++	const rhoVac = cfg0.rhoVac;
++	fillOpen(mass, texW, texH, 1);
++	const i = 4 + 4 * texW;
++	// blocked cells are forced to p=0 and dropped from every neighbour stencil,
++	// so a uniform pressure on the open cells is an exact solution until the
++	// cell melts and that stale zero couples back in.
++	flags[i * 4 + 2] = 1;
++	for (let y = 1; y < texH - 1; y++) {
++		for (let x = 1; x < texW - 1; x++) {
++			if ((x + y * texW) !== i) press[x + y * texW] = 50000;
++		}
++	}
++	const before = mg.computeResidual(press, div, mass, flags, texW, texH, rhoVac, null);
++	flags[i * 4 + 2] = 0;
++	const after = mg.computeResidual(press, div, mass, flags, texW, texH, rhoVac, null);
++	console.log("  melt flip    frozen residual=" + before.toExponential(3) +
++		"  after melt=" + after.toExponential(3));
++	assert.ok(before < 1, "uniform pressure around a frozen cell is a solution, residual " + before);
++	assert.ok(after > 1e4, "melting next to a large pressure must spike, got " + after);
++}
++function stepSplit(sim, cfg) {
++	sim.forces(DT);
++	sim.advectVel(DT);
++	sim.poissonRhs(DT);
++	sim.project(Fluid.core.config.solverIters(cfg));
++	const solve = residual(sim, cfg);
++	const stored = sim.diag.poissonRes;
++	const rhs = sim.diag.divBefore;
++	sim.applyGrad(DT);
++	const mot = Fluid.core.stats.motionTotals(
++		Fluid.core.grid.curBuf(sim.vel), Fluid.core.grid.curBuf(sim.press),
++		sim.texW, sim.texH, DT);
++	sim.diag.divAfter = mot.maxDiv;
++	sim.diag.pressureResidual = rhs > 0 ? mot.maxDiv / rhs : 0;
++	sim.computeFlux(DT);
++	sim.advectScalar();
++	sim.phaseEos(true);
++	sim.conduction(DT);
++	sim.heatSources(DT);
++	sim.phaseEos(true);
++	cfg.frame++;
++	cfg.time += DT;
++	return { solve, stored, end: residual(sim, cfg), rhs };
++}
++function damSplit() {
++	const { cfg, sim } = make("dam", 64);
++	let worst = null;
++	for (let s = 0; s < 40; s++) {
++		const row = stepSplit(sim, cfg);
++		assert.ok(Math.abs(row.solve - row.stored) <= Math.max(1e-5, 1e-4 * row.solve),
++			"project() must store the pre-transport residual, step " + (s + 1));
++		const ratio = row.solve > 0 ? row.end / row.solve : 0;
++		if (!worst || ratio > worst.ratio) worst = { step: s + 1, ratio, solve: row.solve, end: row.end, rhs: row.rhs };
++	}
++	const solveRel = worst.rhs > 0 ? worst.solve / worst.rhs : 0;
++	console.log("  dam N=64     worst end/solve=" + worst.ratio.toExponential(2) +
++		" at step " + worst.step +
++		" solve=" + worst.solve.toExponential(3) +
++		" end=" + worst.end.toExponential(3) +
++		" solve/rhs=" + solveRel.toExponential(3));
++	assert.ok(worst.ratio > 8, "post-step residual must pull away from the solve, ratio " + worst.ratio);
++	assert.ok(solveRel < 0.05, "the solve itself stays tight when the drift spikes, solve/rhs " + solveRel);
++}
++function traj(scenario, N, steps) {
++	const { cfg, sim } = make(scenario, N);
++	let maxEndRel = 0, maxSolveRel = 0, maxRatio = 0, at = 0;
++	const t0 = Date.now();
++	for (let s = 0; s < steps; s++) {
++		const row = stepSplit(sim, cfg);
++		const endRel = row.rhs > 1e-9 ? row.end / row.rhs : 0;
++		const solveRel = row.rhs > 1e-9 ? row.solve / row.rhs : 0;
++		const ratio = row.solve > 1e-9 ? row.end / row.solve : 0;
++		if (endRel > maxEndRel) { maxEndRel = endRel; at = s + 1; }
++		if (solveRel > maxSolveRel) maxSolveRel = solveRel;
++		if (ratio > maxRatio) maxRatio = ratio;
++	}
++	console.log("  " + scenario.padEnd(6) + " N=" + String(N).padEnd(4) +
++		" steps=" + steps +
++		" cpu=" + ((Date.now() - t0) / steps).toFixed(1) + "ms" +
++		" maxSolve/rhs=" + maxSolveRel.toExponential(2) +
++		" maxDrift/rhs=" + maxEndRel.toExponential(2) +
++		" at " + at +
++		" maxDrift/solve=" + maxRatio.toExponential(2));
++}
++
++const args = process.argv.slice(2);
++const trajMode = args.includes("--traj");
++console.log("residual-spike · dt=" + DT + " · solve residual vs post-step drift");
++weightJump();
++meltFlip();
++damSplit();
++if (trajMode) {
++	const n = Number(args[args.indexOf("--traj") + 1]) || 64;
++	const steps = Number(args[args.indexOf("--traj") + 2]) || 240;
++	const only = args.includes("--only") ? args[args.indexOf("--only") + 1] : "";
++	for (const scenario of ["cycle", "jet", "dam"]) {
++		if (only && scenario !== only) continue;
++		traj(scenario, n, steps);
++	}
++}
++console.log("PASS residual spike is post-step coefficient drift, not the solve");
+diff --git a/experiments/run-all.js b/experiments/run-all.js
+index dca78b4..65bc161 100644
+--- a/experiments/run-all.js
++++ b/experiments/run-all.js
+@@ -28,6 +28,7 @@ const FULL_SUITES = [
+ 	"eos.js",
+ 	"buoy.js",
+ 	"multigrid.js",
++	"residual-spike.js",
+ 	"transport-roundoff.js",
+ 	"gpu-memory.js",
+ 	"gpu-mock.js",
+diff --git a/experiments/vortex-decay.js b/experiments/vortex-decay.js
+new file mode 100644
+index 0000000..8b01043
+--- /dev/null
++++ b/experiments/vortex-decay.js
+@@ -0,0 +1,114 @@
++"use strict";
++// 0.6.0 t5 baseline. A Gaussian vortex on a uniform still box, gravity off,
++// viscosity 0. Retained kinetic energy is the decay metric: mac-cormack is
++// worth adopting only if it keeps >= 25 % more of that energy than
++// semi-Lagrangian at the same time, with the limiter watchdog at 0.
++// Not adopted from this script. The GPU path does not read cfg.macCormack.
++// run: node experiments/vortex-decay.js
++
++const path = require("node:path");
++const root = path.resolve(__dirname, "..");
++require(path.join(root, "src/core/config.js"));
++require(path.join(root, "src/core/grid.js"));
++require(path.join(root, "src/core/stats.js"));
++require(path.join(root, "src/core/multigrid.js"));
++const solverMod = require(path.join(root, "src/core/solver.js"));
++const grid = Fluid.core.grid;
++const cfg0 = Fluid.core.config.defaults;
++const DT = 1 / 240;
++
++function make(N, mac) {
++	const cfg = Object.assign({}, cfg0, {
++		N, scenario: "still", substepsAuto: false, substepsFixed: 1,
++		useMultigrid: true, mgCycles: 2, mgPre: 4, mgPost: 8, mgCoarseIters: 20,
++		gravityY: 0, viscosity: 0, beta: 0, thermalSources: 0, macCormack: mac ? 1 : 0
++	});
++	cfg.texW = N + 2;
++	cfg.texH = N + 2;
++	Fluid.core.config.prepareScenario(cfg);
++	return { cfg, sim: solverMod.create(cfg) };
++}
++function seed(sim, N) {
++	const buf = grid.curBuf(sim.vel);
++	const texW = sim.texW;
++	const cx = N * 0.5, cy = N * 0.5, sigma = N * 0.12, omega = 8;
++	const s2 = sigma * sigma;
++	for (let y = 1; y < sim.texH - 1; y++) {
++		for (let x = 1; x < sim.texW - 1; x++) {
++			const vi = (x + y * texW) * 2;
++			if (!sim.uBlocked(x, y)) {
++				const fx = (x - 1) - cx, fy = (y - 0.5) - cy, r2 = fx * fx + fy * fy;
++				buf[vi] = azimuth(omega, s2, r2, fy);
++			} else buf[vi] = 0;
++			if (!sim.vBlocked(x, y)) {
++				const fx = (x - 0.5) - cx, fy = (y - 1) - cy, r2 = fx * fx + fy * fy;
++				buf[vi + 1] = -azimuth(omega, s2, r2, fx);
++			} else buf[vi + 1] = 0;
++		}
++	}
++}
++function azimuth(omega, s2, r2, tangent) {
++	if (r2 < 1e-8) return 0;
++	const r = Math.sqrt(r2);
++	const uth = omega * s2 / r * (1 - Math.exp(-r2 / (2 * s2)));
++	return -uth * tangent / r;
++}
++function kinetic(sim) {
++	const buf = grid.curBuf(sim.vel);
++	const texW = sim.texW;
++	let e = 0;
++	for (let y = 1; y < sim.texH - 1; y++) {
++		for (let x = 1; x < sim.texW - 1; x++) {
++			const vi = (x + y * texW) * 2;
++			if (!sim.uBlocked(x, y)) e += buf[vi] * buf[vi];
++			if (!sim.vBlocked(x, y)) e += buf[vi + 1] * buf[vi + 1];
++		}
++	}
++	return e;
++}
++function projectOnce(sim, cfg) {
++	sim.poissonRhs(DT);
++	sim.project(Fluid.core.config.solverIters(cfg));
++	sim.applyGrad(DT);
++}
++function run(N, steps, mac, withProject) {
++	const { cfg, sim } = make(N, mac);
++	seed(sim, N);
++	projectOnce(sim, cfg);
++	const ke0 = kinetic(sim);
++	let limited = 0, over = 0;
++	const t0 = Date.now();
++	for (let s = 0; s < steps; s++) {
++		sim.advectVel(DT);
++		limited += sim.diag.velLimited;
++		over += sim.diag.velOvershoot;
++		if (withProject) projectOnce(sim, cfg);
++	}
++	return {
++		kept: kinetic(sim) / ke0,
++		limited, over,
++		ms: (Date.now() - t0) / steps
++	};
++}
++function line(label, r) {
++	console.log("  " + label.padEnd(18) +
++		" kept=" + r.kept.toExponential(3) +
++		" limited=" + r.limited +
++		" overshoot=" + r.over +
++		" cpu=" + r.ms.toFixed(2) + "ms");
++}
++const N = Number(process.argv[2]) || 64;
++const steps = Number(process.argv[3]) || 240;
++console.log("vortex-decay · N=" + N + " steps=" + steps + " dt=" + DT +
++	" · kept = KE/KE0 after a projected seed");
++for (const project of [false, true]) {
++	console.log(project ? "== advect + project ==" : "== advect only ==");
++	const sl = run(N, steps, false, project);
++	const mc = run(N, steps, true, project);
++	line("semi-lagrangian", sl);
++	line("mac-cormack", mc);
++	const gain = sl.kept > 0 ? mc.kept / sl.kept : 0;
++	console.log("  retained ratio mc/sl=" + gain.toFixed(3) +
++		(mc.over === 0 ? "  watchdog=0" : "  WATCHDOG " + mc.over));
++}
++console.log("done");
+diff --git a/findings-pitfalls-skills.md b/findings-pitfalls-skills.md
+index a0b7643..bafc0ad 100755
+--- a/findings-pitfalls-skills.md
++++ b/findings-pitfalls-skills.md
+@@ -590,10 +590,13 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
+   it *falls* in `jet` (25.2 -> 22.3), and it jumps 4x for one cycle in `cycle` where
+   the oracle says the residual is unchanged. direction only, never magnitude.
+ - skill: give the hardware its own quality number instead of arguing from a blind one.
+-  `max|b - L p|` and `max|b|` are now stats slots 32/33, printed as
+-  `poisson: res= rhs= true=`, where `true` is the oracle's ratio. note the units:
+-  `true` is ~1e-2 (residual over rhs) and is NOT the a2 `rel` (~1e-3, divAfter over
+-  divBefore); `rel` floors at max|S| in boiling flow, `true` does not.
++  `max|b - L p|` and `max|b|` are stats slots 32/33, printed as
++  `poisson: res= rhs= true=`. that `true` is the residual of the system just solved,
++  captured before transport. slots 34/35 are the post-step reading (`drift=`). a
++  capture dated before this split stored the drift in 32/33, so its `true` peak in
++  boiling flow is not a solver ranking. note the units: `true` is ~1e-2 (residual
++  over rhs) and is NOT the a2 `rel` (~1e-3, divAfter over divBefore); `rel` floors
++  at max|S| in boiling flow, and `drift` can exceed 1 without the solve having failed.
+ - skill: one definition per operator, even across a language boundary. the poisson
+   stencil now exists twice in total (module-scope `faceWeight`/`computeResidual` in
+   src/core/multigrid.js, and `POISSON_HELPERS` in src/gpu/shaders.js interpolated into
+@@ -613,3 +616,51 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
+ - pitfall: the browser report's header `gravity=300` is the pre-scenario cfg value. the
+   `cycle` scenario scales gravity with the box (600 at N=1024), so compare scenario rows
+   across N, never headers.
++
++## 2026-10-21 boiling residual spike is coefficient drift
++
++- pitfall: a frame-end `max|b - L p| / max|b|` is not the solve. `b` and `p` belong to
++  the projection; mass and flags after that are whatever transport and phase just wrote.
++  One emptied neighbor (weight ~1/rhoVac = 1000) or one cell that melts next to a stale
++  p=0 turns a tight solve into a residual of 1e5. Measured: uniform-density field, drop
++  one cell to rhoVac, residual x499; melt a blocked cell inside p=5e4, residual 0 -> 2e5;
++  dam N=64 step 10, end/solve=556 while solve/rhs=1.4e-4; dam N=128, max drift/solve=767
++  and drift/rhs=0.36. Cycle N=128 reproduces the hardware event at the same sim time:
++  step 1170 (t=4.875 s), post-step residual 1.2e4 times the solve and 668 times the
++  solve rhs, against the device's poissonTrue=26 at frame 301 (t=5.0 s, absRes=5.0e4,
++  rhs=1.9e3; that 26 is post-step residual over the post-step rhs). It grows with K (68/49/26/15 for
++  K60/K40/K20/1-cycle) because pressure amplitude grows, and the auto-policy rows
++  (smaller dt, less mass moved per step) peak at 0.18-0.39. Do not add sweeps to chase it.
++  Device confirmation, same preset after the split (`2026-10-21-07_19`): drift at frame
++  301 is 26.11078936008509 and driftRes is 49994.73828125, bit-identical to the old
++  absRes; end-of-run drift equals the old true (0.009715138446710316) and the solve
++  is 0.00877. The sampled true peak is the frame-1 cold start (0.141), not the boil.
++- skill: capture the residual in the pressure pass, before transport, and keep the
++  post-step reading under another name. GPU slots 32/33 are the solve (`true`,
++  residual over the solve rhs). Slots 34/35 are the drift, and the printed ratio is
++  residual over the post-step rhs — the formula older logs called `true`. CPU
++  `diag.poissonRes` is stored at the end of `project()`; `residualNorm()` after
++  `step()` is the drift residual. The two reductions need their own bind groups:
++  `layout: "auto"` pipelines do not share a bind group even when the entries match.
++- pitfall: older oracle rows (`mg-work*`, `mg-samestate`, `mg-defaults`) call
++  `residualNorm()` after `step()`, so their `true` column includes this drift. On a
++  same-state single step it is usually small next to rhs; a multi-step peak in boiling
++  flow is not a solver ranking. it also hides a real regression: dam 1-cycle vs 2-cycle
++  is drift 1.05x and solve 18x (`2026-10-21-mg-cycle-gate.log`).
++- pitfall: a same-state step cannot clear a solver that changes the warm start.
++  cycle at 1 cycle is 1.00x on one step inherited from a 2-cycle warmup, and 27x on
++  the solve (37x peakDivA) once it has been 1-cycle for its own 180 steps. jet stays
++  1.00x on that trajectory. do not promote "residual-neutral in cycle" from the old row.
++- skill: jet ships 1 V-cycle. the fixed-ns pair (`2026-10-21-08_02`) has settled
++  true 0.0100 vs 0.0115, maxDiv 23.7 vs 27.9, maxVel unchanged, 158 vs 105 fps.
++  the frame-1 true peak is 1.84x and is the cold start, not the ranking. the gate
++  is `productCycleGate` in prepareScenario; `&cycles=` pins an A/B. oracle scripts
++  that do not set the flag keep the cycle count they named. do not extend it.
++  Auto confirmation: 75.4 fps, ns still 12, press 0.607 vs 1.155. E drift 1.22e-6
++  is the same warn band as the 2-cycle auto row, not a new leak.
++- pitfall: a 1 s vortex row cannot clear a 1.25x retained-KE bar, because
++  semi-Lagrangian has only lost ~12 % and 1.25x would exceed the energy it
++  started with. the decision window is long enough for that loss. at 4 s with
++  projection, MacCormack keeps 1.43x and the clamp watchdog is 0. the
++  unprojected row is not the game. `cfg.macCormack` stays 0 until the WGSL
++  matches; the GPU shader does not read the flag.
+diff --git a/run_gpu_capture.py b/run_gpu_capture.py
+index 0666442..2ae960d 100755
+--- a/run_gpu_capture.py
++++ b/run_gpu_capture.py
+@@ -28,6 +28,9 @@ PRESETS = {
+ 	"fixed-k40": "n=512&frames=600&scenarios=blobs,dam,cycle,jet&k=40&auto=0&ns=4&profile=1",
+ 	"fixed-k60": "n=512&frames=600&scenarios=blobs,dam,cycle,jet&k=60&auto=0&ns=4&profile=1",
+ 	"cycles1": "n=512&frames=600&scenarios=blobs,dam,cycle,jet&k=20&cycles=1&auto=0&ns=4&profile=1",
++	"jet-fixed-k20": "n=512&frames=600&scenarios=jet&k=20&cycles=2&auto=0&ns=4&profile=1",
++	"jet-cycles1": "n=512&frames=600&scenarios=jet&k=20&cycles=1&auto=0&ns=4&profile=1",
++	"jet-auto": "n=512&frames=600&scenarios=jet&k=20&profile=1",
+ 	"n1024": "n=1024&frames=300&scenarios=blobs,dam,cycle,jet&k=20&profile=1",
+ 	"n1024-fixed": "n=1024&frames=300&scenarios=blobs,dam,cycle,jet&k=20&auto=0&ns=4&profile=1",
+ 	"cycle-fixed-k20": "n=512&frames=600&scenarios=cycle&k=20&cycles=2&auto=0&ns=4&profile=1",
+diff --git a/run_gpu_jet_cycles1.py b/run_gpu_jet_cycles1.py
+new file mode 100644
+index 0000000..c2bf277
+--- /dev/null
++++ b/run_gpu_jet_cycles1.py
+@@ -0,0 +1,8 @@
++#!/usr/bin/env python3
++"""Pinned jet capture at 1 V-cycle. The quality peer of jet-fixed-k20."""
++import sys
++sys.dont_write_bytecode = True
++import run_gpu_capture
++
++sys.argv = ["run_gpu_capture.py", "jet-cycles1"] + sys.argv[1:]
++run_gpu_capture.main()
+diff --git a/run_gpu_jet_fixed_k20.py b/run_gpu_jet_fixed_k20.py
+new file mode 100644
+index 0000000..b5653e7
+--- /dev/null
++++ b/run_gpu_jet_fixed_k20.py
+@@ -0,0 +1,8 @@
++#!/usr/bin/env python3
++"""Pinned jet capture at the shipping 2-cycle count, for the 1-cycle A/B."""
++import sys
++sys.dont_write_bytecode = True
++import run_gpu_capture
++
++sys.argv = ["run_gpu_capture.py", "jet-fixed-k20"] + sys.argv[1:]
++run_gpu_capture.main()
+diff --git a/src/app/hud.js b/src/app/hud.js
+index 45f5878..e8d249b 100644
+--- a/src/app/hud.js
++++ b/src/app/hud.js
+@@ -106,12 +106,20 @@
+ 			else if(mildOver)line+=" | mild overpack "+s.cntOver+" cells";
+ 			return line;
+ 		}
+-		// solver quality in the units plan 4.1 judges: the true poisson residual over
+-		// the rhs scale. divAfter (maxDiv above) floors at max|S| in boiling flow.
++		// solver quality in the units plan 4.1 judges: the residual of the system just
++		// solved, over the rhs scale. drift is that pressure after transport and phase.
++		// divAfter (maxDiv above) floors at max|S| in boiling flow.
+ 		function poissonLine(s){
+ 			const d=s.diag;
+ 			if(!d||d.poissonRes===undefined)return "poisson: n/a (no residual channel)";
+-			return "poisson: res="+d.poissonRes+" rhs="+d.poissonRhs+" true="+(d.poissonRhs>0?d.poissonRes/d.poissonRhs:0);
++			const rhs=d.poissonRhs||0;
++			const rel=rhs>0?d.poissonRes/rhs:0;
++			let line="poisson: res="+d.poissonRes+" rhs="+rhs+" true="+rel;
++			if(d.poissonDrift!==undefined){
++				const driftRel=d.poissonDriftRel!==undefined?d.poissonDriftRel:(rhs>0?d.poissonDrift/rhs:0);
++				line+=" drift="+driftRel;
++			}
++			return line;
+ 		}
+ 		// build a copyable diagnostics snapshot (used by button and 's' key)
+ 		function buildSnapshot(){
+diff --git a/src/app/main.js b/src/app/main.js
+index 3b59ad2..fb9c6db 100644
+--- a/src/app/main.js
++++ b/src/app/main.js
+@@ -30,7 +30,11 @@
+ 		const q=new URLSearchParams(typeof location!=="undefined"&&location.search?location.search:"");
+ 		if(q.has("mg"))cfg.useMultigrid=q.get("mg")!=="0";
+ 		if(q.has("s"))cfg.mgCoarsen=Math.max(2,Math.round(+q.get("s")||4));
+-		if(q.has("cycles"))cfg.mgCycles=Math.max(1,Math.round(+q.get("cycles")||2));
++		if(q.has("cycles")){
++			cfg.mgCycles=Math.max(1,Math.round(+q.get("cycles")||2));
++			cfg.mgCyclesPinned=1;
++		}
++		cfg.productCycleGate=1;
+ 		if(q.has("pre"))cfg.mgPre=Math.max(1,Math.round(+q.get("pre")||4));
+ 		if(q.has("post"))cfg.mgPost=Math.max(1,Math.round(+q.get("post")||8));
+ 		if(q.has("k"))Fluid.core.config.setSolverIters(cfg,Math.max(1,Math.round(+q.get("k")||60)));
+diff --git a/src/core/config.js b/src/core/config.js
+index 3bea37f..461b9e9 100644
+--- a/src/core/config.js
++++ b/src/core/config.js
+@@ -44,6 +44,9 @@
+ 		pressureIters:60,
+ 		fctLimiter:1,
+ 		viscosity:0.0,
++		// 0.6.0 t5: MacCormack velocity advection. off until a CPU vortex row
++		// clears the 25 % bar and the WGSL matches. the GPU path does not read this.
++		macCormack:0,
+ 		// phase dependent conduction (0.5.0): the liquid value is the 0.4.0
+ 		// coefficient; gas nearly insulating keeps steam plumes hot so they rise far.
+ 		kSol:0.25,
+@@ -96,6 +99,8 @@
+ 		mgPre:4,
+ 		mgPost:8,
+ 		mgCoarsen:4,
++		// global default. the product gate (productCycleGate, set by the app and the
++		// browser harness) drops jet to 1 and leaves every other scenario here.
+ 		mgCycles:2,
+ 		// coarse-level red-black sweeps per V-cycle. 0.6.0 t11: 60 -> 20 removes
+ 		// 160 of the 295 dispatches per projection (295 -> 135) and 1.6-2.5 ->
+@@ -239,6 +244,13 @@
+ 			cfg.TMax=340;
+ 			cfg.beta=scaleBeta(cfg.N);
+ 		}
++		// product policy, off unless the app or the browser harness sets the flag,
++		// so an oracle that named mgCycles keeps that knob. ?cycles= sets
++		// mgCyclesPinned and wins. jet is the only scenario that drops a cycle:
++		// dam and blobs are 18x on the solve, cycle is 27x on its own trajectory.
++		if(cfg.productCycleGate && !cfg.mgCyclesPinned){
++			cfg.mgCycles=s==="jet"?1:defaults.mgCycles;
++		}
+ 	}
+ 	function recommendedIters(N){
+ 		let k=Math.ceil(N*0.18+20);
+diff --git a/src/core/multigrid.js b/src/core/multigrid.js
+index b8e27e2..0c39ce5 100644
+--- a/src/core/multigrid.js
++++ b/src/core/multigrid.js
+@@ -13,8 +13,9 @@
+ 		return flagsArr[i4]>0||flagsArr[i4+2]>0;
+ 	}
+ 	// the poisson operator for one level: harmonic-mean face weights, zero across a
+-	// wall or a frozen cell. shared by the v-cycle and by the frame-end residual
+-	// readout, so the reported number can never drift from the system solved.
++	// wall or a frozen cell. shared by the v-cycle and by both residual readouts,
++	// so a number can only disagree with the solve when the coefficients passed in
++	// are no longer the ones that were solved.
+ 	function faceWeight(massArr,texW,texH,x,y,nx,ny,flagsArr,rhoVac){
+ 		if(nx<1||nx>texW-2||ny<1||ny>texH-2)return 0;
+ 		if(cellBlocked(flagsArr,(nx+ny*texW)*4))return 0;
+@@ -22,11 +23,12 @@
+ 		const rb=Math.max(massArr[(nx+ny*texW)*4+3],rhoVac);
+ 		return 1/(2*ra*rb/(ra+rb));
+ 	}
+-	// out[i]=b-(L p-wsum*p) per open cell, 0 in blocked cells, and the return value
+-	// is max|out| — the true poisson residual (0.6.0 4.1). `out` may be null when
+-	// only the norm is wanted, so a diagnostic readout needs no scratch field.
+-	function computeResidual(pressArr,divArr,massArr,flagsArr,texW,texH,rhoVac,out){
+-		let maxA=0;
++	// out[i]=b-(L p) per open cell, 0 in blocked cells, and the return value is
++	// max|out|. `out` may be null when only the norm is wanted. an optional sink
++	// receives max|b| over the same open cells, so the drift ratio can use the
++	// post-step rhs without a second walk.
++	function computeResidual(pressArr,divArr,massArr,flagsArr,texW,texH,rhoVac,out,sink){
++		let maxA=0,maxB=0;
+ 		for(let y=1;y<texH-1;y++){
+ 			for(let x=1;x<texW-1;x++){
+ 				const i=x+y*texW;
+@@ -41,13 +43,17 @@
+ 					if(w>0){wsum+=w;sum+=w*pressArr[i-texW];}
+ 					w=faceWeight(massArr,texW,texH,x,y,x,y+1,flagsArr,rhoVac);
+ 					if(w>0){wsum+=w;sum+=w*pressArr[i+texW];}
+-					r=divArr[i]-(sum-wsum*pressArr[i]);
++					const b=divArr[i];
++					const ab=b<0?-b:b;
++					if(ab>maxB)maxB=ab;
++					r=b-(sum-wsum*pressArr[i]);
+ 				}
+ 				if(out)out[i]=r;
+ 				const a=r<0?-r:r;
+ 				if(a>maxA)maxA=a;
+ 			}
+ 		}
++		if(sink)sink.rhs=maxB;
+ 		return maxA;
+ 	}
+ 	function createTwoLevel(cfg,texW,texH,refs){
+diff --git a/src/core/solver.js b/src/core/solver.js
+index 4b4b9bd..5dc4262 100644
+--- a/src/core/solver.js
++++ b/src/core/solver.js
+@@ -265,6 +265,7 @@
+ 		const vel=grid.allocPingPong(texW,texH,8,Float32Array);
+ 		const press=grid.allocPingPong(texW,texH,4,Float32Array);
+ 		const flux=new Float32Array(texW*texH*2);
++		const velMc=new Float32Array(texW*texH*2);
+ 		const divsrc=new Float32Array(texW*texH);
+ 		const sfield=new Float32Array(texW*texH*4);
+ 		const flags=new Uint8Array(texW*texH*4);
+@@ -272,7 +273,9 @@
+ 		const massFctTmp=new Float32Array(texW*texH*4);
+ 		const acc=Fluid.core.stats;
+ 		let ledger=null;
+-		const diag={divBefore:0,divAfter:0,pressureResidual:0,sSaturated:0};
++		const diag={divBefore:0,divAfter:0,pressureResidual:0,sSaturated:0,
++			poissonRes:0,poissonRhs:0,poissonDrift:0,poissonDriftRhs:0,poissonDriftRel:0,
++			velLimited:0,velOvershoot:0};
+ 		let mg=null;
+ 		if(cfg.useMultigrid && Fluid.core.multigrid){
+ 			mg=Fluid.core.multigrid.create(cfg,texW,texH,{
+@@ -311,8 +314,17 @@
+ 			const tot=acc.totalsFromFields(mass.a,therm.a,texW,texH);
+ 			ledger=acc.createLedger(tot);
+ 			cfg.frame=0;cfg.time=0;
++			diag.poissonRes=0;diag.poissonRhs=0;diag.poissonDrift=0;diag.poissonDriftRhs=0;diag.poissonDriftRel=0;
++			diag.velLimited=0;diag.velOvershoot=0;
+ 			phaseEos(false);
+ 		}
++		function captureSolveResidual(){
++			const mgOp=Fluid.core.multigrid;
++			if(!mgOp)return;
++			diag.poissonRes=mgOp.computeResidual(grid.curBuf(press),divsrc,grid.curBuf(mass),
++				flags,texW,texH,cfg.rhoVac,null);
++			diag.poissonRhs=diag.divBefore;
++		}
+ 		function forces(dt){
+ 			const src=grid.curBuf(vel),dst=grid.nxtBuf(vel);
+ 			const ms=grid.curBuf(mass),ts=grid.curBuf(therm);
+@@ -378,37 +390,97 @@
+ 			const ll=l<0?0:(l>texH-1?texH-1:l);
+ 			return buf[(mm+ll*texW)*2+1];
+ 		}
+-		function advectVel(dt){
+-			const src=grid.curBuf(vel),dst=grid.nxtBuf(vel);
++		// reused by the tracer so a face sample does not allocate. one object for
++		// the life of the solver, written and read before the next face.
++		const samp={v:0,lo:0,hi:0};
++		function spanInto(a,b,c,d){
++			let lo=a,hi=a;
++			if(b<lo)lo=b;else if(b>hi)hi=b;
++			if(c<lo)lo=c;else if(c>hi)hi=c;
++			if(d<lo)lo=d;else if(d>hi)hi=d;
++			samp.lo=lo;samp.hi=hi;
++		}
++		function sampleU(src,px,py){
++			const i0=Math.floor(px),fx=px-i0;
++			const l0=Math.floor(py+0.5),fy=py+0.5-l0;
++			const u00=loadU(src,i0+1,l0),u10=loadU(src,i0+2,l0);
++			const u01=loadU(src,i0+1,l0+1),u11=loadU(src,i0+2,l0+1);
++			const a0=u00+(u10-u00)*fx,a1=u01+(u11-u01)*fx;
++			spanInto(u00,u10,u01,u11);
++			samp.v=a0+(a1-a0)*fy;
++		}
++		function sampleV(src,px,py){
++			const k0=Math.floor(px+0.5),fx=px+0.5-k0;
++			const l0=Math.floor(py),fy=py-l0;
++			const v00=loadV(src,k0,l0+1),v10=loadV(src,k0+1,l0+1);
++			const v01=loadV(src,k0,l0+2),v11=loadV(src,k0+1,l0+2);
++			const b0=v00+(v10-v00)*fx,b1=v01+(v11-v01)*fx;
++			spanInto(v00,v10,v01,v11);
++			samp.v=b0+(b1-b0)*fy;
++		}
++		function traceU(src,x,y,dt,sign){
++			const vi=(x+y*texW)*2;
++			const uc=src[vi];
++			const vc=0.25*(loadV(src,x-1,y)+loadV(src,x-1,y+1)+loadV(src,x,y)+loadV(src,x,y+1));
++			let px=(x-1)+sign*dt*uc,py=(y-0.5)+sign*dt*vc;
++			px=px<0?0:(px>N?N:px);
++			py=py<0.5?0.5:(py>N-0.5?N-0.5:py);
++			sampleU(src,px,py);
++		}
++		function traceV(src,x,y,dt,sign){
++			const vi=(x+y*texW)*2;
++			const vc=src[vi+1];
++			const uc=0.25*(loadU(src,x,y-1)+loadU(src,x+1,y-1)+loadU(src,x,y)+loadU(src,x+1,y));
++			let px=(x-0.5)+sign*dt*uc,py=(y-1)+sign*dt*vc;
++			px=px<0.5?0.5:(px>N-0.5?N-0.5:px);
++			py=py<0?0:(py>N?N:py);
++			sampleV(src,px,py);
++		}
++		function semiLagrangian(src,dst,dt,sign){
+ 			for(let y=1;y<texH-1;y++){
+ 				for(let x=1;x<texW-1;x++){
+ 					const vi=(x+y*texW)*2;
+-					let u=0,v=0;
+-					if(!uBlocked(x,y)){
+-						const uc=src[vi];
+-						const vc=0.25*(loadV(src,x-1,y)+loadV(src,x-1,y+1)+loadV(src,x,y)+loadV(src,x,y+1));
+-						let px=(x-1)-dt*uc,py=(y-0.5)-dt*vc;
+-						px=px<0?0:(px>N?N:px);
+-						py=py<0.5?0.5:(py>N-0.5?N-0.5:py);
+-						const i0=Math.floor(px),fx=px-i0;
+-						const l0=Math.floor(py+0.5),fy=py+0.5-l0;
+-						const u00=loadU(src,i0+1,l0),u10=loadU(src,i0+2,l0);
+-						const u01=loadU(src,i0+1,l0+1),u11=loadU(src,i0+2,l0+1);
+-						u=(u00+(u10-u00)*fx)+((u01+(u11-u01)*fx)-(u00+(u10-u00)*fx))*fy;
+-					}
+-					if(!vBlocked(x,y)){
+-						const vc=src[vi+1];
+-						const uc=0.25*(loadU(src,x,y-1)+loadU(src,x+1,y-1)+loadU(src,x,y)+loadU(src,x+1,y));
+-						let px=(x-0.5)-dt*uc,py=(y-1)-dt*vc;
+-						px=px<0.5?0.5:(px>N-0.5?N-0.5:px);
+-						py=py<0?0:(py>N?N:py);
+-						const k0=Math.floor(px+0.5),fx=px+0.5-k0;
+-						const l0=Math.floor(py),fy=py-l0;
+-						const v00=loadV(src,k0,l0+1),v10=loadV(src,k0+1,l0+1);
+-						const v01=loadV(src,k0,l0+2),v11=loadV(src,k0+1,l0+2);
+-						v=(v00+(v10-v00)*fx)+((v01+(v11-v01)*fx)-(v00+(v10-v00)*fx))*fy;
++					if(uBlocked(x,y))dst[vi]=0;
++					else{traceU(src,x,y,dt,sign);dst[vi]=samp.v;}
++					if(vBlocked(x,y))dst[vi+1]=0;
++					else{traceV(src,x,y,dt,sign);dst[vi+1]=samp.v;}
++				}
++			}
++		}
++		function clampFace(value,lo,hi){
++			if(value<lo){diag.velLimited++;return lo;}
++			if(value>hi){diag.velLimited++;return hi;}
++			return value;
++		}
++		// sign -1 is the shipping semi-Lagrangian backtrace. MacCormack adds the
++		// forward error estimate and clamps to the backtrace stencil (Selle),
++		// so a new extremum cannot appear. velOvershoot counts a clamp that failed.
++		function advectVel(dt){
++			const src=grid.curBuf(vel),dst=grid.nxtBuf(vel);
++			semiLagrangian(src,dst,dt,-1);
++			diag.velLimited=0;diag.velOvershoot=0;
++			if(cfg.macCormack){
++				semiLagrangian(dst,velMc,dt,1);
++				for(let y=1;y<texH-1;y++){
++					for(let x=1;x<texW-1;x++){
++						const vi=(x+y*texW)*2;
++						if(!uBlocked(x,y)){
++							traceU(src,x,y,dt,-1);
++							const lo=samp.lo,hi=samp.hi;
++							let u=dst[vi]+0.5*(src[vi]-velMc[vi]);
++							u=clampFace(u,lo,hi);
++							if(u<lo||u>hi)diag.velOvershoot++;
++							dst[vi]=u;
++						}
++						if(!vBlocked(x,y)){
++							traceV(src,x,y,dt,-1);
++							const lo=samp.lo,hi=samp.hi;
++							let v=dst[vi+1]+0.5*(src[vi+1]-velMc[vi+1]);
++							v=clampFace(v,lo,hi);
++							if(v<lo||v>hi)diag.velOvershoot++;
++							dst[vi+1]=v;
++						}
+ 					}
+-					dst[vi]=u;dst[vi+1]=v;
+ 				}
+ 			}
+ 			grid.swap(vel);
+@@ -435,6 +507,7 @@
+ 			if(mg && cfg.useMultigrid){
+ 				const cycles=Math.max(1,Math.round(cfg.mgCycles||1));
+ 				for(let c=0;c<cycles;c++)mg.vcycle(cfg.mgPre||4,iters,cfg.mgPost||8);
++				captureSolveResidual();
+ 				return;
+ 			}
+ 			const ms=grid.curBuf(mass);
+@@ -461,6 +534,7 @@
+ 					grid.swap(press);
+ 				}
+ 			}
++			captureSolveResidual();
+ 		}
+ 		function faceW(ms,x,y,nx,ny){
+ 			if(nx<1||nx>texW-2||ny<1||ny>texH-2)return 0;
+@@ -766,14 +840,23 @@
+ 		function stats(){
+ 			const tot=acc.totalsFromFields(grid.curBuf(mass),grid.curBuf(therm),texW,texH);
+ 			const mot=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,cfg.dt);
+-			// frame-end poisson residual of the last pressure solve, with the operator the
+-			// v-cycle itself restricts; the gpu stats pass reports the same two numbers.
+-			// computed per call (about one extra grid pass), which is what a polling caller
+-			// asks for: gpu diag values are the last sampled frame, these are the current one.
++			// poissonRes is the system just solved (captured in project, before transport).
++			// the recompute here is the post-step operator: coefficient drift, same
++			// number the gpu writes to slots 34/35. the ratio uses the post-step rhs,
++			// which is what the pre-split `true` column was, so a re-capture's drift
++			// is comparable to those logs. a freeze can inflate it; that is the point.
+ 			const mgOp=Fluid.core.multigrid;
+-			const poissonRes=mgOp?mgOp.computeResidual(grid.curBuf(press),divsrc,grid.curBuf(mass),
+-				flags,texW,texH,cfg.rhoVac,null):0;
+-			const poissonRel=diag.divBefore>0?poissonRes/diag.divBefore:0;
++			const driftSink={rhs:0};
++			const poissonDrift=mgOp?mgOp.computeResidual(grid.curBuf(press),divsrc,grid.curBuf(mass),
++				flags,texW,texH,cfg.rhoVac,null,driftSink):0;
++			const poissonRes=diag.poissonRes||0;
++			const poissonRhs=diag.poissonRhs||0;
++			const poissonRel=poissonRhs>0?poissonRes/poissonRhs:0;
++			const poissonDriftRhs=driftSink.rhs;
++			const poissonDriftRel=poissonDriftRhs>0?poissonDrift/poissonDriftRhs:0;
++			diag.poissonDrift=poissonDrift;
++			diag.poissonDriftRhs=poissonDriftRhs;
++			diag.poissonDriftRel=poissonDriftRel;
+ 			const thermal=acc.thermalTotals(grid.curBuf(mass),grid.curBuf(therm),grid.curBuf(vel),texW,texH,cfg.mEps,cfg.cLiq,cfg.TAmb);
+ 			const phaseCounts=[0,0,0,0,0,0];
+ 			for(let y=1;y<texH-1;y++){
+@@ -783,7 +866,8 @@
+ 			}
+ 			return {frame:cfg.frame,tot,mot,thermal,ledger,phaseCounts,
+ 				diag:{divBefore:diag.divBefore,divAfter:diag.divAfter,residual:diag.pressureResidual,
+-					sSaturated:diag.sSaturated,poissonRes,poissonRel}};
++					sSaturated:diag.sSaturated,poissonRes,poissonRhs,poissonRel,
++					poissonDrift,poissonDriftRhs,poissonDriftRel}};
+ 		}
+ 		function applyDyePatch(patch){
+ 			const buf=grid.curBuf(mass),tbuf=grid.curBuf(therm);
+diff --git a/src/core/stats.js b/src/core/stats.js
+index 1abc84a..afa4eed 100644
+--- a/src/core/stats.js
++++ b/src/core/stats.js
+@@ -14,10 +14,12 @@
+ 	// cumulative latent/frozen-momentum diagnostics in slots 23..31
+ 	const IDX_PH_VAC=23,IDX_PH_SOL=24,IDX_PH_MELT=25,IDX_PH_LIQ=26,IDX_PH_BOIL=27,IDX_PH_GAS=28;
+ 	const IDX_S_SAT=29,IDX_LATENT=30,IDX_FROZEN_MOM=31;
+-	// 0.6.0: the frame-end poisson residual (max|b - L p|) and its rhs scale
+-	// (max|b|). the ratio is the true residual of plan 4.1 / the oracle `true` column,
+-	// and unlike divAfter it does not floor at max|S| in boiling flow.
++	// 0.6.0: solve-time poisson residual (max|b - L p| and max|b|) in 32/33.
++	// the ratio is the plan 4.1 judge. unlike divAfter it does not floor at max|S|.
++	// 34/35 are the same pressure read after transport and phase: coefficient drift,
++	// not solver error. a boiling spike lives there.
+ 	const IDX_POISSON_RES=32,IDX_POISSON_RHS=33;
++	const IDX_POISSON_DRIFT=34,IDX_POISSON_DRIFT_RHS=35;
+ 	const STATS_LEN=36;
+ 	const PARTIAL_STRIDE=40;
+ 	// negatives below -1e-9 are real; smaller is f32/FCT roundoff (≈1e-28 seen at N=512).
+@@ -160,6 +162,6 @@
+ 		if(a<1e-3)return "warn";
+ 		return "bad";
+ 	}
+-	Fluid.core.stats={STATS_LEN,PARTIAL_STRIDE,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,IDX_HEAT_IN,IDX_HEAT_OUT,IDX_T_MIN,IDX_T_MAX,IDX_T_MEAN,IDX_KINETIC,IDX_PH_VAC,IDX_PH_SOL,IDX_PH_MELT,IDX_PH_LIQ,IDX_PH_BOIL,IDX_PH_GAS,IDX_S_SAT,IDX_LATENT,IDX_FROZEN_MOM,IDX_POISSON_RES,IDX_POISSON_RHS,STATS_FIELDS,totalsFromFields,motionTotals,thermalTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift};
++	Fluid.core.stats={STATS_LEN,PARTIAL_STRIDE,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,IDX_HEAT_IN,IDX_HEAT_OUT,IDX_T_MIN,IDX_T_MAX,IDX_T_MEAN,IDX_KINETIC,IDX_PH_VAC,IDX_PH_SOL,IDX_PH_MELT,IDX_PH_LIQ,IDX_PH_BOIL,IDX_PH_GAS,IDX_S_SAT,IDX_LATENT,IDX_FROZEN_MOM,IDX_POISSON_RES,IDX_POISSON_RHS,IDX_POISSON_DRIFT,IDX_POISSON_DRIFT_RHS,STATS_FIELDS,totalsFromFields,motionTotals,thermalTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift};
+ 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.stats;
+ })(globalThis);
+diff --git a/src/gpu/passes.js b/src/gpu/passes.js
+index 4635808..7a4a5b6 100644
+--- a/src/gpu/passes.js
++++ b/src/gpu/passes.js
+@@ -57,7 +57,9 @@
+ 			mgRestrict:comp("mgRestrict",PS+sh.mgRestrict),
+ 			mgZero:comp("mgZero",PS+sh.mgZero),
+ 			mgProlong:comp("mgProlong",PS+sh.mgProlong),
+-			statsA:comp("statsA",PS+sh.statsReduceA),
++			poissonReduceA:comp("poissonReduceA",PS+sh.poissonReduceA),
++		poissonReduceB:comp("poissonReduceB",sh.poissonReduceB),
++		statsA:comp("statsA",PS+sh.statsReduceA),
+ 			statsB:comp("statsB",PS+sh.statsReduceB),
+ 			buoySample:comp("buoySample",PS+sh.buoySample),
+ 			toDisplay:comp("toDisplay",PS+sh.toDisplay),
+@@ -93,8 +95,8 @@
+ 		const groups={
+ 			forces:[],advectVel:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
+ 			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],heatSources:[],
+-			limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
+-			statsA:[],toDisplay:[],statsB:null,buoySample:[],render:null
++		limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
++		poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],render:null
+ 		};
+ 		for(let mm=0;mm<3;mm++){
+ 			groups.phaseA[mm]=[];
+@@ -155,7 +157,15 @@
+ 			const nextM=(m+1)%3,finalM=(m+2)%3;
+ 			const mm=pool.mass.tex[m],ml=pool.mass.tex[nextM];
+ 			const mo=pool.mass.tex[finalM];
+-			groups.projRed[m]=bg(device,"projRed"+m,pipes.projLayout,[
++			groups.poissonA[m]=bg(device,"poissonA"+m,pipes.poissonReduceA.getBindGroupLayout(0),[
++			{binding:0,resource:{buffer:pool.params}},
++			{binding:1,resource:viewRes(p0)},
++			{binding:2,resource:divsrcView},
++			{binding:3,resource:viewRes(mm)},
++			{binding:4,resource:flagsView},
++			{binding:5,resource:{buffer:pool.statsPart}}
++		]);
++		groups.projRed[m]=bg(device,"projRed"+m,pipes.projLayout,[
+ 				{binding:0,resource:{buffer:pool.params}},
+ 				{binding:1,resource:viewRes(p0)},
+ 				{binding:2,resource:viewRes(p1)},
+@@ -361,6 +371,11 @@
+ 			{binding:3,resource:flagsView},
+ 			{binding:4,resource:mgFlagsView}
+ 		]);
++		groups.poissonB=bg(device,"poissonB",pipes.poissonReduceB.getBindGroupLayout(0),[
++			{binding:0,resource:{buffer:pool.statsPart}},
++			{binding:1,resource:{buffer:pool.stats}},
++			{binding:2,resource:{buffer:pool.dims}}
++		]);
+ 		groups.statsB=bg(device,"statsB",pipes.statsB.getBindGroupLayout(0),[
+ 			{binding:0,resource:{buffer:pool.statsPart}},
+ 			{binding:1,resource:{buffer:pool.stats}},
+@@ -414,7 +429,15 @@
+ 		cpass.setBindGroup(0,groups.rhs[io.v]);
+ 		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
+ 	}
+-	function encodePressure(cpass,pool,pipes,groups,io,iters,mgOn,mgPre,mgPost,mgCycles){
++	function encodePoissonReduce(cpass,pool,pipes,groups,io){
++		cpass.setPipeline(pipes.poissonReduceA);
++		cpass.setBindGroup(0,groups.poissonA[io.m]);
++		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
++		cpass.setPipeline(pipes.poissonReduceB);
++		cpass.setBindGroup(0,groups.poissonB);
++		cpass.dispatchWorkgroups(1);
++	}
++	function encodePressure(cpass,pool,pipes,groups,io,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual){
+ 		const wx=pool.workgroupX,wy=pool.workgroupY;
+ 		const mx=pool.mgWorkgroupX,my=pool.mgWorkgroupY;
+ 		const m=io.m;
+@@ -473,6 +496,9 @@
+ 		cpass.setBindGroup(0,groups.applyGrad[m][io.v]);
+ 		cpass.dispatchWorkgroups(wx,wy);
+ 		io.v=1-io.v;
++		// after the solve, before transport: mass parity is still the one the
++		// projection used. only the sampled frame's last substep asks for this.
++		if(captureResidual)encodePoissonReduce(cpass,pool,pipes,groups,io);
+ 	}
+ 	function encodeTransport(cpass,pool,pipes,groups,state,io,fctOn){
+ 		const wx=pool.workgroupX,wy=pool.workgroupY;
+@@ -536,20 +562,20 @@
+ 		io.t=ts;
+ 		io.v=v;
+ 	}
+-	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles){
++	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual){
+ 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
+ 		encodeVelAdv(cpass,pool,pipes,groups,stepIo);
+ 		encodeRhs(cpass,pool,pipes,groups,stepIo);
+-		encodePressure(cpass,pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles);
++		encodePressure(cpass,pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
+ 		encodeTransport(cpass,pool,pipes,groups,state,stepIo,fctOn);
+ 		encodePhaseChain(cpass,pool,pipes,groups,state,stepIo);
+ 	}
+-	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles){
++	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual){
+ 		const G=Fluid.gpu.profiler.GROUP;
+ 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
+ 		encodeVelAdv(prof.pass(encoder,G.vel,"vel"),pool,pipes,groups,stepIo);
+ 		encodeRhs(prof.pass(encoder,G.rhs,"rhs"),pool,pipes,groups,stepIo);
+-		encodePressure(prof.pass(encoder,G.press,"press"),pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles);
++		encodePressure(prof.pass(encoder,G.press,"press"),pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
+ 		encodeTransport(prof.pass(encoder,G.trans,"trans"),pool,pipes,groups,state,stepIo,fctOn);
+ 		encodePhaseChain(prof.pass(encoder,G.phase,"phase"),pool,pipes,groups,state,stepIo);
+ 	}
+diff --git a/src/gpu/shaders.js b/src/gpu/shaders.js
+index 72efb8b..45540b2 100644
+--- a/src/gpu/shaders.js
++++ b/src/gpu/shaders.js
+@@ -907,6 +907,77 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+ 	}
+ 	textureStore(thermDst, vec2<i32>(x, y), q);
+ }
++`;
++	// solve-time poisson residual: same operator the projection just used, reduced
++	// before transport so a later density or freeze change cannot inflate it.
++	// shares the stats partial buffer; statsReduceB must not overwrite slots 32/33.
++	shaders.poissonReduceA=`
++@group(0) @binding(0) var<uniform> params: Params;
++@group(0) @binding(1) var pressTex: texture_2d<f32>;
++@group(0) @binding(2) var divsrcTex: texture_2d<f32>;
++@group(0) @binding(3) var massTex: texture_2d<f32>;
++@group(0) @binding(4) var flagsTex: texture_2d<u32>;
++@group(0) @binding(5) var<storage,read_write> partials: array<f32>;
++${POISSON_HELPERS}
++var<workgroup> sh: array<f32,128>;
++
++@compute @workgroup_size(8,8)
++fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
++	let w = i32(params.values[2]);
++	let h = i32(params.values[3]);
++	let x = i32(gid.x);
++	let y = i32(gid.y);
++	var maxRes = 0.0;
++	var maxRhs = 0.0;
++	if (x >= 1 && x < w - 1 && y >= 1 && y < h - 1) {
++		var pp: PoissonP;
++		pp.center = textureLoad(pressTex, vec2<i32>(x, y), 0).r;
++		pp.left = textureLoad(pressTex, vec2<i32>(x - 1, y), 0).r;
++		pp.right = textureLoad(pressTex, vec2<i32>(x + 1, y), 0).r;
++		pp.down = textureLoad(pressTex, vec2<i32>(x, y - 1), 0).r;
++		pp.up = textureLoad(pressTex, vec2<i32>(x, y + 1), 0).r;
++		let cell = poissonResidual(pp, x, y, w, h);
++		maxRes = abs(cell.res);
++		maxRhs = abs(cell.rhs);
++	}
++	sh[lid] = maxRes;
++	sh[64u + lid] = maxRhs;
++	workgroupBarrier();
++	var stride = 32u;
++	loop {
++		if (stride == 0u) { break; }
++		if (lid < stride) {
++			sh[lid] = max(sh[lid], sh[lid + stride]);
++			sh[64u + lid] = max(sh[64u + lid], sh[64u + lid + stride]);
++		}
++		workgroupBarrier();
++		stride = stride >> 1u;
++	}
++	if (lid == 0u) {
++		let base = (wid.y * nwg.x + wid.x) * 40u;
++		partials[base] = sh[0];
++		partials[base + 1u] = sh[64u];
++	}
++}
++`;
++	shaders.poissonReduceB=`
++@group(0) @binding(0) var<storage,read> partials: array<f32>;
++@group(0) @binding(1) var<storage,read_write> stats: array<f32>;
++@group(0) @binding(2) var<uniform> dims: vec4<u32>;
++
++@compute @workgroup_size(1)
++fn main() {
++	let num = dims.x / 40u;
++	var maxRes = 0.0;
++	var maxRhs = 0.0;
++	for (var i = 0u; i < num; i++) {
++		let base = i * 40u;
++		maxRes = max(maxRes, partials[base]);
++		maxRhs = max(maxRhs, partials[base + 1u]);
++	}
++	stats[32u] = maxRes;
++	stats[33u] = maxRhs;
++}
+ `;
+ 	// ---------- two level stats reduction, level 1 (35 values -> stride 40) ----------
+ 	shaders.statsReduceA=`
+@@ -953,8 +1024,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
+ 		maxDiv = abs(uR - uL + vT - vB) / max(dt, 1e-9);
+ 		let p = textureLoad(pressTex, vec2<i32>(x, y), 0).r;
+ 		pMin = p; pMax = p;
+-		// the true poisson residual of the last projection, in operator units: the
+-		// metric plan 4.1 judges, and the only one that survives the S floor in boiling
++		// post-step residual: same pressure and divsrc, but mass and flags after
++		// transport and phase. this is coefficient drift, not the solve. the solve
++		// residual is poissonReduce, captured before those passes.
+ 		var pp: PoissonP;
+ 		pp.center = p;
+ 		pp.left = textureLoad(pressTex, vec2<i32>(x - 1, y), 0).r;
+@@ -1094,7 +1166,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+ 	stats[0u] = sM; stats[1u] = sDr; stats[2u] = sDg; stats[3u] = sDb; stats[4u] = sE;
+ 	stats[5u] = minM; stats[6u] = minDr; stats[7u] = minDg; stats[8u] = minDb; stats[9u] = minE;
+ 	stats[10u] = maxM; stats[11u] = neg; stats[12u] = over;
+-	stats[32u] = maxRes; stats[33u] = maxRhs;
++	// 32/33 belong to the solve-time reduce. 34/35 are this pass's post-step drift.
++	stats[34u] = maxRes; stats[35u] = maxRhs;
+ 	stats[13u] = maxVel; stats[14u] = pMin; stats[15u] = pMax; stats[16u] = maxDiv;
+ 	if (tMin == 1e30) { tMin = 0.0; }
+ 	if (tMax == -1e30) { tMax = 0.0; }
+diff --git a/src/gpu/solver.js b/src/gpu/solver.js
+index 77ebdc5..47add2c 100644
+--- a/src/gpu/solver.js
++++ b/src/gpu/solver.js
+@@ -36,7 +36,7 @@
+ 		let timeAcc=0;
+ 		let pSpanSmooth=100;
+ 		const phaseCounts=[0,0,0,0,0,0];
+-		const diag={sSaturated:0,poissonRes:0,poissonRhs:0,poissonRel:0};
++		const diag={sSaturated:0,poissonRes:0,poissonRhs:0,poissonRel:0,poissonDrift:0,poissonDriftRhs:0,poissonDriftRel:0};
+ 		let statsCache=null;
+ 		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,thermal:null,phaseCounts,diag,ledger:null};
+ 		function writeParams(){
+@@ -108,6 +108,7 @@
+ 			}
+ 			diag.sSaturated=0;
+ 			diag.poissonRes=0;diag.poissonRhs=0;diag.poissonRel=0;
++			diag.poissonDrift=0;diag.poissonDriftRhs=0;diag.poissonDriftRel=0;
+ 			const expected=stats.writeExpectedTotals({m:0,dr:0,dg:0,db:0,E:0},ledger);
+ 			statsCache={
+ 				frame:0,
+@@ -174,7 +175,8 @@
+ 				prof.beginFrame(substeps,frameCount+1);
+ 				for(let s=0;s<substeps;s++){
+ 					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
+-						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1);
++						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
++						needStats&&s===substeps-1);
+ 				}
+ 				if(needStats||needBuoy){
+ 					const cp=prof.pass(encoder,PROFILE_GROUP.stats,"stats");
+@@ -187,7 +189,8 @@
+ 				const cpass=encoder.beginComputePass({label:"sim"});
+ 				for(let s=0;s<substeps;s++){
+ 					passes.encodeStep(cpass,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
+-						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1);
++						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
++						needStats&&s===substeps-1);
+ 				}
+ 				if(needStats){
+ 					passes.encodeStats(cpass,pool,pipes,groups,state);
+@@ -320,12 +323,19 @@
+ 					statsCache.thermal.heatOut=heatOut;
+ 					for(let k=0;k<6;k++)phaseCounts[k]=Math.round(readbackArray[23+k]);
+ 					diag.sSaturated=Math.round(readbackArray[29]);
+-					// frame-end poisson residual (0.6.0 plan 4.1): max|b - L p| over max|b|
+-					// is the solver-quality number that survives the S floor in boiling flow
+-					const poissonRes=readbackArray[32],poissonRhs=readbackArray[33];
++					// solve residual is slots 32/33, captured before transport. slots 34/35
++					// are the same pressure after transport and phase: coefficient drift.
++					const poissonRes=readbackArray[stats.IDX_POISSON_RES],poissonRhs=readbackArray[stats.IDX_POISSON_RHS];
++					const poissonDrift=readbackArray[stats.IDX_POISSON_DRIFT];
+ 					diag.poissonRes=poissonRes;
+ 					diag.poissonRhs=poissonRhs;
+ 					diag.poissonRel=poissonRhs>0?poissonRes/poissonRhs:0;
++					diag.poissonDrift=poissonDrift;
++					const poissonDriftRhs=readbackArray[stats.IDX_POISSON_DRIFT_RHS];
++					diag.poissonDriftRhs=poissonDriftRhs;
++					// same formula as the pre-split true column: post-step residual
++					// over the post-step rhs, not the solve rhs.
++					diag.poissonDriftRel=poissonDriftRhs>0?poissonDrift/poissonDriftRhs:0;
+ 					ledger.latentChargedE=readbackArray[30];
+ 					ledger.frozenMomentum=readbackArray[31];
+ 				}

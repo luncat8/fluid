@@ -1,0 +1,14 @@
+mg-three-level · pinned dt=0.004166666666666667 · same-state oracle · two-level K20 baseline
+== dam N=128 (180 reference warmup steps) ==
+  two-level K20      true=7.744e-2 rel=4.305e-4 div=4.859e+2 -> 2.092e-1 maxM=1.0000 over=0 cpu=86ms/step
+  three L2/4 K20     true=7.908e-2 rel=4.006e-3 div=4.859e+2 -> 1.947e+0 maxM=1.0000 over=0 cpu=119ms/step true-vs-2L=2.1%
+  three L4/8 K20     true=7.892e-2 rel=3.673e-3 div=4.859e+2 -> 1.785e+0 maxM=1.0000 over=0 cpu=98ms/step true-vs-2L=1.9%
+  three L4/8 K40     true=7.892e-2 rel=3.667e-3 div=4.859e+2 -> 1.782e+0 maxM=1.0000 over=0 cpu=93ms/step true-vs-2L=1.9%
+done
+mg-three-level · pinned dt=0.004166666666666667 · same-state oracle · two-level K20 baseline
+== cycle N=128 (120 reference warmup steps) ==
+  two-level K20      true=3.384e-2 rel=3.851e-1 div=4.064e+1 -> 1.565e+1 maxM=1.0001 over=0 cpu=84ms/step
+  three L2/4 K20     true=4.200e-2 rel=3.851e-1 div=4.064e+1 -> 1.565e+1 maxM=1.0001 over=0 cpu=139ms/step true-vs-2L=24.1%
+  three L4/8 K20     true=3.913e-2 rel=3.851e-1 div=4.064e+1 -> 1.565e+1 maxM=1.0001 over=0 cpu=104ms/step true-vs-2L=15.6%
+  three L4/8 K40     true=3.923e-2 rel=3.851e-1 div=4.064e+1 -> 1.565e+1 maxM=1.0001 over=0 cpu=194ms/step true-vs-2L=15.9%
+done

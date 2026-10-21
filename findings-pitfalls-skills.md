@@ -590,10 +590,13 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   it *falls* in `jet` (25.2 -> 22.3), and it jumps 4x for one cycle in `cycle` where
   the oracle says the residual is unchanged. direction only, never magnitude.
 - skill: give the hardware its own quality number instead of arguing from a blind one.
-  `max|b - L p|` and `max|b|` are now stats slots 32/33, printed as
-  `poisson: res= rhs= true=`, where `true` is the oracle's ratio. note the units:
-  `true` is ~1e-2 (residual over rhs) and is NOT the a2 `rel` (~1e-3, divAfter over
-  divBefore); `rel` floors at max|S| in boiling flow, `true` does not.
+  `max|b - L p|` and `max|b|` are stats slots 32/33, printed as
+  `poisson: res= rhs= true=`. that `true` is the residual of the system just solved,
+  captured before transport. slots 34/35 are the post-step reading (`drift=`). a
+  capture dated before this split stored the drift in 32/33, so its `true` peak in
+  boiling flow is not a solver ranking. note the units: `true` is ~1e-2 (residual
+  over rhs) and is NOT the a2 `rel` (~1e-3, divAfter over divBefore); `rel` floors
+  at max|S| in boiling flow, and `drift` can exceed 1 without the solve having failed.
 - skill: one definition per operator, even across a language boundary. the poisson
   stencil now exists twice in total (module-scope `faceWeight`/`computeResidual` in
   src/core/multigrid.js, and `POISSON_HELPERS` in src/gpu/shaders.js interpolated into
@@ -613,3 +616,124 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 - pitfall: the browser report's header `gravity=300` is the pre-scenario cfg value. the
   `cycle` scenario scales gravity with the box (600 at N=1024), so compare scenario rows
   across N, never headers.
+
+## 2026-10-21 boiling residual spike is coefficient drift
+
+- pitfall: a frame-end `max|b - L p| / max|b|` is not the solve. `b` and `p` belong to
+  the projection; mass and flags after that are whatever transport and phase just wrote.
+  One emptied neighbor (weight ~1/rhoVac = 1000) or one cell that melts next to a stale
+  p=0 turns a tight solve into a residual of 1e5. Measured: uniform-density field, drop
+  one cell to rhoVac, residual x499; melt a blocked cell inside p=5e4, residual 0 -> 2e5;
+  dam N=64 step 10, end/solve=556 while solve/rhs=1.4e-4; dam N=128, max drift/solve=767
+  and drift/rhs=0.36. Cycle N=128 reproduces the hardware event at the same sim time:
+  step 1170 (t=4.875 s), post-step residual 1.2e4 times the solve and 668 times the
+  solve rhs, against the device's poissonTrue=26 at frame 301 (t=5.0 s, absRes=5.0e4,
+  rhs=1.9e3; that 26 is post-step residual over the post-step rhs). It grows with K (68/49/26/15 for
+  K60/K40/K20/1-cycle) because pressure amplitude grows, and the auto-policy rows
+  (smaller dt, less mass moved per step) peak at 0.18-0.39. Do not add sweeps to chase it.
+  Device confirmation, same preset after the split (`2026-10-21-07_19`): drift at frame
+  301 is 26.11078936008509 and driftRes is 49994.73828125, bit-identical to the old
+  absRes; end-of-run drift equals the old true (0.009715138446710316) and the solve
+  is 0.00877. The sampled true peak is the frame-1 cold start (0.141), not the boil.
+- skill: capture the residual in the pressure pass, before transport, and keep the
+  post-step reading under another name. GPU slots 32/33 are the solve (`true`,
+  residual over the solve rhs). Slots 34/35 are the drift, and the printed ratio is
+  residual over the post-step rhs — the formula older logs called `true`. CPU
+  `diag.poissonRes` is stored at the end of `project()`; `residualNorm()` after
+  `step()` is the drift residual. The two reductions need their own bind groups:
+  `layout: "auto"` pipelines do not share a bind group even when the entries match.
+- pitfall: older oracle rows (`mg-work*`, `mg-samestate`, `mg-defaults`) call
+  `residualNorm()` after `step()`, so their `true` column includes this drift. On a
+  same-state single step it is usually small next to rhs; a multi-step peak in boiling
+  flow is not a solver ranking. it also hides a real regression: dam 1-cycle vs 2-cycle
+  is drift 1.05x and solve 18x (`2026-10-21-mg-cycle-gate.log`).
+- pitfall: a same-state step cannot clear a solver that changes the warm start.
+  cycle at 1 cycle is 1.00x on one step inherited from a 2-cycle warmup, and 27x on
+  the solve (37x peakDivA) once it has been 1-cycle for its own 180 steps. jet stays
+  1.00x on that trajectory. do not promote "residual-neutral in cycle" from the old row.
+- skill: jet ships 1 V-cycle. the fixed-ns pair (`2026-10-21-08_02`) has settled
+  true 0.0100 vs 0.0115, maxDiv 23.7 vs 27.9, maxVel unchanged, 158 vs 105 fps.
+  the frame-1 true peak is 1.84x and is the cold start, not the ranking. the gate
+  is `productCycleGate` in prepareScenario; `&cycles=` pins an A/B. oracle scripts
+  that do not set the flag keep the cycle count they named. do not extend it.
+- skill: a capture can be in the tree and still be "missing" from the notes. the
+  auto-policy jet row was quoted from a previous session's reading because the
+  pasted copy of the capture had been dropped by a rebase, while the raw capture
+  (`2026-10-21-20_46-GPU-browser-tests.log`) was sitting in `experiments/logs/`
+  with every conserved quantity bit-identical to the pasted one. before writing
+  "the row does not exist", diff the numbers against the captures that are there:
+  identical totals, pressure span and phase counts mean the same run, and only
+  the fps line differs.
+
+## 2026-10-21 mac-cormack velocity advection (0.6.0 t5)
+
+- pitfall: a "retained energy improves by >= 25 %" bar is unreachable at a short window,
+  and it looks like a scheme failure when it is arithmetic. mac/sl can never exceed
+  1/keep_sl, so a window where semi-lagrangian has only lost 16 % has a ceiling of 1.193x.
+  measured: 1.149x at 1 s (ceiling 1.193x), 1.553x at 4 s (ceiling 1.777x). any ratio bar
+  has to name the vortex age; the plan and the oracle now print the ceiling next to the
+  ratio so a "below the bar" row cannot be misread.
+- pitfall: mac-cormack without its limiter creates energy at the wall, not in the interior.
+  the backward trace from the face next to a blocked face reads that face's 0, so the
+  correction extrapolates past the boundary value: 7.7 % per step on a constant field,
+  compounding. without a projection, peak speed goes 80 -> 105 -> 270 -> 400 -> 441 over
+  4 s, retained KE 1.31, peak vorticity 198x, vClamp tripped 256 times. with the limiter
+  the peak speed never leaves 80.00 and vClamp stays 0. the projection hides this (it
+  removes the overshoot every step, so limited and raw agree to six digits), which is
+  exactly why the limiter must not be dropped because "the product path has a projection".
+- pitfall: a vortex run without the pressure projection is not a vortex decay measurement.
+  the momentum equation becomes inviscid Burgers: the vortex steepens instead of decaying,
+  peak vorticity rises 3.6-23x, maxDiv reaches 5e3-2e5 and the retained KE ranks the
+  schemes by how much shock dissipation they add. keep it only as an attribution row and
+  label it (`experiments/vortex-decay.js --no-proj` prints no decision block).
+- skill: time the slice, not just the step, when the step is dominated by something else.
+  the cpu step reads +22 % for mac-cormack and looks like it fails a 15 % bar, but the
+  advection slice is +178 % and is only 9 % of that step; the rest is projection. on the
+  device the vel group is 0.033 ms of a 1.448 ms substep sum, so neither number is the
+  gate. two `process.hrtime.bigint()` calls around the advection call, accumulated, is
+  enough — no profiler plumbing needed in an oracle.
+- skill: prove a refactor free by re-running an existing oracle against its retained log
+  instead of writing a new test. extracting `sampleU`/`sampleV`/`traceU`/`traceV` out of
+  `advectVel` reproduced `2026-10-21-residual-spike.log` digit for digit (1.000e+3 ->
+  4.995e+5, dam worst end/solve 5.56e+2 at step 10), which is stronger evidence than a
+  unit test of the sampler and costs one command.
+- skill: a fixed-point check separates bias from sharpening in two lines. on a constant
+  field a correct mac-cormack is bit-identical to semi-lagrangian in the interior
+  (correction = (src - back)/2 = 0), and any difference at the wall is the boundary
+  stencil, not the scheme. assert both: interior diff === 0, wall overshoot <= 0 limited
+  and > 0 raw.
+- pitfall: an orphan experiment file reads as a second opinion when it is a dead draft.
+  `experiments/residual-spikes.js` was referenced by nothing (`run-all.js`, the plans and
+  the worklogs all name `residual-spike.js`) and could not have produced a row: its last
+  line was a leaked heredoc terminator, so it exited 1 after doing all the work. before
+  keeping a measurement script, grep the plans and `run-all.js` for its name, and run it
+  once — a script nobody runs is where that kind of breakage hides.
+
+## 2026-10-21 vorticity confinement (0.6.0 t6)
+
+- pitfall: a wall face is not a resolved shear. the curl of a velocity field that
+  is zero on a wall reads a huge vorticity there, and the confinement force
+  (F = eps*h*(N x omega)) reads |omega|'s gradient, so a masked wall turns the
+  force into a boundary push. the fix that keeps the physics is a free-slip
+  mirror: a blocked face takes the value of the opposite interior face, so the
+  wall contributes no vorticity and |omega| stays smooth to the boundary.
+- pitfall: a force that concentrates vorticity lowers the total energy. the
+  confinement rows keep 3.44x the peak vorticity of the shipping scheme at 4 s
+  and 0.91x the kinetic energy: the core is sharper and the ring around it is
+  weaker. a metric that only counts energy would rank the force as a loss, so
+  the row that ranks it is the vorticity and the enstrophy, and the energy is
+  reported next to it as the price.
+- pitfall: an energy source needs a different watchdog than a scheme. the
+  advection rows are held to "no new extremum" (the limiter's job); a
+  confinement row is supposed to push the peak vorticity up, so its watchdog is
+  the absolute velocity clamp (`diag.velClamp`), which has to stay 0, plus the
+  residual divergence, which is where the force turns into noise (eps=32 gives
+  35x the shipping row).
+- skill: a force is a row, not a scheme. it drops into the existing oracle as
+  one more row over the same stirred vortex, with the strength as the only new
+  knob, and the shipping path stays untouched when the knob is 0 — the scratch
+  is allocated on first use, so the default does not even pay for the memory.
+- skill: the wall convention is the part of a force that a port has to
+  reproduce exactly. the free-slip mirror is one line in the cpu solver and the
+  whole meaning of the row depends on it; write it into the port's task, not
+  only into the code.

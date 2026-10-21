@@ -176,12 +176,14 @@
 			log("maxM=" + stats.maxM + " neg=" + stats.cntNeg + " over=" + stats.cntOver +
 				" maxDiv=" + stats.motion.maxDiv + " p[" + stats.motion.pMin + ".." + stats.motion.pMax +
 				"] maxVel=" + stats.motion.maxVel);
-			// solver quality in the units plan 4.1 judges; maxDiv above floors at max|S|
-			// in boiling flow, this channel does not
+			// true is the system just solved. drift is that pressure after transport
+			// and phase: a large drift with a small true is coefficient change.
 			const poisson = stats.diag && stats.diag.poissonRes !== undefined;
+			const driftRel = stats.diag && stats.diag.poissonDriftRel !== undefined
+				? stats.diag.poissonDriftRel : 0;
 			log("poisson: " + (poisson
 				? "res=" + stats.diag.poissonRes + " rhs=" + stats.diag.poissonRhs +
-				  " true=" + stats.diag.poissonRel
+				  " true=" + stats.diag.poissonRel + " drift=" + driftRel
 				: "no residual channel (stats slots 32/33)"));
 			const pc = stats.phaseCounts || [0, 0, 0, 0, 0, 0];
 			const lat = stats.ledger ? stats.ledger.latentChargedE : 0;
@@ -199,7 +201,10 @@
 				" CPU encode=" + (encodeMs / frames).toFixed(2) + "ms queue wait=" + (queueMs / frames).toFixed(2) +
 				"ms vCap=" + Math.round(cfg.vClamp) + " CFL bound=" + cfl.toFixed(4));
 			log("sampled peaks: maxDiv=" + sampled.maxDiv + " maxM=" + sampled.maxM + " over=" + sampled.maxOver +
-				" poissonTrue=" + sampled.maxPoisson +
+				" poissonTrue=" + sampled.maxPoisson + " at frame=" + sampled.maxPoissonFrame +
+				" absRes=" + sampled.maxPoissonRes + " rhs=" + sampled.poissonRhsAtPeak +
+				" drift=" + sampled.maxDrift + " at frame=" + sampled.maxDriftFrame +
+				" driftRes=" + sampled.maxDriftRes +
 				" · divergence/compression are reported, not pass/fail gates");
 		}
 		function readSettings() {
@@ -256,7 +261,11 @@
 			if (query.has("ns")) cfg.substepsFixed = Math.max(1, Math.min(cfg.substepMax,
 				Math.round(Number(query.get("ns")) || cfg.substepsFixed)));
 			if (query.has("s")) cfg.mgCoarsen = Math.max(2, Math.round(Number(query.get("s")) || 4));
-			if (query.has("cycles")) cfg.mgCycles = Math.max(1, Math.round(Number(query.get("cycles")) || 2));
+			cfg.productCycleGate = 1;
+			if (query.has("cycles")) {
+				cfg.mgCycles = Math.max(1, Math.round(Number(query.get("cycles")) || 2));
+				cfg.mgCyclesPinned = 1;
+			}
 			if (query.has("pre")) cfg.mgPre = Math.max(1, Math.round(Number(query.get("pre")) || 4));
 			if (query.has("post")) cfg.mgPost = Math.max(1, Math.round(Number(query.get("post")) || 8));
 			if (query.has("k")) Fluid.core.config.setSolverIters(cfg, Math.max(1, Math.round(Number(query.get("k")) || 60)));
@@ -277,7 +286,9 @@
 			let encodeMs = 0;
 			let queueMs = 0;
 			let lastNs = 1;
-			const sampled = { maxDiv: 0, maxM: 0, maxOver: 0, maxPoisson: 0 };
+			const sampled = { maxDiv: 0, maxM: 0, maxOver: 0, maxPoisson: 0,
+				maxPoissonFrame: 0, maxPoissonRes: 0, poissonRhsAtPeak: 0,
+				maxDrift: 0, maxDriftFrame: 0, maxDriftRes: 0 };
 			const GROUP_COUNT = 8;
 			const profAcc = { samples: 0, substeps: 0, ms: new Float64Array(GROUP_COUNT), lastFrame: -1 };
 			function takeProfile() {
@@ -330,7 +341,17 @@
 					sampled.maxDiv = Math.max(sampled.maxDiv, stats.motion.maxDiv);
 					sampled.maxM = Math.max(sampled.maxM, stats.maxM);
 					sampled.maxOver = Math.max(sampled.maxOver, stats.cntOver);
-					if (stats.diag) sampled.maxPoisson = Math.max(sampled.maxPoisson, stats.diag.poissonRel || 0);
+					if (stats.diag && (stats.diag.poissonRel || 0) > sampled.maxPoisson) {
+						sampled.maxPoisson = stats.diag.poissonRel || 0;
+						sampled.maxPoissonFrame = stats.frame;
+						sampled.maxPoissonRes = stats.diag.poissonRes || 0;
+						sampled.poissonRhsAtPeak = stats.diag.poissonRhs || 0;
+					}
+					if (stats.diag && (stats.diag.poissonDriftRel || 0) > sampled.maxDrift) {
+						sampled.maxDrift = stats.diag.poissonDriftRel || 0;
+						sampled.maxDriftFrame = stats.frame;
+						sampled.maxDriftRes = stats.diag.poissonDrift || 0;
+					}
 				}
 				if (gpuErrors.length) throw new Error(gpuErrors.join("\n"));
 				if ((frame + 1) % progressEvery === 0 || frame === frames - 1) {
@@ -409,6 +430,10 @@
 					" substeps=" + (cfg.substepsAuto ? "auto" : cfg.substepsFixed + " fixed") +
 					" FCT=" + cfg.fctLimiter + " gravity=" + cfg.gravityY + " scenarios=" + settings.scenarios.join(","));
 				log("timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.");
+				log("poisson note: true is the residual of the system just solved, before transport, over the solve rhs. drift is that pressure read after transport and phase, over the post-step rhs — the ratio older logs called true. a large drift with a small true is coefficient change, not a failed solve.");
+				log(cfg.mgCyclesPinned
+					? "cycle gate: pinned by &cycles=; the jet default is not applied."
+					: "cycle gate: jet uses 1 V-cycle; dam, blobs and cycle stay at 2.");
 				if (cfg.gpuTiming > 0) {
 					const tsOk = !!(gpu.features && gpu.features.has("timestamp-query"));
 					log("gpu timestamps: " + (tsOk
@@ -427,14 +452,12 @@
 				}
 				const setupError = await gpu.popErrorScope();
 				if (setupError) throw new Error("GPU setup validation: " + setupError.message);
-				// 0.6.0 a5: the field pool's device footprint, from the same accounting the
-				// node suite prints (experiments/gpu-memory.js). logical is what we asked
-				// for; worst case assumes an implementation that pads every row to 256.
+				// Informational allocation estimate from the same accounting the node
+				// suite prints (experiments/gpu-memory.js). Worst case assumes 256-byte rows.
 				const mem = Fluid.gpu.fields ? Fluid.gpu.fields.memoryReport(solver.pool) : null;
-				log("gpu memory: " + (mem
+				log("gpu memory estimate: " + (mem
 					? mb(mem.total) + " MB logical / " + mb(mem.padded) + " MB worst case (textures "
-						+ mb(mem.textures) + " MB x" + mem.texCount + ", buffers " + mb(mem.buffers)
-						+ " MB x" + mem.bufCount + ") vs a5 bar " + (cfg.N <= 512 ? "60 MB" : "200 MB")
+						+ mb(mem.textures) + " MB x" + mem.texCount + ", buffers " + mb(mem.buffers) + " MB x" + mem.bufCount + ")"
 					: "n/a (pool not measurable here)"));
 				for (let i = 0; i < settings.scenarios.length; i++) {
 					await runScenario(solver, cfg, settings.scenarios[i], settings.frames, i, settings.scenarios.length);

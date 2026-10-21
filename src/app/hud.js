@@ -106,12 +106,20 @@
 			else if(mildOver)line+=" | mild overpack "+s.cntOver+" cells";
 			return line;
 		}
-		// solver quality in the units plan 4.1 judges: the true poisson residual over
-		// the rhs scale. divAfter (maxDiv above) floors at max|S| in boiling flow.
+		// solver quality in the units plan 4.1 judges: the residual of the system just
+		// solved, over the rhs scale. drift is that pressure after transport and phase.
+		// divAfter (maxDiv above) floors at max|S| in boiling flow.
 		function poissonLine(s){
 			const d=s.diag;
 			if(!d||d.poissonRes===undefined)return "poisson: n/a (no residual channel)";
-			return "poisson: res="+d.poissonRes+" rhs="+d.poissonRhs+" true="+(d.poissonRhs>0?d.poissonRes/d.poissonRhs:0);
+			const rhs=d.poissonRhs||0;
+			const rel=rhs>0?d.poissonRes/rhs:0;
+			let line="poisson: res="+d.poissonRes+" rhs="+rhs+" true="+rel;
+			if(d.poissonDrift!==undefined){
+				const driftRel=d.poissonDriftRel!==undefined?d.poissonDriftRel:(rhs>0?d.poissonDrift/rhs:0);
+				line+=" drift="+driftRel;
+			}
+			return line;
 		}
 		// build a copyable diagnostics snapshot (used by button and 's' key)
 		function buildSnapshot(){

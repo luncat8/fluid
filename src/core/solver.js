@@ -272,7 +272,24 @@
 		const massFctTmp=new Float32Array(texW*texH*4);
 		const acc=Fluid.core.stats;
 		let ledger=null;
-		const diag={divBefore:0,divAfter:0,pressureResidual:0,sSaturated:0};
+		const diag={divBefore:0,divAfter:0,pressureResidual:0,sSaturated:0,
+			poissonRes:0,poissonRhs:0,poissonDrift:0,poissonDriftRhs:0,poissonDriftRel:0,
+			macLimit:0,macClamp:0,velClamp:0};
+		// mac-cormack scratch: the forward-advected field plus a stencil and a
+		// counter reused per face. the field is allocated on first use so the
+		// default (semi-lagrangian) path does not pay for it; its ghost ring stays
+		// 0 exactly like the velocity field's, which the sampler reads on clamps.
+		const macTaps=new Float32Array(4);
+		const macCnt={limit:0,clamp:0};
+		let macTmp=null;
+		function macBuf(){
+			if(!macTmp)macTmp=new Float32Array(texW*texH*2);
+			return macTmp;
+		}
+		// 0.6.0 t6: vorticity confinement scratch (omega, |omega| and the cell
+		// centred force), allocated on first use so the shipping path (eps=0)
+		// does not pay for it.
+		let confW=null,confS=null,confFx=null,confFy=null;
 		let mg=null;
 		if(cfg.useMultigrid && Fluid.core.multigrid){
 			mg=Fluid.core.multigrid.create(cfg,texW,texH,{
@@ -311,16 +328,28 @@
 			const tot=acc.totalsFromFields(mass.a,therm.a,texW,texH);
 			ledger=acc.createLedger(tot);
 			cfg.frame=0;cfg.time=0;
+			diag.poissonRes=0;diag.poissonRhs=0;diag.poissonDrift=0;diag.poissonDriftRhs=0;diag.poissonDriftRel=0;
+			diag.macLimit=0;diag.macClamp=0;
+			diag.velClamp=0;
 			phaseEos(false);
+		}
+		function captureSolveResidual(){
+			const mgOp=Fluid.core.multigrid;
+			if(!mgOp)return;
+			diag.poissonRes=mgOp.computeResidual(grid.curBuf(press),divsrc,grid.curBuf(mass),
+				flags,texW,texH,cfg.rhoVac,null);
+			diag.poissonRhs=diag.divBefore;
 		}
 		function forces(dt){
 			const src=grid.curBuf(vel),dst=grid.nxtBuf(vel);
 			const ms=grid.curBuf(mass),ts=grid.curBuf(therm);
 			const R=cfg.mouseR,R2=R*R;
 			const rhoMean=(ledger.initialM+ledger.injectedM-ledger.removedM)/(N*N);
+			const conf=cfg.vorticityConfinement>0;
+			if(conf)confine(src);
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
-					const vi=(x+y*texW)*2;
+					const ci=x+y*texW,vi=ci*2;
 					let u=0,v=0;
 					if(!uBlocked(x,y)){
 						u=src[vi]+dt*0.5*(cellAx(ms,ts,x-1,y,rhoMean)+cellAx(ms,ts,x,y,rhoMean));
@@ -328,6 +357,8 @@
 							const f=mouseFall((x-1)-cfg.mouseX,(y-0.5)-cfg.mouseY,R,R2);
 							u+=dt*cfg.mouseVX*f*cfg.mouseStrength;
 						}
+						// the u face (x,y) sits between the cells (x-1,y) and (x,y)
+						if(conf)u+=dt*0.5*(confFx[ci-1]+confFx[ci]);
 						u=clampAbs(u,cfg.vClamp);
 					}
 					if(!vBlocked(x,y)){
@@ -336,12 +367,75 @@
 							const f=mouseFall((x-0.5)-cfg.mouseX,(y-1)-cfg.mouseY,R,R2);
 							v+=dt*cfg.mouseVY*f*cfg.mouseStrength;
 						}
+						// the v face (x,y) sits between the cells (x,y-1) and (x,y)
+						if(conf)v+=dt*0.5*(confFy[ci-texW]+confFy[ci]);
 						v=clampAbs(v,cfg.vClamp);
 					}
 					dst[vi]=u;dst[vi+1]=v;
 				}
 			}
 			grid.swap(vel);
+		}
+		// 0.6.0 t6 vorticity confinement: F = eps*h*(N x omega), N the unit
+		// gradient of |omega|. in 2d that force is tangential, so it spins a
+		// vortex up instead of tearing it apart, and it is an energy source:
+		// the velocity clamp is the watchdog and must stay at 0.
+		function openU(x,y){
+			if(x<1||x>texW-2||y<1||y>texH-2)return false;
+			return !isBlocked(x-1,y)&&!isBlocked(x,y);
+		}
+		function openV(x,y){
+			if(x<1||x>texW-2||y<1||y>texH-2)return false;
+			return !isBlocked(x,y-1)&&!isBlocked(x,y);
+		}
+		// z component of the curl at the cell centre. a wall face mirrors the
+		// opposite interior face (free slip), so the wall's zero velocity is not
+		// read as a resolved shear: a masked wall would put a huge |omega| spike
+		// into the gradient and push the flow at the boundary.
+		function vorticity(src,x,y){
+			const vi=(x+y*texW)*2;
+			const ul=openU(x,y),ur=openU(x+1,y),vb=openV(x,y),vt=openV(x,y+1);
+			let uL=ul?src[vi]:0,uR=ur?src[vi+2]:0;
+			let vB=vb?src[vi+1]:0,vT=vt?src[vi+texW*2+1]:0;
+			if(!ul&&ur)uL=uR;
+			if(ul&&!ur)uR=uL;
+			if(!vb&&vt)vB=vT;
+			if(vb&&!vt)vT=vB;
+			return (vT-vB)-(uR-uL);
+		}
+		// cell centred force from the velocity field of this step. two passes
+		// over the grid: omega and |omega|, then the force.
+		function confine(src){
+			if(!confS){
+				confW=new Float32Array(texW*texH);
+				confS=new Float32Array(texW*texH);
+				confFx=new Float32Array(texW*texH);
+				confFy=new Float32Array(texW*texH);
+			}
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const i=x+y*texW;
+					const w=vorticity(src,x,y);
+					confW[i]=w;
+					confS[i]=w<0?-w:w;
+				}
+			}
+			const eps=cfg.vorticityConfinement;
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const i=x+y*texW;
+					const w=confW[i];
+					if(w===0){confFx[i]=0;confFy[i]=0;continue;}
+					const xm=x>1?i-1:i,xp=x<texW-2?i+1:i;
+					const ym=y>1?i-texW:i,yp=y<texH-2?i+texW:i;
+					const gx=0.5*(confS[xp]-confS[xm]);
+					const gy=0.5*(confS[yp]-confS[ym]);
+					const len=Math.sqrt(gx*gx+gy*gy);
+					if(len<1e-12){confFx[i]=0;confFy[i]=0;continue;}
+					confFx[i]=eps*(gy/len)*w;
+					confFy[i]=-eps*(gx/len)*w;
+				}
+			}
 		}
 		function cellAx(ms,ts,x,y,rhoMean){
 			if(x<1||x>texW-2||y<1||y>texH-2)return 0;
@@ -364,8 +458,8 @@
 			return f*f;
 		}
 		function clampAbs(v,lim){
-			if(v>lim)return lim;
-			if(v<-lim)return -lim;
+			if(v>lim){diag.velClamp++;return lim;}
+			if(v<-lim){diag.velClamp++;return -lim;}
 			return v;
 		}
 		function loadU(buf,m,l){
@@ -378,40 +472,120 @@
 			const ll=l<0?0:(l>texH-1?texH-1:l);
 			return buf[(mm+ll*texW)*2+1];
 		}
-		function advectVel(dt){
-			const src=grid.curBuf(vel),dst=grid.nxtBuf(vel);
+		function clampTo(v,lo,hi){
+			return v<lo?lo:(v>hi?hi:v);
+		}
+		// bilinear taps of one component on its own staggered face grid. `taps`
+		// (caller owned, 4 floats) receives the stencil so the mac-cormack limiter
+		// can bound its correction without sampling twice; pass null to skip it.
+		function sampleU(src,px,py,taps){
+			const i0=Math.floor(px),fx=px-i0;
+			const l0=Math.floor(py+0.5),fy=py+0.5-l0;
+			const u00=loadU(src,i0+1,l0),u10=loadU(src,i0+2,l0);
+			const u01=loadU(src,i0+1,l0+1),u11=loadU(src,i0+2,l0+1);
+			if(taps){taps[0]=u00;taps[1]=u10;taps[2]=u01;taps[3]=u11;}
+			const a0=u00+(u10-u00)*fx,a1=u01+(u11-u01)*fx;
+			return a0+(a1-a0)*fy;
+		}
+		function sampleV(src,px,py,taps){
+			const k0=Math.floor(px+0.5),fx=px+0.5-k0;
+			const l0=Math.floor(py),fy=py-l0;
+			const v00=loadV(src,k0,l0+1),v10=loadV(src,k0+1,l0+1);
+			const v01=loadV(src,k0,l0+2),v11=loadV(src,k0+1,l0+2);
+			if(taps){taps[0]=v00;taps[1]=v10;taps[2]=v01;taps[3]=v11;}
+			const a0=v00+(v10-v00)*fx,a1=v01+(v11-v01)*fx;
+			return a0+(a1-a0)*fy;
+		}
+		// the trace velocity of a face is its own component plus the cross
+		// component averaged from the four cells that share it. both advection
+		// schemes read it, so it is one definition.
+		function traceU(src,x,y){
+			return 0.25*(loadV(src,x-1,y)+loadV(src,x-1,y+1)+loadV(src,x,y)+loadV(src,x,y+1));
+		}
+		function traceV(src,x,y){
+			return 0.25*(loadU(src,x,y-1)+loadU(src,x+1,y-1)+loadU(src,x,y)+loadU(src,x+1,y));
+		}
+		// one semi-lagrangian trace of src into dst, which is either the ping pong
+		// partner (the shipping path) or the mac-cormack scratch (pass 1 of 2). one
+		// definition, so the two schemes cannot drift on the forward pass.
+		function slInto(src,dst,dt){
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
 					const vi=(x+y*texW)*2;
 					let u=0,v=0;
 					if(!uBlocked(x,y)){
-						const uc=src[vi];
-						const vc=0.25*(loadV(src,x-1,y)+loadV(src,x-1,y+1)+loadV(src,x,y)+loadV(src,x,y+1));
-						let px=(x-1)-dt*uc,py=(y-0.5)-dt*vc;
-						px=px<0?0:(px>N?N:px);
-						py=py<0.5?0.5:(py>N-0.5?N-0.5:py);
-						const i0=Math.floor(px),fx=px-i0;
-						const l0=Math.floor(py+0.5),fy=py+0.5-l0;
-						const u00=loadU(src,i0+1,l0),u10=loadU(src,i0+2,l0);
-						const u01=loadU(src,i0+1,l0+1),u11=loadU(src,i0+2,l0+1);
-						u=(u00+(u10-u00)*fx)+((u01+(u11-u01)*fx)-(u00+(u10-u00)*fx))*fy;
+						const px=clampTo((x-1)-dt*src[vi],0,N);
+						const py=clampTo((y-0.5)-dt*traceU(src,x,y),0.5,N-0.5);
+						u=sampleU(src,px,py,null);
 					}
 					if(!vBlocked(x,y)){
-						const vc=src[vi+1];
-						const uc=0.25*(loadU(src,x,y-1)+loadU(src,x+1,y-1)+loadU(src,x,y)+loadU(src,x+1,y));
-						let px=(x-0.5)-dt*uc,py=(y-1)-dt*vc;
-						px=px<0.5?0.5:(px>N-0.5?N-0.5:px);
-						py=py<0?0:(py>N?N:py);
-						const k0=Math.floor(px+0.5),fx=px+0.5-k0;
-						const l0=Math.floor(py),fy=py-l0;
-						const v00=loadV(src,k0,l0+1),v10=loadV(src,k0+1,l0+1);
-						const v01=loadV(src,k0,l0+2),v11=loadV(src,k0+1,l0+2);
-						v=(v00+(v10-v00)*fx)+((v01+(v11-v01)*fx)-(v00+(v10-v00)*fx))*fy;
+						const px=clampTo((x-0.5)-dt*traceV(src,x,y),0.5,N-0.5);
+						const py=clampTo((y-1)-dt*src[vi+1],0,N);
+						v=sampleV(src,px,py,null);
 					}
 					dst[vi]=u;dst[vi+1]=v;
 				}
 			}
+		}
+		function advectVel(dt){
+			slInto(grid.curBuf(vel),grid.nxtBuf(vel),dt);
 			grid.swap(vel);
+		}
+		// mac-cormack (0.6.0 t5): the forward semi-lagrangian pass diffuses, so a
+		// second pass traces that result forward along the same face velocity and
+		// the difference cancels the smearing. c = f + (src - back)/2 creates new
+		// extrema, so it is limited into the min/max of the four taps the forward
+		// sample used, which keeps a face inside its own first-order stencil.
+		// macLimit counts the faces the limiter moved and macClamp the vClamp hits.
+		// under the shipping projection the cuts are roundoff scale (the unlimited
+		// scheme agrees to six digits); what the limiter actually holds is the face
+		// next to a blocked face, where the backward trace reads that face's 0 and
+		// the raw correction extrapolates past the boundary value every step.
+		function macLimit(f,srcVal,back,lim,taps,cnt){
+			const c=f+0.5*(srcVal-back);
+			if(!lim)return c;
+			const lo=Math.min(taps[0],taps[1],taps[2],taps[3]);
+			const hi=Math.max(taps[0],taps[1],taps[2],taps[3]);
+			if(c<lo){cnt.limit++;return lo;}
+			if(c>hi){cnt.limit++;return hi;}
+			return c;
+		}
+		function macWatch(c,cnt){
+			if(c>cfg.vClamp){cnt.clamp++;return cfg.vClamp;}
+			if(c<-cfg.vClamp){cnt.clamp++;return -cfg.vClamp;}
+			return c;
+		}
+		function advectVelMac(dt){
+			const src=grid.curBuf(vel),dst=grid.nxtBuf(vel),fwd=macBuf();
+			const taps=macTaps,cnt=macCnt,lim=cfg.macLimiter?1:0;
+			cnt.limit=0;cnt.clamp=0;
+			slInto(src,fwd,dt);
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const vi=(x+y*texW)*2;
+					let u=0,v=0;
+					if(!uBlocked(x,y)){
+						const uc=src[vi],vc=traceU(src,x,y);
+						const f=sampleU(src,clampTo((x-1)-dt*uc,0,N),clampTo((y-0.5)-dt*vc,0.5,N-0.5),lim?taps:null);
+						const back=sampleU(fwd,clampTo((x-1)+dt*uc,0,N),clampTo((y-0.5)+dt*vc,0.5,N-0.5),null);
+						u=macWatch(macLimit(f,uc,back,lim,taps,cnt),cnt);
+					}
+					if(!vBlocked(x,y)){
+						const vc=src[vi+1],uc=traceV(src,x,y);
+						const f=sampleV(src,clampTo((x-0.5)-dt*uc,0.5,N-0.5),clampTo((y-1)-dt*vc,0,N),lim?taps:null);
+						const back=sampleV(fwd,clampTo((x-0.5)+dt*uc,0.5,N-0.5),clampTo((y-1)+dt*vc,0,N),null);
+						v=macWatch(macLimit(f,vc,back,lim,taps,cnt),cnt);
+					}
+					dst[vi]=u;dst[vi+1]=v;
+				}
+			}
+			diag.macLimit=cnt.limit;
+			diag.macClamp=cnt.clamp;
+			grid.swap(vel);
+		}
+		function advectVelocity(dt){
+			if(cfg.advectMac)advectVelMac(dt);
+			else advectVel(dt);
 		}
 		function poissonRhs(dt){
 			const vv=grid.curBuf(vel);
@@ -435,6 +609,7 @@
 			if(mg && cfg.useMultigrid){
 				const cycles=Math.max(1,Math.round(cfg.mgCycles||1));
 				for(let c=0;c<cycles;c++)mg.vcycle(cfg.mgPre||4,iters,cfg.mgPost||8);
+				captureSolveResidual();
 				return;
 			}
 			const ms=grid.curBuf(mass);
@@ -461,6 +636,7 @@
 					grid.swap(press);
 				}
 			}
+			captureSolveResidual();
 		}
 		function faceW(ms,x,y,nx,ny){
 			if(nx<1||nx>texW-2||ny<1||ny>texH-2)return 0;
@@ -747,7 +923,7 @@
 		}
 		function step(dt){
 			forces(dt);
-			advectVel(dt);
+			advectVelocity(dt);
 			poissonRhs(dt);
 			project(Fluid.core.config.solverIters(cfg));
 			applyGrad(dt);
@@ -766,14 +942,23 @@
 		function stats(){
 			const tot=acc.totalsFromFields(grid.curBuf(mass),grid.curBuf(therm),texW,texH);
 			const mot=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,cfg.dt);
-			// frame-end poisson residual of the last pressure solve, with the operator the
-			// v-cycle itself restricts; the gpu stats pass reports the same two numbers.
-			// computed per call (about one extra grid pass), which is what a polling caller
-			// asks for: gpu diag values are the last sampled frame, these are the current one.
+			// poissonRes is the system just solved (captured in project, before transport).
+			// the recompute here is the post-step operator: coefficient drift, same
+			// number the gpu writes to slots 34/35. the ratio uses the post-step rhs,
+			// which is what the pre-split `true` column was, so a re-capture's drift
+			// is comparable to those logs. a freeze can inflate it; that is the point.
 			const mgOp=Fluid.core.multigrid;
-			const poissonRes=mgOp?mgOp.computeResidual(grid.curBuf(press),divsrc,grid.curBuf(mass),
-				flags,texW,texH,cfg.rhoVac,null):0;
-			const poissonRel=diag.divBefore>0?poissonRes/diag.divBefore:0;
+			const driftSink={rhs:0};
+			const poissonDrift=mgOp?mgOp.computeResidual(grid.curBuf(press),divsrc,grid.curBuf(mass),
+				flags,texW,texH,cfg.rhoVac,null,driftSink):0;
+			const poissonRes=diag.poissonRes||0;
+			const poissonRhs=diag.poissonRhs||0;
+			const poissonRel=poissonRhs>0?poissonRes/poissonRhs:0;
+			const poissonDriftRhs=driftSink.rhs;
+			const poissonDriftRel=poissonDriftRhs>0?poissonDrift/poissonDriftRhs:0;
+			diag.poissonDrift=poissonDrift;
+			diag.poissonDriftRhs=poissonDriftRhs;
+			diag.poissonDriftRel=poissonDriftRel;
 			const thermal=acc.thermalTotals(grid.curBuf(mass),grid.curBuf(therm),grid.curBuf(vel),texW,texH,cfg.mEps,cfg.cLiq,cfg.TAmb);
 			const phaseCounts=[0,0,0,0,0,0];
 			for(let y=1;y<texH-1;y++){
@@ -783,7 +968,9 @@
 			}
 			return {frame:cfg.frame,tot,mot,thermal,ledger,phaseCounts,
 				diag:{divBefore:diag.divBefore,divAfter:diag.divAfter,residual:diag.pressureResidual,
-					sSaturated:diag.sSaturated,poissonRes,poissonRel}};
+					sSaturated:diag.sSaturated,poissonRes,poissonRhs,poissonRel,
+					poissonDrift,poissonDriftRhs,poissonDriftRel,
+					macLimit:diag.macLimit,macClamp:diag.macClamp,velClamp:diag.velClamp}};
 		}
 		function applyDyePatch(patch){
 			const buf=grid.curBuf(mass),tbuf=grid.curBuf(therm);
@@ -812,7 +999,7 @@
 		}
 		reset();
 		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,sfield,flags,ledger,thermDiag,diag,mg,
-			isWall,isFrozen,isBlocked,uBlocked,vBlocked,reset,step,stats,forces,advectVel,poissonRhs,project,applyGrad,computeFlux,advectScalar,
+			isWall,isFrozen,isBlocked,uBlocked,vBlocked,reset,step,stats,forces,advectVelocity,poissonRhs,project,applyGrad,computeFlux,advectScalar,
 			phaseEos,conduction,heatSources,
 			applyDyePatch,applyWallPatch};
 	}

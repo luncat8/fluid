@@ -908,6 +908,77 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	textureStore(thermDst, vec2<i32>(x, y), q);
 }
 `;
+	// solve-time poisson residual: same operator the projection just used, reduced
+	// before transport so a later density or freeze change cannot inflate it.
+	// shares the stats partial buffer; statsReduceB must not overwrite slots 32/33.
+	shaders.poissonReduceA=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var pressTex: texture_2d<f32>;
+@group(0) @binding(2) var divsrcTex: texture_2d<f32>;
+@group(0) @binding(3) var massTex: texture_2d<f32>;
+@group(0) @binding(4) var flagsTex: texture_2d<u32>;
+@group(0) @binding(5) var<storage,read_write> partials: array<f32>;
+${POISSON_HELPERS}
+var<workgroup> sh: array<f32,128>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	var maxRes = 0.0;
+	var maxRhs = 0.0;
+	if (x >= 1 && x < w - 1 && y >= 1 && y < h - 1) {
+		var pp: PoissonP;
+		pp.center = textureLoad(pressTex, vec2<i32>(x, y), 0).r;
+		pp.left = textureLoad(pressTex, vec2<i32>(x - 1, y), 0).r;
+		pp.right = textureLoad(pressTex, vec2<i32>(x + 1, y), 0).r;
+		pp.down = textureLoad(pressTex, vec2<i32>(x, y - 1), 0).r;
+		pp.up = textureLoad(pressTex, vec2<i32>(x, y + 1), 0).r;
+		let cell = poissonResidual(pp, x, y, w, h);
+		maxRes = abs(cell.res);
+		maxRhs = abs(cell.rhs);
+	}
+	sh[lid] = maxRes;
+	sh[64u + lid] = maxRhs;
+	workgroupBarrier();
+	var stride = 32u;
+	loop {
+		if (stride == 0u) { break; }
+		if (lid < stride) {
+			sh[lid] = max(sh[lid], sh[lid + stride]);
+			sh[64u + lid] = max(sh[64u + lid], sh[64u + lid + stride]);
+		}
+		workgroupBarrier();
+		stride = stride >> 1u;
+	}
+	if (lid == 0u) {
+		let base = (wid.y * nwg.x + wid.x) * 40u;
+		partials[base] = sh[0];
+		partials[base + 1u] = sh[64u];
+	}
+}
+`;
+	shaders.poissonReduceB=`
+@group(0) @binding(0) var<storage,read> partials: array<f32>;
+@group(0) @binding(1) var<storage,read_write> stats: array<f32>;
+@group(0) @binding(2) var<uniform> dims: vec4<u32>;
+
+@compute @workgroup_size(1)
+fn main() {
+	let num = dims.x / 40u;
+	var maxRes = 0.0;
+	var maxRhs = 0.0;
+	for (var i = 0u; i < num; i++) {
+		let base = i * 40u;
+		maxRes = max(maxRes, partials[base]);
+		maxRhs = max(maxRhs, partials[base + 1u]);
+	}
+	stats[32u] = maxRes;
+	stats[33u] = maxRhs;
+}
+`;
 	// ---------- two level stats reduction, level 1 (35 values -> stride 40) ----------
 	shaders.statsReduceA=`
 @group(0) @binding(0) var<uniform> params: Params;
@@ -953,8 +1024,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 		maxDiv = abs(uR - uL + vT - vB) / max(dt, 1e-9);
 		let p = textureLoad(pressTex, vec2<i32>(x, y), 0).r;
 		pMin = p; pMax = p;
-		// the true poisson residual of the last projection, in operator units: the
-		// metric plan 4.1 judges, and the only one that survives the S floor in boiling
+		// post-step residual: same pressure and divsrc, but mass and flags after
+		// transport and phase. this is coefficient drift, not the solve. the solve
+		// residual is poissonReduce, captured before those passes.
 		var pp: PoissonP;
 		pp.center = p;
 		pp.left = textureLoad(pressTex, vec2<i32>(x - 1, y), 0).r;
@@ -1094,7 +1166,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	stats[0u] = sM; stats[1u] = sDr; stats[2u] = sDg; stats[3u] = sDb; stats[4u] = sE;
 	stats[5u] = minM; stats[6u] = minDr; stats[7u] = minDg; stats[8u] = minDb; stats[9u] = minE;
 	stats[10u] = maxM; stats[11u] = neg; stats[12u] = over;
-	stats[32u] = maxRes; stats[33u] = maxRhs;
+	// 32/33 belong to the solve-time reduce. 34/35 are this pass's post-step drift.
+	stats[34u] = maxRes; stats[35u] = maxRhs;
 	stats[13u] = maxVel; stats[14u] = pMin; stats[15u] = pMax; stats[16u] = maxDiv;
 	if (tMin == 1e30) { tMin = 0.0; }
 	if (tMax == -1e30) { tMax = 0.0; }

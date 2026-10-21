@@ -145,12 +145,10 @@
 		if(!t||!t.fluidSize)return 0;
 		return t.fluidSize[0]*t.fluidSize[1]*texBpp(t.fluidSize[2])*(t.depthOrArrayLayers||1);
 	}
-	// 0.6.0 a5: the device-side footprint of the field pool. webgpu has no allocation
-	// query, so this is what we asked for (logical). An implementation may pad every row
-	// to 256 bytes; `padded` is that worst case, which is what a memory bar should be
-	// budgeted against. Not counted: the transient writeTexture staging arrays, the gpu
-	// profiler's three resolve/read buffers (hundreds of bytes), the canvas backbuffer,
-	// and the cpu mirrors of the initial state, which are freed once uploaded.
+	// Informational allocation estimate for the field pool. WebGPU has no allocation
+	// query, so logical is what we asked for. `padded` assumes a 256-byte row pitch.
+	// Not counted: transient writeTexture staging arrays, the GPU profiler's small
+	// resolve/read buffers, the canvas backbuffer, and CPU mirrors freed after upload.
 	function memoryReport(pool){
 		if(!pool)return null;
 		let textures=0,texCount=0,buffers=0,bufCount=0,paddedTex=0;

@@ -1,0 +1,25 @@
+vortex-decay · N=128 sigma=21.3 rim=80 cells/s · dt=0.004166666666666667 · 960 steps (4 s)
+== fixed points ==
+  constant field, interior: mac-sl max diff=0.00e+0 sl error vs U=0.00e+0
+  constant field, wall band: 384 faces, overshoot past U: limited=0.00e+0 raw=2.85e+0 (7.7 % per step, compounding)
+== no projection (Burgers: steepens, attribution row only) ==
+  sl       KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.627671 vort keep=8.648674 enst keep=5.203820 peakSpeed=54.21 maxDiv=1.05e+4
+    t= 2s KE keep=0.310331 vort keep=7.176678 enst keep=4.465644 peakSpeed=32.27 maxDiv=8.08e+3
+    t= 3s KE keep=0.169898 vort keep=4.830832 enst keep=2.909778 peakSpeed=21.68 maxDiv=6.48e+3
+    t= 4s KE keep=0.104483 vort keep=3.619603 enst keep=2.017844 peakSpeed=16.23 maxDiv=5.52e+3
+    limiter moved 0 faces (0 worst step) · clamp=0 · peakSpeed max=80.00 · cpu=8.56 ms/step (advection 4.281)
+  mac      KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.642216 vort keep=17.154522 enst keep=21.051165 peakSpeed=79.90 maxDiv=2.60e+4
+    t= 2s KE keep=0.342916 vort keep=18.535273 enst keep=29.436978 peakSpeed=78.42 maxDiv=2.31e+4
+    t= 3s KE keep=0.204958 vort keep=16.699637 enst keep=36.487741 peakSpeed=74.35 maxDiv=2.35e+4
+    t= 4s KE keep=0.140892 vort keep=23.497406 enst keep=42.951776 peakSpeed=65.50 maxDiv=2.89e+4
+    limiter moved 1145590 faces (1624 worst step) · clamp=0 · peakSpeed max=80.00 · cpu=17.19 ms/step (advection 12.207)
+  mac-raw  KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.672951 vort keep=22.604779 enst keep=40.930207 peakSpeed=105.06 maxDiv=3.44e+4
+    t= 2s KE keep=0.500726 vort keep=126.187693 enst keep=692.246166 peakSpeed=269.71 maxDiv=1.40e+5
+    t= 3s KE keep=0.862075 vort keep=168.439431 enst keep=2205.986151 peakSpeed=399.52 maxDiv=1.84e+5
+    t= 4s KE keep=1.314515 vort keep=198.301389 enst keep=3509.928669 peakSpeed=440.67 maxDiv=2.48e+5
+    limiter moved 0 faces (0 worst step) · clamp=256 · peakSpeed max=440.67 · cpu=16.56 ms/step (advection 11.569)
+== no decision: the bar is read on the projection row (`node experiments/vortex-decay.js`) ==
+done

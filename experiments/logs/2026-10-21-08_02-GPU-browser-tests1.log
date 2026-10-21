@@ -1,0 +1,24 @@
+Fluid browser diagnostics · 2026-10-21T08:02:36.750Z
+timer: performance.now() · crossOriginIsolated=true · observed quantum=0.005000ms
+gpu: nvidia ampere
+grid N=512 frames/scenario=600 frameDt=0.016666666666666666 pressureK=20 coarse solver=MG substeps=4 fixed FCT=1 gravity=300 scenarios=jet
+timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.
+poisson note: true is the residual of the system just solved, before transport, over the solve rhs. drift is that pressure read after transport and phase, over the post-step rhs — the ratio older logs called true. a large drift with a small true is coefficient change, not a failed solve.
+gpu timestamps: on (profiled frames split compute passes; read group proportions, fps is slightly pessimistic)
+gpu memory estimate: 52.9 MB logical / 55.3 MB worst case (textures 52.2 MB x27, buffers 0.6 MB x8)
+--- jet · OK ---
+m: total=37375.83984375 exp=37375.840141147375 drift=-7.956941542550218e-9 [ok]
+dr: total=2830.74560546875 exp=2830.7456153696403 drift=-3.497626292161293e-9 [ok]
+dg: total=2799.986328125 exp=2799.9863203894347 drift=2.762715392009582e-9 [ok]
+db: total=4410.77587890625 exp=4410.775847222656 drift=7.183224694668822e-9 [ok]
+E: total=51640576 exp=51640577.44076538 drift=-2.7899869681202018e-8 [ok]
+min m=0.08132972568273544 dr=0.0023283958435058594 dg=0.004676477983593941 db=0.009174770675599575 E=140.888916015625
+maxM=0.16689321398735046 neg=0 over=0 maxDiv=21.181638717651367 p[96558.8359375..100927.5] maxVel=109.54402923583984
+poisson: res=6.725828647613525 rhs=672.6239624023438 true=0.009999388995288773 drift=0.010572289919186198
+phases vac=0 sol=0 melt=0 liq=156120 boil=104383 gas=1641 | latentE=178233456 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.004166666666666667 K=20 coarse mgS4x1(pre4/post8) ns=4/24 fixed scenario=jet FCT=1 gravity=300
+frames/s=157.6 speed=2.63x CPU encode=0.14ms queue wait=6.18ms vCap=108 CFL bound=0.9129
+sampled peaks: maxDiv=23.70012664794922 maxM=0.22000987827777863 over=0 poissonTrue=0.12377122902888342 at frame=1 absRes=21.894695281982422 rhs=176.896484375 drift=0.12376018796717492 at frame=1 driftRes=21.892742156982422 · divergence/compression are reported, not pass/fail gates
+gpu timing (21 samples): vel=0.029 rhs=0.016 press=0.641 trans=0.116 phase=0.146 ms/substep · step sum=0.947 · disp=0.006 render=0.000 ms/frame · stats=0.287 ms/sampled frame
+
+Finished 1 scenarios · 3.96 s total.

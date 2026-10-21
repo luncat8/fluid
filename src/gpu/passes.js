@@ -57,7 +57,9 @@
 			mgRestrict:comp("mgRestrict",PS+sh.mgRestrict),
 			mgZero:comp("mgZero",PS+sh.mgZero),
 			mgProlong:comp("mgProlong",PS+sh.mgProlong),
-			statsA:comp("statsA",PS+sh.statsReduceA),
+			poissonReduceA:comp("poissonReduceA",PS+sh.poissonReduceA),
+		poissonReduceB:comp("poissonReduceB",sh.poissonReduceB),
+		statsA:comp("statsA",PS+sh.statsReduceA),
 			statsB:comp("statsB",PS+sh.statsReduceB),
 			buoySample:comp("buoySample",PS+sh.buoySample),
 			toDisplay:comp("toDisplay",PS+sh.toDisplay),
@@ -93,8 +95,8 @@
 		const groups={
 			forces:[],advectVel:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
 			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],heatSources:[],
-			limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
-			statsA:[],toDisplay:[],statsB:null,buoySample:[],render:null
+		limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
+		poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],render:null
 		};
 		for(let mm=0;mm<3;mm++){
 			groups.phaseA[mm]=[];
@@ -155,7 +157,15 @@
 			const nextM=(m+1)%3,finalM=(m+2)%3;
 			const mm=pool.mass.tex[m],ml=pool.mass.tex[nextM];
 			const mo=pool.mass.tex[finalM];
-			groups.projRed[m]=bg(device,"projRed"+m,pipes.projLayout,[
+			groups.poissonA[m]=bg(device,"poissonA"+m,pipes.poissonReduceA.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.params}},
+			{binding:1,resource:viewRes(p0)},
+			{binding:2,resource:divsrcView},
+			{binding:3,resource:viewRes(mm)},
+			{binding:4,resource:flagsView},
+			{binding:5,resource:{buffer:pool.statsPart}}
+		]);
+		groups.projRed[m]=bg(device,"projRed"+m,pipes.projLayout,[
 				{binding:0,resource:{buffer:pool.params}},
 				{binding:1,resource:viewRes(p0)},
 				{binding:2,resource:viewRes(p1)},
@@ -361,6 +371,11 @@
 			{binding:3,resource:flagsView},
 			{binding:4,resource:mgFlagsView}
 		]);
+		groups.poissonB=bg(device,"poissonB",pipes.poissonReduceB.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.statsPart}},
+			{binding:1,resource:{buffer:pool.stats}},
+			{binding:2,resource:{buffer:pool.dims}}
+		]);
 		groups.statsB=bg(device,"statsB",pipes.statsB.getBindGroupLayout(0),[
 			{binding:0,resource:{buffer:pool.statsPart}},
 			{binding:1,resource:{buffer:pool.stats}},
@@ -414,7 +429,15 @@
 		cpass.setBindGroup(0,groups.rhs[io.v]);
 		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
 	}
-	function encodePressure(cpass,pool,pipes,groups,io,iters,mgOn,mgPre,mgPost,mgCycles){
+	function encodePoissonReduce(cpass,pool,pipes,groups,io){
+		cpass.setPipeline(pipes.poissonReduceA);
+		cpass.setBindGroup(0,groups.poissonA[io.m]);
+		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
+		cpass.setPipeline(pipes.poissonReduceB);
+		cpass.setBindGroup(0,groups.poissonB);
+		cpass.dispatchWorkgroups(1);
+	}
+	function encodePressure(cpass,pool,pipes,groups,io,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
 		const mx=pool.mgWorkgroupX,my=pool.mgWorkgroupY;
 		const m=io.m;
@@ -473,6 +496,9 @@
 		cpass.setBindGroup(0,groups.applyGrad[m][io.v]);
 		cpass.dispatchWorkgroups(wx,wy);
 		io.v=1-io.v;
+		// after the solve, before transport: mass parity is still the one the
+		// projection used. only the sampled frame's last substep asks for this.
+		if(captureResidual)encodePoissonReduce(cpass,pool,pipes,groups,io);
 	}
 	function encodeTransport(cpass,pool,pipes,groups,state,io,fctOn){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
@@ -536,20 +562,20 @@
 		io.t=ts;
 		io.v=v;
 	}
-	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles){
+	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual){
 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
 		encodeVelAdv(cpass,pool,pipes,groups,stepIo);
 		encodeRhs(cpass,pool,pipes,groups,stepIo);
-		encodePressure(cpass,pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles);
+		encodePressure(cpass,pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
 		encodeTransport(cpass,pool,pipes,groups,state,stepIo,fctOn);
 		encodePhaseChain(cpass,pool,pipes,groups,state,stepIo);
 	}
-	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles){
+	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual){
 		const G=Fluid.gpu.profiler.GROUP;
 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
 		encodeVelAdv(prof.pass(encoder,G.vel,"vel"),pool,pipes,groups,stepIo);
 		encodeRhs(prof.pass(encoder,G.rhs,"rhs"),pool,pipes,groups,stepIo);
-		encodePressure(prof.pass(encoder,G.press,"press"),pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles);
+		encodePressure(prof.pass(encoder,G.press,"press"),pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
 		encodeTransport(prof.pass(encoder,G.trans,"trans"),pool,pipes,groups,state,stepIo,fctOn);
 		encodePhaseChain(prof.pass(encoder,G.phase,"phase"),pool,pipes,groups,state,stepIo);
 	}

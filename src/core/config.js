@@ -92,10 +92,24 @@
 		substepsAuto:true,
 		substepsFixed:4,
 		vMax:8,
+		// velocity advection scheme (0.6.0 t5). 0 = semi-lagrangian, the shipping
+		// path on both cpu and gpu. 1 = mac-cormack with the stencil-bounds limiter,
+		// cpu only: the wgsl kernel does not exist yet, so this stays off until the
+		// vortex-decay win is worth a second advection dispatch on the device.
+		advectMac:0,
+		macLimiter:1,
+		// 0.6.0 t6: vorticity confinement, F = eps*h*(N x omega) with N the unit
+		// gradient of |omega|. eps is in 1/s, 0 is off. a force, not a change to
+		// the advection scheme: it costs one extra pass over the velocity field.
+		// cpu only for now (the gpu path does not read it), so it stays off until
+		// the wgsl pass exists and the device row says it is worth a dispatch.
+		vorticityConfinement:0,
 		useMultigrid:true,
 		mgPre:4,
 		mgPost:8,
 		mgCoarsen:4,
+		// global default. the product gate (productCycleGate, set by the app and the
+		// browser harness) drops jet to 1 and leaves every other scenario here.
 		mgCycles:2,
 		// coarse-level red-black sweeps per V-cycle. 0.6.0 t11: 60 -> 20 removes
 		// 160 of the 295 dispatches per projection (295 -> 135) and 1.6-2.5 ->
@@ -238,6 +252,13 @@
 			cfg.TMin=240;
 			cfg.TMax=340;
 			cfg.beta=scaleBeta(cfg.N);
+		}
+		// product policy, off unless the app or the browser harness sets the flag,
+		// so an oracle that named mgCycles keeps that knob. ?cycles= sets
+		// mgCyclesPinned and wins. jet is the only scenario that drops a cycle:
+		// dam and blobs are 18x on the solve, cycle is 27x on its own trajectory.
+		if(cfg.productCycleGate && !cfg.mgCyclesPinned){
+			cfg.mgCycles=s==="jet"?1:defaults.mgCycles;
 		}
 	}
 	function recommendedIters(N){

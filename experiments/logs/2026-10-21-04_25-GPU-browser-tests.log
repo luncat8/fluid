@@ -1,0 +1,65 @@
+Fluid browser diagnostics · 2026-10-21T04:24:38.856Z
+timer: performance.now() · crossOriginIsolated=true · observed quantum=0.005000ms
+gpu: nvidia ampere
+grid N=512 frames/scenario=600 frameDt=0.016666666666666666 pressureK=40 coarse solver=MG substeps=4 fixed FCT=1 gravity=300 scenarios=blobs,dam,cycle,jet
+timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.
+gpu timestamps: on (profiled frames split compute passes; read group proportions, fps is slightly pessimistic)
+gpu memory: 52.9 MB logical / 55.3 MB worst case (textures 52.2 MB x27, buffers 0.6 MB x8) vs a5 bar 60 MB
+--- blobs · OK ---
+m: total=85758.703125 exp=85758.67262041569 drift=3.5570261736044e-7 [ok]
+dr: total=3162.4306640625 exp=3162.430667476069 drift=-1.0794131267408695e-9 [ok]
+dg: total=3162.4306640625 exp=3162.430667476069 drift=-1.0794131267408695e-9 [ok]
+db: total=3162.43115234375 exp=3162.431333991326 drift=-5.7439215857578926e-8 [ok]
+E: total=82671368 exp=82671360.56091309 drift=8.998384523478728e-8 [ok]
+min m=0.29997164011001587 dr=-1.1109464476242847e-28 dg=-8.941235692964684e-29 db=-7.54673963519437e-29 E=289.1727294921875
+maxM=0.6883339881896973 neg=0 over=0 maxDiv=0.01922607235610485 p[-2329.784423828125..3259.406494140625] maxVel=108.15618133544922
+poisson: res=0.8604812622070312 rhs=769.917236328125 true=0.0011176282613321173
+phases vac=0 sol=0 melt=0 liq=262144 boil=0 gas=0 | latentE=0 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.004166666666666667 K=40 coarse mgS4x2(pre4/post8) ns=4/24 fixed scenario=blobs FCT=1 gravity=300
+frames/s=85.1 speed=1.42x CPU encode=0.19ms queue wait=11.52ms vCap=108 CFL bound=0.9013
+sampled peaks: maxDiv=1.5075318813323975 maxM=0.8999171257019043 over=0 poissonTrue=0.17703883283099636 · divergence/compression are reported, not pass/fail gates
+gpu timing (21 samples): vel=0.038 rhs=0.015 press=1.536 trans=0.109 phase=0.178 ms/substep · step sum=1.876 · disp=0.016 render=0.003 ms/frame · stats=0.290 ms/sampled frame
+--- dam · OK ---
+m: total=117235.6015625 exp=117235.60246777534 drift=-7.721846655732987e-9 [ok]
+dr: total=0 exp=0 drift=0 [ok]
+dg: total=0 exp=0 drift=0 [ok]
+db: total=27565.99609375 exp=27566 drift=-1.417053616774287e-7 [ok]
+E: total=113015120 exp=113015120.92700195 drift=-8.20245950737657e-9 [ok]
+min m=0.29990363121032715 dr=0 dg=0 db=-8.410947734664672e-29 E=289.1071472167969
+maxM=1.0003658533096313 neg=0 over=0 maxDiv=0.0439453087747097 p[-4260.03466796875..17129.677734375] maxVel=69.49349975585938
+poisson: res=0.3012247085571289 rhs=166.61294555664062 true=0.001807930995702411
+phases vac=0 sol=0 melt=0 liq=262144 boil=0 gas=0 | latentE=0 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.004166666666666667 K=40 coarse mgS4x2(pre4/post8) ns=4/24 fixed scenario=dam FCT=1 gravity=300
+frames/s=85.5 speed=1.43x CPU encode=0.18ms queue wait=11.48ms vCap=108 CFL bound=0.5791
+sampled peaks: maxDiv=10.395039558410645 maxM=1.0012682676315308 over=849 poissonTrue=0.14503259754310027 · divergence/compression are reported, not pass/fail gates
+gpu timing (20 samples): vel=0.033 rhs=0.007 press=1.552 trans=0.113 phase=0.147 ms/substep · step sum=1.853 · disp=0.000 render=0.000 ms/frame · stats=0.275 ms/sampled frame
+--- cycle · OK ---
+m: total=77798.3984375 exp=77798.40014457703 drift=-2.1942315307189257e-8 [ok]
+dr: total=5103.90771484375 exp=5103.9078994728625 drift=-3.617406820784122e-8 [ok]
+dg: total=28388.3125 exp=28388.312033206224 drift=1.644316770269596e-8 [ok]
+db: total=57794.36328125 exp=57794.36384546757 drift=-9.762501564209112e-9 [ok]
+E: total=114883928 exp=114883890.97717285 drift=3.222629981760789e-7 [ok]
+min m=0.052794452756643295 dr=0.0009951164247468114 dg=0.0014926571166142821 db=0.0029853142332285643 E=50.89390563964844
+maxM=1.0050830841064453 neg=0 over=2942 maxDiv=31.246030807495117 p[0..240127.421875] maxVel=110.72142028808594
+poisson: res=19.779159545898438 rhs=2395.45068359375 true=0.00825696796071166
+phases vac=0 sol=13193 melt=533 liq=165587 boil=80058 gas=2773 | latentE=184596720 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.004166666666666667 K=40 coarse mgS4x2(pre4/post8) ns=4/24 fixed scenario=cycle FCT=1 gravity=300
+frames/s=87.8 speed=1.46x CPU encode=0.16ms queue wait=11.20ms vCap=108 CFL bound=0.9227
+sampled peaks: maxDiv=31.246030807495117 maxM=1.0050830841064453 over=23001 poissonTrue=48.82222147832361 · divergence/compression are reported, not pass/fail gates
+gpu timing (20 samples): vel=0.036 rhs=0.017 press=1.445 trans=0.102 phase=0.131 ms/substep · step sum=1.731 · disp=0.016 render=0.007 ms/frame · stats=0.285 ms/sampled frame
+--- jet · OK ---
+m: total=37375.83984375 exp=37375.840141147375 drift=-7.956941542550218e-9 [ok]
+dr: total=2830.74560546875 exp=2830.7456153696403 drift=-3.497626292161293e-9 [ok]
+dg: total=2799.986328125 exp=2799.9863203894347 drift=2.762715392009582e-9 [ok]
+db: total=4410.77587890625 exp=4410.775847222656 drift=7.183224694668822e-9 [ok]
+E: total=51505308 exp=51505307.34701538 drift=1.2678006457493046e-8 [ok]
+min m=0.08130618929862976 dr=0.002305123722180724 dg=0.004683941137045622 db=0.009162009693682194 E=140.80068969726562
+maxM=0.1670151799917221 neg=0 over=0 maxDiv=22.730710983276367 p[386224.96875..390515.65625] maxVel=110.22112274169922
+poisson: res=10.93030071258545 rhs=566.06396484375 true=0.019309303173189143
+phases vac=0 sol=0 melt=0 liq=157013 boil=103059 gas=2072 | latentE=175763552 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.004166666666666667 K=40 coarse mgS4x2(pre4/post8) ns=4/24 fixed scenario=jet FCT=1 gravity=300
+frames/s=86.8 speed=1.45x CPU encode=0.16ms queue wait=11.34ms vCap=108 CFL bound=0.9185
+sampled peaks: maxDiv=26.750333786010742 maxM=0.2198106199502945 over=0 poissonTrue=0.048024320328341516 · divergence/compression are reported, not pass/fail gates
+gpu timing (20 samples): vel=0.033 rhs=0.008 press=1.507 trans=0.111 phase=0.147 ms/substep · step sum=1.806 · disp=0.016 render=0.003 ms/frame · stats=0.279 ms/sampled frame
+
+Finished 4 scenarios · 28.16 s total.

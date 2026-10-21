@@ -7,7 +7,8 @@
 //      node experiments/mg-samestate.js --n512
 //
 // rel = divAfter/divBefore (the a2 ratio), true = mg.residualNorm()/divBefore
-// (the 0.6.0 4.1 judge, operator units). rel is roughly dt*true, but the two
+// after step() (operator units, includes post-step drift; diag.poissonRes is
+// the solve). rel is roughly dt*true, but the two
 // maxima need not land on the same cell, so do not convert one into the other.
 // The multi-step counterpart, where each config warms up on its own and the
 // peak metric follows the trajectory, is experiments/mg-defaults.js.

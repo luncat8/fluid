@@ -28,6 +28,8 @@ const FULL_SUITES = [
 	"eos.js",
 	"buoy.js",
 	"multigrid.js",
+	"residual-spike.js",
+	"vortex-decay.js",
 	"transport-roundoff.js",
 	"gpu-memory.js",
 	"gpu-mock.js",

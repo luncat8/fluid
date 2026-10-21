@@ -209,6 +209,21 @@ async function testPlumbing() {
 			solver.pool.mgS === cfg.mgCoarsen && solver.pool.mgNc === Math.floor(solver.pool.N / cfg.mgCoarsen) &&
 			new Float32Array(solver.pool.mgParams._buf)[2] === solver.pool.mgTexW,
 			"S=" + solver.pool.mgS + " Nc=" + solver.pool.mgNc + " texW=" + solver.pool.mgTexW);
+		check("solve residual is not captured on a non-stats frame",
+			count("poissonReduceA") === 0 && count("poissonReduceB") === 0,
+			"reduceA=" + count("poissonReduceA"));
+		sink.pipeOrder.length = 0;
+		solver.frame(cfg.frameDt / 2, 2, true);
+		const order2 = sink.pipeOrder;
+		const count2 = (name) => order2.filter(p => p === name).length;
+		const gradAt = order2.lastIndexOf("applyGrad");
+		const redAt = order2.lastIndexOf("poissonReduceA");
+		const massAt = order2.lastIndexOf("advectMass");
+		check("solve residual is reduced once, after the last projection and before transport",
+			count2("poissonReduceA") === 1 && count2("poissonReduceB") === 1 &&
+			gradAt >= 0 && gradAt < redAt && redAt < massAt,
+			"grad=" + gradAt + " reduce=" + redAt + " mass=" + massAt +
+			" counts=" + count2("poissonReduceA") + "/" + count2("poissonReduceB"));
 	}
 
 	// the body must go away with the scenario
@@ -289,6 +304,9 @@ function testWgsl() {
 			Fluid.gpu.passes.encodeBuoySample.toString()));
 	check("wgsl: the display overlay reads the body rectangle through the same slots",
 		/values\[88\]/.test(sh.toDisplay) && /values\[93\]/.test(sh.toDisplay) && /buoyOverlay\(/.test(sh.toDisplay));
+	check("wgsl: solve residual writes slots 32/33, post-step drift writes 34/35",
+		/stats\[32u\] = maxRes/.test(sh.poissonReduceB) && /stats\[33u\] = maxRhs/.test(sh.poissonReduceB) &&
+		/stats\[34u\] = maxRes/.test(sh.statsReduceB) && !/stats\[32u\] = maxRes/.test(sh.statsReduceB));
 }
 
 // ---- 4. cpu sampler: the twin the kernel mirrors, on a known field ----

@@ -30,7 +30,11 @@
 		const q=new URLSearchParams(typeof location!=="undefined"&&location.search?location.search:"");
 		if(q.has("mg"))cfg.useMultigrid=q.get("mg")!=="0";
 		if(q.has("s"))cfg.mgCoarsen=Math.max(2,Math.round(+q.get("s")||4));
-		if(q.has("cycles"))cfg.mgCycles=Math.max(1,Math.round(+q.get("cycles")||2));
+		if(q.has("cycles")){
+			cfg.mgCycles=Math.max(1,Math.round(+q.get("cycles")||2));
+			cfg.mgCyclesPinned=1;
+		}
+		cfg.productCycleGate=1;
 		if(q.has("pre"))cfg.mgPre=Math.max(1,Math.round(+q.get("pre")||4));
 		if(q.has("post"))cfg.mgPost=Math.max(1,Math.round(+q.get("post")||8));
 		if(q.has("k"))Fluid.core.config.setSolverIters(cfg,Math.max(1,Math.round(+q.get("k")||60)));

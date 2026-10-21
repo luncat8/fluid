@@ -3,8 +3,9 @@
 // run: node experiments/mg-work2.js | tee experiments/logs/<date>-mg-work2.log
 //
 // Round 1 used divAfter, which in boiling scenarios floors at max|S| and hides
-// solver quality. This round reports the true Poisson residual
-// mg.residualNorm()/divBefore after each projection, sweeps the coarse
+// solver quality. This round reports mg.residualNorm()/divBefore after step(),
+// which includes post-step coefficient drift (see residual-spike.js;
+// diag.poissonRes is the solve). It sweeps the coarse
 // iteration count K at the current 2-cycle setting on dam (S = 0, the
 // discriminating case), and bisects the cycle blowup round 1 found at
 // pre2/post4 (fields went NaN: maxM read 0 because NaN loses every max).

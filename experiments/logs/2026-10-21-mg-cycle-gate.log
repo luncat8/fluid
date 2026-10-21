@@ -1,0 +1,27 @@
+mg-cycle-gate · dt=0.004166666666666667 · solve is pre-transport, drift is residualNorm after step
+== same-state dam N=128 (180 warmup at K60, then one step) ==
+  c2k20 solve=4.280e-4 drift=7.744e-2 rel=4.305e-4 divA=2.092e-1
+  c1k20 solve=7.745e-3 drift=8.101e-2 rel=7.743e-3 divA=3.763e+0
+  c1/c2  solve=18.10x drift=1.05x rel=17.99x divA=17.99x
+== same-state blobs N=128 (180 warmup at K60, then one step) ==
+  c2k20 solve=2.256e-4 drift=2.809e-2 rel=2.255e-4 divA=2.560e-2
+  c1k20 solve=4.274e-3 drift=3.110e-2 rel=4.274e-3 divA=4.852e-1
+  c1/c2  solve=18.94x drift=1.11x rel=18.95x divA=18.95x
+== same-state jet N=128 (180 warmup at K60, then one step) ==
+  c2k20 solve=2.914e-2 drift=2.999e-2 rel=2.737e-1 divA=1.877e+1
+  c1k20 solve=2.994e-2 drift=3.125e-2 rel=2.746e-1 divA=1.883e+1
+  c1/c2  solve=1.03x drift=1.04x rel=1.00x divA=1.00x
+== same-state cycle N=128 (180 warmup at K60, then one step) ==
+  c2k20 solve=3.779e-2 drift=3.779e-2 rel=4.159e-1 divA=1.695e+1
+  c1k20 solve=3.779e-2 drift=3.779e-2 rel=4.159e-1 divA=1.695e+1
+  c1/c2  solve=1.00x drift=1.00x rel=1.00x divA=1.00x
+== trajectory jet N=128 (90 own warmup + 90 measured) ==
+  c2k20  peakSolve=2.784e-2 peakDrift=2.784e-2 peakRel=2.861e-1 peakDivA=1.886e+1 maxM=0.2079 over=0 cpu=85.1ms
+  c1k20  peakSolve=2.782e-2 peakDrift=2.782e-2 peakRel=2.859e-1 peakDivA=1.892e+1 maxM=0.2078 over=0 cpu=68.1ms
+  c1/c2  peakSolve=1.00x peakDrift=1.00x peakRel=1.00x peakDivA=1.00x
+== trajectory cycle N=128 (90 own warmup + 90 measured) ==
+  c2k20  peakSolve=3.731e-2 peakDrift=3.731e-2 peakRel=4.155e-1 peakDivA=1.694e+1 maxM=1.0003 over=0 cpu=81.7ms
+  c1k20  peakSolve=1.021e+0 peakDrift=1.027e+0 peakRel=1.021e+0 peakDivA=6.256e+2 maxM=1.0004 over=0 cpu=66.1ms
+  c1/c2  peakSolve=27.35x peakDrift=27.52x peakRel=2.46x peakDivA=36.94x
+done
+rerun: node experiments/mg-cycle-gate.js

@@ -1,0 +1,13 @@
+residual-spike · dt=1/240 · K20 2-cycle · solve residual vs post-step drift
+synthetic weight jump: before=1.000e+3 after emptying one neighbor to rhoVac=4.995e+5 ratio=499
+synthetic melt: frozen residual=0 after melt inside p=5e4 = 2.000e+5
+dam N=64 40 steps: worst end/solve=5.56e+2 at step 10, solve=2.429e-2, end=1.352e+1, solve/rhs=1.356e-4
+cycle N=128 600 steps: maxSolve/rhs=2.06e-1 maxDrift/rhs=2.06e-1 at step 1 maxDrift/solve=1.00 (no spike in 2.5 s)
+jet   N=128 600 steps: maxSolve/rhs=5.85e-2 maxDrift/rhs=5.85e-2 at step 1 maxDrift/solve=1.18
+dam   N=128 600 steps: maxSolve/rhs=7.26e-2 maxDrift/rhs=3.56e-1 at step 276 maxDrift/solve=7.67e+2
+cycle N=128 1400 steps: maxSolve/rhs=2.06e-1 at step 1
+  at step 1170 (t=4.875 s) post-step residual / solve rhs = 6.68e+2, post-step / solve = 1.17e+4
+  same scenario and same sim time as the hardware frame-301 spike.
+  the report column `drift` is post-step residual / post-step rhs (the old `true` formula), not this 668.
+rerun: node experiments/residual-spike.js
+       node experiments/residual-spike.js --traj 128 1400 --only cycle

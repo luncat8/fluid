@@ -1,0 +1,23 @@
+Fluid browser diagnostics · 2026-10-21T05:47:15.667Z
+timer: performance.now() · crossOriginIsolated=true · observed quantum=0.005000ms
+gpu: nvidia ampere
+grid N=512 frames/scenario=600 frameDt=0.016666666666666666 pressureK=20 coarse solver=MG substeps=4 fixed FCT=1 gravity=300 scenarios=cycle
+timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.
+gpu timestamps: on (profiled frames split compute passes; read group proportions, fps is slightly pessimistic)
+gpu memory estimate: 52.9 MB logical / 55.3 MB worst case (textures 52.2 MB x27, buffers 0.6 MB x8)
+--- cycle · OK ---
+m: total=77798.40625 exp=77798.40014457703 drift=7.84774874841484e-8 [ok]
+dr: total=5103.90771484375 exp=5103.9078994728625 drift=-3.617406820784122e-8 [ok]
+dg: total=28388.3125 exp=28388.312033206224 drift=1.644316770269596e-8 [ok]
+db: total=57794.36328125 exp=57794.36384546757 drift=-9.762501564209112e-9 [ok]
+E: total=115025304 exp=115025299.0123291 drift=4.3361512130500015e-8 [ok]
+min m=0.05261080339550972 dr=0.0009966451907530427 dg=0.001494968426413834 db=0.002989936852827668 E=50.71682357788086
+maxM=1.0050482749938965 neg=0 over=2910 maxDiv=30.336454391479492 p[0..125940.546875] maxVel=108.83729553222656
+poisson: res=18.284271240234375 rhs=1882.0391845703125 true=0.009715138446710316
+phases vac=0 sol=13193 melt=533 liq=165212 boil=80001 gas=3205 | latentE=186863936 fMom=0 sSat=0
+statsFrame#600 frame#600 N=512 dt=0.004166666666666667 K=20 coarse mgS4x2(pre4/post8) ns=4/24 fixed scenario=cycle FCT=1 gravity=300
+frames/s=107.5 speed=1.79x CPU encode=0.14ms queue wait=9.14ms vCap=108 CFL bound=0.9070
+sampled peaks: maxDiv=30.336454391479492 maxM=1.0050482749938965 over=23943 poissonTrue=26.11078936008509 at frame=301 absRes=49994.73828125 rhs=1914.7156982421875 · divergence/compression are reported, not pass/fail gates
+gpu timing (21 samples): vel=0.037 rhs=0.005 press=1.162 trans=0.109 phase=0.140 ms/substep · step sum=1.453 · disp=0.016 render=0.003 ms/frame · stats=0.275 ms/sampled frame
+
+Finished 1 scenarios · 5.73 s total.

@@ -36,7 +36,7 @@
 		let timeAcc=0;
 		let pSpanSmooth=100;
 		const phaseCounts=[0,0,0,0,0,0];
-		const diag={sSaturated:0,poissonRes:0,poissonRhs:0,poissonRel:0};
+		const diag={sSaturated:0,poissonRes:0,poissonRhs:0,poissonRel:0,poissonDrift:0,poissonDriftRhs:0,poissonDriftRel:0};
 		let statsCache=null;
 		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,thermal:null,phaseCounts,diag,ledger:null};
 		function writeParams(){
@@ -108,6 +108,7 @@
 			}
 			diag.sSaturated=0;
 			diag.poissonRes=0;diag.poissonRhs=0;diag.poissonRel=0;
+			diag.poissonDrift=0;diag.poissonDriftRhs=0;diag.poissonDriftRel=0;
 			const expected=stats.writeExpectedTotals({m:0,dr:0,dg:0,db:0,E:0},ledger);
 			statsCache={
 				frame:0,
@@ -174,7 +175,8 @@
 				prof.beginFrame(substeps,frameCount+1);
 				for(let s=0;s<substeps;s++){
 					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
-						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1);
+						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
+						needStats&&s===substeps-1);
 				}
 				if(needStats||needBuoy){
 					const cp=prof.pass(encoder,PROFILE_GROUP.stats,"stats");
@@ -187,7 +189,8 @@
 				const cpass=encoder.beginComputePass({label:"sim"});
 				for(let s=0;s<substeps;s++){
 					passes.encodeStep(cpass,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
-						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1);
+						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
+						needStats&&s===substeps-1);
 				}
 				if(needStats){
 					passes.encodeStats(cpass,pool,pipes,groups,state);
@@ -320,12 +323,19 @@
 					statsCache.thermal.heatOut=heatOut;
 					for(let k=0;k<6;k++)phaseCounts[k]=Math.round(readbackArray[23+k]);
 					diag.sSaturated=Math.round(readbackArray[29]);
-					// frame-end poisson residual (0.6.0 plan 4.1): max|b - L p| over max|b|
-					// is the solver-quality number that survives the S floor in boiling flow
-					const poissonRes=readbackArray[32],poissonRhs=readbackArray[33];
+					// solve residual is slots 32/33, captured before transport. slots 34/35
+					// are the same pressure after transport and phase: coefficient drift.
+					const poissonRes=readbackArray[stats.IDX_POISSON_RES],poissonRhs=readbackArray[stats.IDX_POISSON_RHS];
+					const poissonDrift=readbackArray[stats.IDX_POISSON_DRIFT];
 					diag.poissonRes=poissonRes;
 					diag.poissonRhs=poissonRhs;
 					diag.poissonRel=poissonRhs>0?poissonRes/poissonRhs:0;
+					diag.poissonDrift=poissonDrift;
+					const poissonDriftRhs=readbackArray[stats.IDX_POISSON_DRIFT_RHS];
+					diag.poissonDriftRhs=poissonDriftRhs;
+					// same formula as the pre-split true column: post-step residual
+					// over the post-step rhs, not the solve rhs.
+					diag.poissonDriftRel=poissonDriftRhs>0?poissonDrift/poissonDriftRhs:0;
 					ledger.latentChargedE=readbackArray[30];
 					ledger.frozenMomentum=readbackArray[31];
 				}

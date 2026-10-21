@@ -1,0 +1,29 @@
+vortex-decay · N=128 sigma=21.3 rim=80 cells/s · dt=0.004166666666666667 · 960 steps (4 s)
+== fixed points ==
+  constant field, interior: mac-sl max diff=0.00e+0 sl error vs U=0.00e+0
+  constant field, wall band: 384 faces, overshoot past U: limited=0.00e+0 raw=2.85e+0 (7.7 % per step, compounding)
+== with the shipping projection (mg 2 cycles, K20) ==
+  sl       KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.838063 vort keep=0.841666 enst keep=0.802764 peakSpeed=70.45 maxDiv=1.10e-2
+    t= 2s KE keep=0.721003 vort keep=0.736372 enst keep=0.662483 peakSpeed=63.51 maxDiv=8.58e-3
+    t= 3s KE keep=0.632333 vort keep=0.657148 enst keep=0.561432 peakSpeed=58.09 maxDiv=6.81e-3
+    t= 4s KE keep=0.562755 vort keep=0.596015 enst keep=0.485308 peakSpeed=53.74 maxDiv=5.04e-3
+    limiter moved 0 faces (0 worst step) · clamp=0 · peakSpeed max=80.00 · cpu=52.42 ms/step (advection 4.459)
+  mac      KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.962682 vort keep=0.971217 enst keep=0.954908 peakSpeed=77.79 maxDiv=4.12e-3
+    t= 2s KE keep=0.929898 vort keep=0.946398 enst keep=0.907365 peakSpeed=75.90 maxDiv=3.89e-3
+    t= 3s KE keep=0.900627 vort keep=0.923318 enst keep=0.867085 peakSpeed=74.16 maxDiv=3.55e-3
+    t= 4s KE keep=0.874230 vort keep=0.904398 enst keep=0.831998 peakSpeed=72.64 maxDiv=3.20e-3
+    limiter moved 17349 faces (38 worst step) · clamp=0 · peakSpeed max=80.00 · cpu=63.94 ms/step (advection 12.382)
+  mac-raw  KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.962682 vort keep=0.971217 enst keep=0.954908 peakSpeed=77.79 maxDiv=4.12e-3
+    t= 2s KE keep=0.929898 vort keep=0.946402 enst keep=0.907364 peakSpeed=75.90 maxDiv=3.66e-3
+    t= 3s KE keep=0.900628 vort keep=0.923319 enst keep=0.867084 peakSpeed=74.16 maxDiv=3.66e-3
+    t= 4s KE keep=0.874231 vort keep=0.904396 enst keep=0.831997 peakSpeed=72.64 maxDiv=3.66e-3
+    limiter moved 0 faces (0 worst step) · clamp=0 · peakSpeed max=80.00 · cpu=61.86 ms/step (advection 11.481)
+== decision (plan 4.2: adopt at >= 1.25x retained energy for <= 15 % frame time) ==
+  t=1s  sl keeps 0.8381 of KE, mac keeps 0.962682  ->  mac/sl=1.149x  below the bar  (ceiling 1.193x: no scheme can beat 1/keep, so a window where sl has lost under 20 % cannot reach 1.25x at all)
+  t=4s  sl keeps 0.5628 of KE, mac keeps 0.874230  ->  mac/sl=1.553x  clears the bar  (ceiling 1.777x: no scheme can beat 1/keep, so a window where sl has lost under 20 % cannot reach 1.25x at all)
+  cpu step +22.0 % (52.42 -> 63.94 ms/step); the advection slice alone is 4.459 -> 12.382 ms (+178 %) and is 9 % of that step.
+  the 15 % bar is a device number and the wgsl kernel does not exist, so neither cpu number is the gate. on the device the projection is 67-87 % of the substep and the whole vel group is 2 % of it (plan 3, `05_55` jet).
+done

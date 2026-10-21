@@ -1,0 +1,44 @@
+vortex-decay · N=128 sigma=21.3 rim=80 cells/s · dt=0.004166666666666667 · 960 steps (4 s)
+== fixed points ==
+  constant field, interior: mac-sl max diff=0.00e+0 sl error vs U=0.00e+0
+  constant field, wall band: 384 faces, overshoot past U: limited=0.00e+0 raw=2.85e+0 (7.7 % per step, compounding)
+== with the shipping projection (mg 2 cycles, K20) ==
+  sl       KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.838063 vort keep=0.841666 enst keep=0.802764 peakSpeed=70.45 maxDiv=1.10e-2
+    t= 2s KE keep=0.721003 vort keep=0.736372 enst keep=0.662483 peakSpeed=63.51 maxDiv=8.58e-3
+    t= 3s KE keep=0.632333 vort keep=0.657148 enst keep=0.561432 peakSpeed=58.09 maxDiv=6.81e-3
+    t= 4s KE keep=0.562755 vort keep=0.596015 enst keep=0.485308 peakSpeed=53.74 maxDiv=5.04e-3
+    limiter moved 0 faces (0 worst step) · clamp=0 · peakSpeed max=80.00 · velClamp=0 · cpu=41.20 ms/step (advection 3.135, forces 3.043)
+  mac      KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.962682 vort keep=0.971217 enst keep=0.954908 peakSpeed=77.79 maxDiv=4.12e-3
+    t= 2s KE keep=0.929898 vort keep=0.946398 enst keep=0.907365 peakSpeed=75.90 maxDiv=3.89e-3
+    t= 3s KE keep=0.900627 vort keep=0.923318 enst keep=0.867085 peakSpeed=74.16 maxDiv=3.55e-3
+    t= 4s KE keep=0.874230 vort keep=0.904398 enst keep=0.831998 peakSpeed=72.64 maxDiv=3.20e-3
+    limiter moved 17349 faces (38 worst step) · clamp=0 · peakSpeed max=80.00 · velClamp=0 · cpu=49.95 ms/step (advection 8.881, forces 3.440)
+  mac-raw  KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.962682 vort keep=0.971217 enst keep=0.954908 peakSpeed=77.79 maxDiv=4.12e-3
+    t= 2s KE keep=0.929898 vort keep=0.946402 enst keep=0.907364 peakSpeed=75.90 maxDiv=3.66e-3
+    t= 3s KE keep=0.900628 vort keep=0.923319 enst keep=0.867084 peakSpeed=74.16 maxDiv=3.66e-3
+    t= 4s KE keep=0.874231 vort keep=0.904396 enst keep=0.831997 peakSpeed=72.64 maxDiv=3.66e-3
+    limiter moved 0 faces (0 worst step) · clamp=0 · peakSpeed max=80.00 · velClamp=0 · cpu=49.07 ms/step (advection 8.337, forces 3.402)
+  sl+conf2 KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.839007 vort keep=0.935749 enst keep=0.810608 peakSpeed=73.06 maxDiv=1.05e-2
+    t= 2s KE keep=0.722197 vort keep=0.795917 enst keep=0.677127 peakSpeed=65.81 maxDiv=8.93e-3
+    t= 3s KE keep=0.629246 vort keep=0.715387 enst keep=0.577412 peakSpeed=58.27 maxDiv=6.29e-3
+    t= 4s KE keep=0.557830 vort keep=0.661433 enst keep=0.499326 peakSpeed=53.99 maxDiv=5.04e-3
+    limiter moved 0 faces (0 worst step) · clamp=0 · peakSpeed max=80.00 · velClamp=0 · cpu=44.78 ms/step (advection 3.092, forces 4.525)
+  sl+conf8 KE0=1.2428e+7 peakVort0=4.548 peakSpeed0=80.00 maxDiv0=2.13e+2
+    t= 1s KE keep=0.843810 vort keep=1.550773 enst keep=1.039433 peakSpeed=76.72 maxDiv=1.97e-2
+    t= 2s KE keep=0.704141 vort keep=1.700681 enst keep=1.073136 peakSpeed=66.00 maxDiv=1.14e-2
+    t= 3s KE keep=0.589931 vort keep=1.641512 enst keep=0.975425 peakSpeed=57.47 maxDiv=8.03e-3
+    t= 4s KE keep=0.509454 vort keep=2.047110 enst keep=0.894431 peakSpeed=52.82 maxDiv=8.24e-3
+    limiter moved 0 faces (0 worst step) · clamp=0 · peakSpeed max=80.00 · velClamp=0 · cpu=46.06 ms/step (advection 3.129, forces 5.415)
+== decision (plan 4.2: adopt at >= 1.25x retained energy for <= 15 % frame time) ==
+  t=1s  sl keeps 0.8381 of KE, mac keeps 0.962682  ->  mac/sl=1.149x  below the bar  (ceiling 1.193x: no scheme can beat 1/keep, so a window where sl has lost under 20 % cannot reach 1.25x at all)
+  t=4s  sl keeps 0.5628 of KE, mac keeps 0.874230  ->  mac/sl=1.553x  clears the bar  (ceiling 1.777x: no scheme can beat 1/keep, so a window where sl has lost under 20 % cannot reach 1.25x at all)
+  cpu step +21.2 % (41.20 -> 49.95 ms/step); the advection slice alone is 3.135 -> 8.881 ms (+183 %) and is 8 % of that step.
+  the 15 % bar is a device number and the wgsl kernel does not exist, so neither cpu number is the gate. on the device the projection is 67-87 % of the substep and the whole vel group is 2 % of it (plan 3, `05_55` jet).
+== confinement decision (plan 4.2 t6: a force on the shipping scheme) ==
+  eps=2 1/s at t=4s: peak vorticity 2.710 -> 3.008 (1.110x sl), enstrophy 1.029x, KE 0.991x (the force adds energy), maxDiv 5.04e-3 -> 5.04e-3, peak speed 53.99 (initial 80.00), velClamp 0.
+  eps=8 1/s at t=4s: peak vorticity 2.710 -> 9.309 (3.435x sl), enstrophy 1.843x, KE 0.905x (the force adds energy), maxDiv 5.04e-3 -> 8.24e-3, peak speed 52.82 (initial 80.00), velClamp 0.
+done

@@ -8,7 +8,7 @@
 // experiments/mg-samestate.js for that (one step from a shared warm state).
 // The pinned dt still keeps the substep auto-policy out of the comparison.
 // The judge is the true Poisson residual from 0.6.0 section 4.1:
-//   true = mg.residualNorm()/divBefore   (operator units, the 4.1 judge)
+//   true = mg.residualNorm()/divBefore after step() (includes post-step drift)
 //   rel  = divAfter/divBefore            (the a2 divergence ratio); roughly
 //          dt*true, but the two maxima need not land on the same cell
 // Rows:

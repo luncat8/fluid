@@ -28,8 +28,12 @@ PRESETS = {
 	"fixed-k40": "n=512&frames=600&scenarios=blobs,dam,cycle,jet&k=40&auto=0&ns=4&profile=1",
 	"fixed-k60": "n=512&frames=600&scenarios=blobs,dam,cycle,jet&k=60&auto=0&ns=4&profile=1",
 	"cycles1": "n=512&frames=600&scenarios=blobs,dam,cycle,jet&k=20&cycles=1&auto=0&ns=4&profile=1",
+	"jet-fixed-k20": "n=512&frames=600&scenarios=jet&k=20&cycles=2&auto=0&ns=4&profile=1",
+	"jet-cycles1": "n=512&frames=600&scenarios=jet&k=20&cycles=1&auto=0&ns=4&profile=1",
+	"jet-auto": "n=512&frames=600&scenarios=jet&k=20&profile=1",
 	"n1024": "n=1024&frames=300&scenarios=blobs,dam,cycle,jet&k=20&profile=1",
 	"n1024-fixed": "n=1024&frames=300&scenarios=blobs,dam,cycle,jet&k=20&auto=0&ns=4&profile=1",
+	"cycle-fixed-k20": "n=512&frames=600&scenarios=cycle&k=20&cycles=2&auto=0&ns=4&profile=1",
 }
 
 DEFAULT = "k20"

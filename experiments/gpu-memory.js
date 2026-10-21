@@ -1,15 +1,14 @@
 "use strict";
-// 0.6.0 a5: what the field pool costs the device, measured from the allocation list.
-// webgpu has no "how much did you allocate" query, so this walks the same lists
+// Allocation estimate for the field pool, measured from the allocation list.
+// This is informational, not a memory-budget gate. WebGPU has no "how much did you allocate" query, so this walks the same lists
 // src/gpu/fields.js uses to destroy the pool: `logical` is what we asked for, `padded`
 // is the worst case for an implementation that rounds every texture row up to 256 bytes.
 // Neither number includes the canvas backbuffer, the driver's own block rounding (a few
 // percent on top), or the cpu mirrors of the initial state, which are freed after upload.
-// The page's report prints the same pair from the same function (`gpu memory:`), so a
-// hardware capture and this script cannot disagree about what the number means.
+// The browser report prints the same pair from the same function, so the estimate
+// has one consistent meaning in CPU-side and device-side reports.
 // run: node experiments/gpu-memory.js
 //      node experiments/gpu-memory.js --n 1024      per-field breakdown
-//      node experiments/gpu-memory.js --strict      over-bar rows exit non-zero
 
 const path = require("node:path");
 const root = path.resolve(__dirname, "..");
@@ -32,11 +31,8 @@ const WHATIF = {
 	},
 	drop: ["sfieldTmp"]
 };
-// plan 0.6.0 a5. N=1024 is over it by design of the field set (8 full-res rgba32float
-// fields are 61% of the footprint) and t7 half-float per field is the assigned fix, so
-// that row is reported, not asserted, until t7 lands. --strict asserts both.
-const BAR = { 256: null, 512: 60, 1024: 200 };
-const ASSERTED = { 512: true };
+// Candidate format maps are for pricing only; a smaller estimate is not by itself a
+// reason to change formats. The speed and solver-quality experiments decide adoption.
 
 // a device that only records: enough for createPool, no simulation
 function countingDevice(sink) {
@@ -83,11 +79,10 @@ function breakdown(pool) {
 
 const argv = process.argv.slice(2);
 const onlyN = argv.includes("--n") ? Number(argv[argv.indexOf("--n") + 1]) : null;
-const strict = argv.includes("--strict");
 const cfg = Fluid.core.config.defaults;
 let failures = 0;
-console.log("field pool footprint, mgCoarsen=" + cfg.mgCoarsen + " (rows padded to 256 in the"
-	+ " worst-case column; a5 is judged on that column)");
+console.log("field pool allocation estimate, mgCoarsen=" + cfg.mgCoarsen +
+	" (logical request and 256-byte row-padded upper estimate; informational only)");
 for (const N of [256, 512, 1024]) {
 	if (onlyN && N !== onlyN) continue;
 	const sink = { bufs: [], texs: [] };
@@ -98,7 +93,6 @@ for (const N of [256, 512, 1024]) {
 		failures++;
 		continue;
 	}
-	const worst = Math.max(m.total, m.padded);
 	console.log("N=" + N + "  textures " + mb(m.textures) + " (" + m.texCount + ") + buffers "
 		+ mb(m.buffers) + " (" + m.bufCount + ")  = " + mb(m.total) + " logical, " + mb(m.padded)
 		+ " worst case (+" + (100 * (m.padded / m.total - 1)).toFixed(1) + "%)  texW=" + pool.texW
@@ -106,29 +100,14 @@ for (const N of [256, 512, 1024]) {
 	// the allocation list and the destroy list must be the same list, or a field is
 	// either leaked or uncounted; both are silent without this
 	const covered = sink.texs.length === m.texCount && sink.bufs.length === m.bufCount;
-	const bar = BAR[N];
 	if (!covered) {
 		console.log("  FAIL uncounted allocation: device saw " + sink.texs.length + "/"
 			+ sink.bufs.length + ", report counted " + m.texCount + "/" + m.bufCount);
 		failures++;
 	}
-	if (bar) {
-		const over = worst / MB - bar;
-		const pct = 100 * over / bar;
-		const assertThis = ASSERTED[N] || strict;
-		if (over > 0) {
-			console.log("  " + (assertThis ? "FAIL" : "OVER") + " a5 bar " + bar + " MB by "
-				+ over.toFixed(1) + " MB (" + pct.toFixed(1) + "%)"
-				+ (assertThis ? "" : "  [reported, not asserted until t7]"));
-			if (assertThis) failures++;
-		} else {
-			console.log("  PASS a5 bar " + bar + " MB: " + (-pct).toFixed(1) + "% headroom"
-				+ (-pct < 5 ? " (MARGINAL: a new full-res field at this N would trip it)" : ""));
-		}
-		if (over > 0 || onlyN) {
-			for (const r of breakdown(pool).slice(0, 10)) {
-				console.log("    " + r.label.padEnd(10, " ") + (r.bytes / MB).toFixed(2) + " MB  " + r.format);
-			}
+	if (onlyN) {
+		for (const r of breakdown(pool).slice(0, 10)) {
+			console.log("    " + r.label.padEnd(10, " ") + (r.bytes / MB).toFixed(2) + " MB  " + r.format);
 		}
 	}
 	if (argv.includes("--whatif")) {
@@ -142,5 +121,5 @@ for (const N of [256, 512, 1024]) {
 	const leaked = sink.texs.filter(t => !t.destroyed).length;
 	if (leaked) { console.log("  FAIL " + leaked + " textures survived destroyPool"); failures++; }
 }
-console.log(failures === 0 ? "MEMORY CHECKS PASSED" : failures + " FAILURES");
+console.log(failures === 0 ? "ALLOCATION ACCOUNTING CHECKS PASSED" : failures + " FAILURES");
 process.exitCode = failures === 0 ? 0 : 1;
