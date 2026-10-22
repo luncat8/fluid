@@ -3,8 +3,10 @@
 A conservative 2D WebGPU fluid engine for interactive games. One substance across
 solid/liquid/gas phases, three conserved color tracers, conserved internal energy. The default
 grid is 512×512; 1024×1024 runs about four times as many cells per pass.
-Currently implemented: full velocity solver (forces, semi-Lagrangian advection,
-variable-density red-black Gauss-Seidel projection), donor-cell mass/energy transport,
+Currently implemented: full velocity solver (forces, semi-Lagrangian advection —
+an optional mac-cormack scheme sits behind `cfg.advectMac`, off by default pending
+a device frame-time row — variable-density red-black Gauss-Seidel projection),
+donor-cell mass/energy transport,
 Zalesak FCT for RGB dye tracers, ledger-accounted dye and wall painting, conservation
 meters, eight view modes, a diagnostic floating body that reads the field without touching
 it (dam scenario), an optional auto-CFL substep policy, thermal conduction with
@@ -84,7 +86,8 @@ grid/frame count, resets between scenarios, and provides **Copy report** and
 Query parameters prefill comparable runs, for example
 `--query "n=512&frames=600&scenarios=blobs,draw"` and the same query plus `&mg=0` for
 multigrid versus red-black; `&auto=0&ns=4` selects the same fixed four-substep
-policy in both.
+policy in both, and `&mac=1` switches velocity advection to mac-cormack (presets:
+`python3 run_gpu_mac_fixed_k20.py`, `python3 run_gpu_capture.py jet-mac-auto`).
 The report records `crossOriginIsolated` and an observed
 `performance.now()` quantum; the Python server's COOP/COEP headers enable the
 finer timer where the browser supports it. These browser measurements are a
@@ -133,6 +136,12 @@ The measured 500-step heated-box results are recorded in
 `experiments/logs/2026-10-19-gpu-parity.log`. Per the clarified t8 criterion, aggregate
 total-E and mean-T are required below 2e-6; this run meets it. Pointwise E/T drift is
 reported separately in the log. Browser/hardware GPU performance is still pending.
+
+Without any GPU, the optional `node experiments/wgsl-exec.mjs` runner parses every
+shader with a real WGSL parser and executes kernels on a CPU interpreter against the
+CPU oracle (currently the mac-cormack pair); it needs the `wgsl_reflect` package
+installed outside the repo, like the parity runner. It validates kernel numerics,
+not timing or drivers.
 
 The app has no build-time or runtime dependencies. All WGSL is inline as JS
 template strings; `file://` works. The optional numeric parity experiment is the one

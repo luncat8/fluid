@@ -226,6 +226,29 @@ async function testPlumbing() {
 			" counts=" + count2("poissonReduceA") + "/" + count2("poissonReduceB"));
 	}
 
+	// mac-cormack cadence (0.6.0 t16): one extra semi-lagrangian dispatch into
+	// the scratch plus the correction dispatch, per substep, between forces
+	// and the poisson rhs. with the flag off neither may appear.
+	{
+		cfg.advectMac = 1;
+		sink.pipeOrder.length = 0;
+		solver.frame(cfg.frameDt / 2, 2, false);
+		const order = sink.pipeOrder;
+		const count = (name) => order.filter(p => p === name).length;
+		check("mac-cormack: forward and correction passes are encoded in the vel segment",
+			count("advectVelMac") === 2 && count("advectVel") === 2 &&
+			order.indexOf("forces") < order.indexOf("advectVelMac") &&
+			order.indexOf("advectVelMac") < order.indexOf("rhs"),
+			"mac=" + count("advectVelMac") + " sl=" + count("advectVel"));
+		cfg.advectMac = 0;
+		sink.pipeOrder.length = 0;
+		solver.frame(cfg.frameDt / 2, 2, false);
+		check("mac-cormack: off by default, the shipping path is one advection dispatch",
+			sink.pipeOrder.filter(p => p === "advectVelMac").length === 0 &&
+			sink.pipeOrder.filter(p => p === "advectVel").length === 2,
+			"mac=" + sink.pipeOrder.filter(p => p === "advectVelMac").length);
+	}
+
 	// the body must go away with the scenario
 	cfg.scenario = "blobs";
 	solver.reset();
@@ -262,6 +285,9 @@ function testParams() {
 	check("the buoy rectangle reaches the uniform block at the slots the wgsl reads",
 		a[88] === 151 && a[89] === 373 && a[90] === 16 && a[91] === 64 && a[92] === 0.5 && a[93] === 1,
 		"[" + a.slice(88, 94).join(",") + "]");
+	check("the mac-cormack limiter reaches the uniform block (an unwritten slot would read as limiter off)",
+		a[off.macLimiter] === cfg.macLimiter && a[off.macLimiter] === 1,
+		"slot " + off.macLimiter + "=" + a[off.macLimiter]);
 	check("the uniform block holds every declared slot: 128 floats, 512 bytes",
 		a.length === 128 && Math.max(...Object.values(off)) < a.length);
 	check("the 16x64 reference rectangle is exact on the reference grid",

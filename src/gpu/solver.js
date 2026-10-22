@@ -79,6 +79,7 @@
 			fields.writeTextureRect(device,pool.therm.tex[1],cfg.texW,cfg.texH,"rgba32float",sc.thermA);
 			fields.clearTexture(device,pool.vel.tex[0],cfg.texW,cfg.texH,"rg32float");
 			fields.clearTexture(device,pool.vel.tex[1],cfg.texW,cfg.texH,"rg32float");
+			fields.clearTexture(device,pool.macTmp,cfg.texW,cfg.texH,"rg32float");
 			fields.clearTexture(device,pool.press.tex[0],cfg.texW,cfg.texH,"r32float");
 			fields.clearTexture(device,pool.press.tex[1],cfg.texW,cfg.texH,"r32float");
 			fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",sc.flagsA);
@@ -176,7 +177,7 @@
 				for(let s=0;s<substeps;s++){
 					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
-						needStats&&s===substeps-1);
+						needStats&&s===substeps-1,cfg.advectMac>0);
 				}
 				if(needStats||needBuoy){
 					const cp=prof.pass(encoder,PROFILE_GROUP.stats,"stats");
@@ -190,7 +191,7 @@
 				for(let s=0;s<substeps;s++){
 					passes.encodeStep(cpass,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
-						needStats&&s===substeps-1);
+						needStats&&s===substeps-1,cfg.advectMac>0);
 				}
 				if(needStats){
 					passes.encodeStats(cpass,pool,pipes,groups,state);

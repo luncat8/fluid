@@ -34,6 +34,10 @@ PRESETS = {
 	"n1024": "n=1024&frames=300&scenarios=blobs,dam,cycle,jet&k=20&profile=1",
 	"n1024-fixed": "n=1024&frames=300&scenarios=blobs,dam,cycle,jet&k=20&auto=0&ns=4&profile=1",
 	"cycle-fixed-k20": "n=512&frames=600&scenarios=cycle&k=20&cycles=2&auto=0&ns=4&profile=1",
+	# 0.6.0 t16 device A/B for mac-cormack: same pinned policies as their
+	# semi-lagrangian peers, only &mac=1 differs.
+	"mac-fixed-k20": "n=512&frames=600&scenarios=blobs,dam,cycle,jet&k=20&auto=0&ns=4&profile=1&mac=1",
+	"jet-mac-auto": "n=512&frames=600&scenarios=jet&k=20&profile=1&mac=1",
 }
 
 DEFAULT = "k20"

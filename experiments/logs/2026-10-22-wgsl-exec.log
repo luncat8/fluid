@@ -1,0 +1,36 @@
+PASS parse forces
+PASS parse advectVel
+PASS parse advectVelMac
+PASS parse poissonRhs
+PASS parse projectStep
+PASS parse applyGrad
+PASS parse computeFlux
+PASS parse advectMass
+PASS parse advectTherm
+PASS parse phaseEos
+PASS parse freezeVel
+PASS parse conduction
+PASS parse heatSources
+PASS parse limiterPrepare
+PASS parse limiterApply
+PASS parse paintMass
+PASS parse paintTherm
+PASS parse poissonReduceA
+PASS parse poissonReduceB
+PASS parse statsReduceA
+PASS parse statsReduceB
+PASS parse buoySample
+PASS parse toDisplay
+PASS parse renderVert
+PASS parse renderFrag
+PASS parse mgCoarsen
+PASS parse mgRestrict
+PASS parse mgZero
+PASS parse mgProlong
+PASS mac exec: gaussian vortex limiter=1  maxAbsDiff=3.016e-5 cpu macLimit=22
+PASS mac exec: constant U=37 limiter=1  maxAbsDiff=0.000e+0 cpu macLimit=32
+PASS mac exec: constant U=37 limiter=0  maxAbsDiff=3.815e-6 cpu macLimit=0
+PASS mac exec: random faces limiter=1  maxAbsDiff=2.594e-4 cpu macLimit=336
+PASS mac exec: random faces limiter=0  maxAbsDiff=2.594e-4 cpu macLimit=0
+PASS the limiter branch was actually exercised  wall=32 random=336
+ALL WGSL-EXEC CHECKS PASSED

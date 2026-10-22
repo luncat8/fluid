@@ -11,7 +11,7 @@
 		heatPower:39,coolTop:40,wallCool:41,heatBand:42,thermalOn:43,heatTarget:44,
 		kSol:45,kGas:46,TEps:47,
 		cSol:48,cLiq:49,cGas:50,Lf:51,Lv:52,TMelt:53,TBoil:54,rhoLiq:55,rhoGas0:56,rhoVac:57,mEps:58,
-		chargeLatent:59,TCeil:60,
+		chargeLatent:59,TCeil:60,macLimiter:61,
 		viewMode:80,TMin:81,TMax:82,PMin:83,PMax:84,VMax:85,overlay:86,colorGain:87,
 		buoyX0:88,buoyY0:89,buoyW:90,buoyH:91,buoySub:92,buoyShow:93,
 		mgS:94,emitters:96
@@ -92,10 +92,11 @@
 		substepsAuto:true,
 		substepsFixed:4,
 		vMax:8,
-		// velocity advection scheme (0.6.0 t5). 0 = semi-lagrangian, the shipping
-		// path on both cpu and gpu. 1 = mac-cormack with the stencil-bounds limiter,
-		// cpu only: the wgsl kernel does not exist yet, so this stays off until the
-		// vortex-decay win is worth a second advection dispatch on the device.
+		// velocity advection scheme (0.6.0 t5/t16). 0 = semi-lagrangian, the
+		// shipping path on both cpu and gpu. 1 = mac-cormack with the
+		// stencil-bounds limiter, implemented in both solvers; stays off
+		// until a device row says the second advection dispatch costs less
+		// than the 15 % frame-time bar (plan 4.2).
 		advectMac:0,
 		macLimiter:1,
 		// 0.6.0 t6: vorticity confinement, F = eps*h*(N x omega) with N the unit
@@ -338,6 +339,7 @@
 		a[paramsOff.mEps]=cfg.mEps;
 		a[paramsOff.chargeLatent]=cfg.chargeLatent===undefined?1:cfg.chargeLatent;
 		a[paramsOff.TCeil]=cfg.TCeil||0;
+		a[paramsOff.macLimiter]=cfg.macLimiter===undefined?1:cfg.macLimiter;
 		a[paramsOff.viewMode]=cfg.viewMode;
 		a[paramsOff.TMin]=cfg.TMin;
 		a[paramsOff.TMax]=cfg.TMax;

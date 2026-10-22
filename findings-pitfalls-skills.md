@@ -677,7 +677,7 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   the backward trace from the face next to a blocked face reads that face's 0, so the
   correction extrapolates past the boundary value: 7.7 % per step on a constant field,
   compounding. without a projection, peak speed goes 80 -> 105 -> 270 -> 400 -> 441 over
-  4 s, retained KE 1.31, peak vorticity 198x, vClamp tripped 256 times. with the limiter
+  4 s, retained KE 1.31, vClamp tripped 256 times. with the limiter
   the peak speed never leaves 80.00 and vClamp stays 0. the projection hides this (it
   removes the overshoot every step, so limited and raw agree to six digits), which is
   exactly why the limiter must not be dropped because "the product path has a projection".
@@ -715,14 +715,14 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   is zero on a wall reads a huge vorticity there, and the confinement force
   (F = eps*h*(N x omega)) reads |omega|'s gradient, so a masked wall turns the
   force into a boundary push. the fix that keeps the physics is a free-slip
-  mirror: a blocked face takes the value of the opposite interior face, so the
-  wall contributes no vorticity and |omega| stays smooth to the boundary.
-- pitfall: a force that concentrates vorticity lowers the total energy. the
-  confinement rows keep 3.44x the peak vorticity of the shipping scheme at 4 s
-  and 0.91x the kinetic energy: the core is sharper and the ring around it is
-  weaker. a metric that only counts energy would rank the force as a loss, so
-  the row that ranks it is the vorticity and the enstrophy, and the energy is
-  reported next to it as the price.
+  mirror, so the wall contributes no vorticity and |omega| stays smooth to
+  the boundary (the current form — centred velocities that drop blocked
+  faces, blocked neighbours mirroring the cell — is in the 2026-10-22
+  section below).
+- pitfall: a force that concentrates vorticity trades shape for energy. the
+  numbers first recorded here ranked the force on the vorticity it amplified;
+  that guidance is superseded by the 2026-10-22 section below (rank on the
+  profile error, errL2, and read keep ratios above 1 as distortion).
 - pitfall: an energy source needs a different watchdog than a scheme. the
   advection rows are held to "no new extremum" (the limiter's job); a
   confinement row is supposed to push the peak vorticity up, so its watchdog is
@@ -737,3 +737,49 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   reproduce exactly. the free-slip mirror is one line in the cpu solver and the
   whole meaning of the row depends on it; write it into the port's task, not
   only into the code.
+
+## 2026-10-22 the curl that was not a curl (0.6.0 t5/t6 correction, t16)
+
+- pitfall: on this MAC layout (u at the west face, v at the south face of each
+  cell), `(vT-vB)-(uR-uL)` is dv/dy-du/dx, not the curl. it is exactly 0 for
+  solid-body rotation and for pure shear, and on the gaussian vortex it peaks
+  on the diagonal at 4.55 where the curl peaks in the core at 12.34 (analytic
+  2*A/sigma = 12.365). it shipped in both the confinement force and the oracle
+  that ranked it, so the two agreed on a quantity that was never vorticity:
+  t6's "eps=8 keeps 3.44x the peak vorticity" and t5's "1.517x retained peak
+  vorticity" are superseded (corrected: mac 1.058x at 4 s; confinement ranked
+  on errL2, optimum eps=2). the KE/divergence/peak-speed/clamp rows of those
+  logs were computed correctly and stand, digit for digit.
+- skill: pin a derivative to analytic fixed points where no scheme is
+  involved: solid-body rotation (curl 2*Omega), pure shear u=k*y (curl -k),
+  uniform flow (0), the gaussian core value (2*A/sigma). four asserts in
+  `experiments/vortex-decay.js` (`curlFixedPoints`) now fail the run if the
+  stencil regresses. any field the oracle measures should have one analytic
+  value it is held to.
+- skill: one definition, not two agreeing copies. `measure()` now calls the
+  solver's `vorticityAt` instead of re-deriving the curl in the experiment.
+  the curl is a diagnostic, not part of the advection scheme under test, so
+  sharing it removes the drift channel that let the bug validate itself; the
+  analytic asserts are what keep the shared definition honest.
+- the centred MAC curl is the average of the cell's four corner curls:
+  dv/dx - du/dy from neighbouring cell-centred velocities. cell-centred
+  velocity drops a blocked face instead of averaging in its stored 0, and a
+  blocked neighbour mirrors the cell itself (free slip) — the same convention
+  as the |omega| gradient. this is the form a WGSL port (t17) must reproduce.
+- pitfall: keep-ratios above 1 are distortion, not retention. with the true
+  curl every confinement eps drives peak vorticity past its initial value
+  (keep 1.28 at eps=0.5 to 4.32 at eps=8), so ranking on "peak vorticity kept"
+  puts the most distorted row first. the vortex is a steady solution, so
+  errL2 against the initial field is the honest rank row; it is also what
+  separates mac (0.0855) from every confinement-on-sl row (best 0.161).
+- skill: a WGSL kernel can be numerically checked without a GPU. the npm
+  `wgsl_reflect` package (installed outside the repo, like gpu-parity's
+  `webgpu`) parses WGSL properly and interprets compute dispatches on the
+  CPU: `experiments/wgsl-exec.mjs` runs the real mac-cormack shader pair and
+  compares to the oracle (<= 2.6e-4 on fields where the limiter fires). that
+  is the check to run before asking for a device capture of a new kernel —
+  the recording mock proves plumbing only and brace-counts the WGSL.
+- pitfall: parallel edits to the same file can silently drop one another.
+  three simultaneous edits to `src/core/solver.js` reported success and two
+  were lost; the test run caught it (a missing export). edit one file at a
+  time and re-read the diff before trusting a batch.

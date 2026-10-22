@@ -319,6 +319,119 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	textureStore(velDst, vec2<i32>(x, y), vec4<f32>(u, v, 0.0, 0.0));
 }
 `;
+	// ---------- mac-cormack correction (t16): pass 2 of velocity advection.
+	// pass 1 is the plain semi-lagrangian kernel above, dispatched into the
+	// macTmp scratch. this pass traces that field forward along the same face
+	// velocity and corrects with c = f + (src - back)/2, limited into the
+	// min/max of the four taps the backward sample used. mirrors
+	// advectVelMac in src/core/solver.js: same traces, same clamps, same
+	// limiter, same absolute velocity clamp (the cpu counts its hits in
+	// diag.macClamp; the device has no counter, like the forces clamp).
+	shaders.advectVelMac=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var velSrc: texture_storage_2d<rg32float,read>;
+@group(0) @binding(2) var macSrc: texture_storage_2d<rg32float,read>;
+@group(0) @binding(3) var velDst: texture_storage_2d<rg32float,write>;
+@group(0) @binding(4) var flagsTex: texture_2d<u32>;
+
+fn isBlockedM(x: i32, y: i32, w: i32, h: i32) -> bool {
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
+	let f = textureLoad(flagsTex, vec2<i32>(x, y), 0);
+	return (f.r | f.b) > 0u;
+}
+fn uBlockedM(x: i32, y: i32, w: i32, h: i32) -> bool {
+	return x <= 1 || x >= w - 1 || isBlockedM(x - 1, y, w, h) || isBlockedM(x, y, w, h);
+}
+fn vBlockedM(x: i32, y: i32, w: i32, h: i32) -> bool {
+	return y <= 1 || y >= h - 1 || isBlockedM(x, y - 1, w, h) || isBlockedM(x, y, w, h);
+}
+fn loadUM(t: texture_storage_2d<rg32float,read>, m: i32, l: i32, w: i32, h: i32) -> f32 {
+	let mm = clamp(m, 0, w - 1);
+	let ll = clamp(l, 0, h - 1);
+	return textureLoad(t, vec2<i32>(mm, ll)).r;
+}
+fn loadVM(t: texture_storage_2d<rg32float,read>, m: i32, l: i32, w: i32, h: i32) -> f32 {
+	let mm = clamp(m, 0, w - 1);
+	let ll = clamp(l, 0, h - 1);
+	return textureLoad(t, vec2<i32>(mm, ll)).g;
+}
+struct SampM { val: f32, lo: f32, hi: f32 };
+fn sampleUM(t: texture_storage_2d<rg32float,read>, px: f32, py: f32, w: i32, h: i32) -> SampM {
+	let i0 = i32(floor(px));
+	let fx = px - f32(i0);
+	let l0 = i32(floor(py + 0.5));
+	let fy = py + 0.5 - f32(l0);
+	let u00 = loadUM(t, i0 + 1, l0, w, h);
+	let u10 = loadUM(t, i0 + 2, l0, w, h);
+	let u01 = loadUM(t, i0 + 1, l0 + 1, w, h);
+	let u11 = loadUM(t, i0 + 2, l0 + 1, w, h);
+	let a0 = u00 + (u10 - u00) * fx;
+	let a1 = u01 + (u11 - u01) * fx;
+	var s: SampM;
+	s.val = a0 + (a1 - a0) * fy;
+	s.lo = min(min(u00, u10), min(u01, u11));
+	s.hi = max(max(u00, u10), max(u01, u11));
+	return s;
+}
+fn sampleVM(t: texture_storage_2d<rg32float,read>, px: f32, py: f32, w: i32, h: i32) -> SampM {
+	let k0 = i32(floor(px + 0.5));
+	let fx = px + 0.5 - f32(k0);
+	let l0 = i32(floor(py));
+	let fy = py - f32(l0);
+	let v00 = loadVM(t, k0, l0 + 1, w, h);
+	let v10 = loadVM(t, k0 + 1, l0 + 1, w, h);
+	let v01 = loadVM(t, k0, l0 + 2, w, h);
+	let v11 = loadVM(t, k0 + 1, l0 + 2, w, h);
+	let b0 = v00 + (v10 - v00) * fx;
+	let b1 = v01 + (v11 - v01) * fx;
+	var s: SampM;
+	s.val = b0 + (b1 - b0) * fy;
+	s.lo = min(min(v00, v10), min(v01, v11));
+	s.hi = max(max(v00, v10), max(v01, v11));
+	return s;
+}
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let n = w - 2;
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
+	let dt = params.values[4];
+	let vclamp = params.values[38];
+	let lim = params.values[61] > 0.0;
+	let src = textureLoad(velSrc, vec2<i32>(x, y));
+	var u = 0.0;
+	var v = 0.0;
+	if (!uBlockedM(x, y, w, h)) {
+		let uc = src.r;
+		let vc = 0.25 * (loadVM(velSrc, x - 1, y, w, h) + loadVM(velSrc, x - 1, y + 1, w, h)
+			+ loadVM(velSrc, x, y, w, h) + loadVM(velSrc, x, y + 1, w, h));
+		let fs = sampleUM(velSrc, clamp(f32(x - 1) - dt * uc, 0.0, f32(n)),
+			clamp(f32(y) - 0.5 - dt * vc, 0.5, f32(n) - 0.5), w, h);
+		let back = sampleUM(macSrc, clamp(f32(x - 1) + dt * uc, 0.0, f32(n)),
+			clamp(f32(y) - 0.5 + dt * vc, 0.5, f32(n) - 0.5), w, h).val;
+		var c = fs.val + 0.5 * (uc - back);
+		if (lim) { c = clamp(c, fs.lo, fs.hi); }
+		u = clamp(c, -vclamp, vclamp);
+	}
+	if (!vBlockedM(x, y, w, h)) {
+		let vc2 = src.g;
+		let uc2 = 0.25 * (loadUM(velSrc, x, y - 1, w, h) + loadUM(velSrc, x + 1, y - 1, w, h)
+			+ loadUM(velSrc, x, y, w, h) + loadUM(velSrc, x + 1, y, w, h));
+		let fs = sampleVM(velSrc, clamp(f32(x) - 0.5 - dt * uc2, 0.5, f32(n) - 0.5),
+			clamp(f32(y - 1) - dt * vc2, 0.0, f32(n)), w, h);
+		let back = sampleVM(macSrc, clamp(f32(x) - 0.5 + dt * uc2, 0.5, f32(n) - 0.5),
+			clamp(f32(y - 1) + dt * vc2, 0.0, f32(n)), w, h).val;
+		var c = fs.val + 0.5 * (vc2 - back);
+		if (lim) { c = clamp(c, fs.lo, fs.hi); }
+		v = clamp(c, -vclamp, vclamp);
+	}
+	textureStore(velDst, vec2<i32>(x, y), vec4<f32>(u, v, 0.0, 0.0));
+}
+`;
 	// ---------- poisson rhs reading S one step behind from sfield ----------
 	shaders.poissonRhs=`
 @group(0) @binding(0) var<uniform> params: Params;

@@ -66,7 +66,7 @@
 			<pre id="out">No run yet.</pre>
 		</div>
 	</div>
-	<p class="note">Each run resets between scenarios and uses the app's auto-CFL policy, FCT, gravity, pressure iteration count and multigrid settings. Stats are sampled every 30 frames and at the end. Queue wait includes driver/scheduling overhead; it is not a GPU timestamp. Keep the tab visible during a run. <code>?n=512&amp;frames=600&amp;scenarios=blobs,draw</code> selects the blob and scripted draw cases; append <code>&amp;mg=0</code> for the RB A/B and <code>&amp;auto=0&amp;ns=4</code> for fixed four-substep runs. <code>&amp;k=</code> sets the active solver's sweep count (coarse-level sweeps under multigrid, fine red-black sweeps for <code>mg=0</code>), <code>&amp;cycles=</code>, <code>&amp;pre=</code>, <code>&amp;post=</code>, <code>&amp;s=</code> tune the solve, and <code>&amp;profile=1</code> adds per-group GPU timestamps where the adapter supports them.</p>
+	<p class="note">Each run resets between scenarios and uses the app's auto-CFL policy, FCT, gravity, pressure iteration count and multigrid settings. Stats are sampled every 30 frames and at the end. Queue wait includes driver/scheduling overhead; it is not a GPU timestamp. Keep the tab visible during a run. <code>?n=512&amp;frames=600&amp;scenarios=blobs,draw</code> selects the blob and scripted draw cases; append <code>&amp;mg=0</code> for the RB A/B and <code>&amp;auto=0&amp;ns=4</code> for fixed four-substep runs. <code>&amp;k=</code> sets the active solver's sweep count (coarse-level sweeps under multigrid, fine red-black sweeps for <code>mg=0</code>), <code>&amp;cycles=</code>, <code>&amp;pre=</code>, <code>&amp;post=</code>, <code>&amp;s=</code> tune the solve, <code>&amp;mac=1</code> switches velocity advection to mac-cormack (<code>&amp;maclim=0</code> drops its limiter), and <code>&amp;profile=1</code> adds per-group GPU timestamps where the adapter supports them.</p>
 
 	<script src="../src/core/config.js"></script>
 	<script src="../src/core/grid.js"></script>
@@ -270,6 +270,8 @@
 			if (query.has("post")) cfg.mgPost = Math.max(1, Math.round(Number(query.get("post")) || 8));
 			if (query.has("k")) Fluid.core.config.setSolverIters(cfg, Math.max(1, Math.round(Number(query.get("k")) || 60)));
 			if (query.has("profile")) cfg.gpuTiming = query.get("profile") !== "0" ? 1 : 0;
+			if (query.has("mac")) cfg.advectMac = query.get("mac") === "0" ? 0 : 1;
+			if (query.has("maclim")) cfg.macLimiter = query.get("maclim") === "0" ? 0 : 1;
 			return cfg;
 		}
 		async function waitForProgress() {
@@ -428,7 +430,8 @@
 					" pressureK=" + Fluid.core.config.solverIters(cfg) +
 					(cfg.useMultigrid ? " coarse" : "") + " solver=" + (cfg.useMultigrid ? "MG" : "RB") +
 					" substeps=" + (cfg.substepsAuto ? "auto" : cfg.substepsFixed + " fixed") +
-					" FCT=" + cfg.fctLimiter + " gravity=" + cfg.gravityY + " scenarios=" + settings.scenarios.join(","));
+					" FCT=" + cfg.fctLimiter + " mac=" + cfg.advectMac + "/" + cfg.macLimiter +
+					" gravity=" + cfg.gravityY + " scenarios=" + settings.scenarios.join(","));
 				log("timing note: serial queue wait includes scheduling/driver overhead; not a GPU timestamp.");
 				log("poisson note: true is the residual of the system just solved, before transport, over the solve rhs. drift is that pressure read after transport and phase, over the post-step rhs — the ratio older logs called true. a large drift with a small true is coefficient change, not a failed solve.");
 				log(cfg.mgCyclesPinned

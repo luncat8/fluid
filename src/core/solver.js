@@ -380,28 +380,42 @@
 		// gradient of |omega|. in 2d that force is tangential, so it spins a
 		// vortex up instead of tearing it apart, and it is an energy source:
 		// the velocity clamp is the watchdog and must stay at 0.
-		function openU(x,y){
-			if(x<1||x>texW-2||y<1||y>texH-2)return false;
-			return !isBlocked(x-1,y)&&!isBlocked(x,y);
-		}
-		function openV(x,y){
-			if(x<1||x>texW-2||y<1||y>texH-2)return false;
-			return !isBlocked(x,y-1)&&!isBlocked(x,y);
-		}
-		// z component of the curl at the cell centre. a wall face mirrors the
-		// opposite interior face (free slip), so the wall's zero velocity is not
-		// read as a resolved shear: a masked wall would put a huge |omega| spike
-		// into the gradient and push the flow at the boundary.
-		function vorticity(src,x,y){
+		// cell centred velocity from its two faces. a blocked face is dropped,
+		// not read as 0: the stored 0 is a wall condition, so averaging it in
+		// would halve the centre velocity next to every wall and read as shear.
+		function centreU(src,x,y){
 			const vi=(x+y*texW)*2;
-			const ul=openU(x,y),ur=openU(x+1,y),vb=openV(x,y),vt=openV(x,y+1);
-			let uL=ul?src[vi]:0,uR=ur?src[vi+2]:0;
-			let vB=vb?src[vi+1]:0,vT=vt?src[vi+texW*2+1]:0;
-			if(!ul&&ur)uL=uR;
-			if(ul&&!ur)uR=uL;
-			if(!vb&&vt)vB=vT;
-			if(vb&&!vt)vT=vB;
-			return (vT-vB)-(uR-uL);
+			const wl=!uBlocked(x,y),er=!uBlocked(x+1,y);
+			if(wl&&er)return 0.5*(src[vi]+src[vi+2]);
+			if(wl)return src[vi];
+			if(er)return src[vi+2];
+			return 0;
+		}
+		function centreV(src,x,y){
+			const vi=(x+y*texW)*2;
+			const sb=!vBlocked(x,y),nt=!vBlocked(x,y+1);
+			if(sb&&nt)return 0.5*(src[vi+1]+src[vi+texW*2+1]);
+			if(sb)return src[vi+1];
+			if(nt)return src[vi+texW*2+1];
+			return 0;
+		}
+		// z component of the curl at the cell centre: dv/dx - du/dy from the
+		// neighbouring cell centred velocities, which is the average of the
+		// cell's four corner curls and the only centred form a staggered grid
+		// has. (vT-vB)-(uR-uL) is not it: that is dv/dy-du/dx, which is 0 for
+		// solid-body rotation and for pure shear. the oracle asserts those
+		// fixed points. a blocked or ghost neighbour mirrors this cell (free
+		// slip), so the difference degrades to a half one-sided one instead of
+		// reading a wall as a resolved shear.
+		function vorticity(src,x,y){
+			const xe=x<texW-2&&!isBlocked(x+1,y)?x+1:x;
+			const xw=x>1&&!isBlocked(x-1,y)?x-1:x;
+			const yn=y<texH-2&&!isBlocked(x,y+1)?y+1:y;
+			const ys=y>1&&!isBlocked(x,y-1)?y-1:y;
+			return 0.5*(centreV(src,xe,y)-centreV(src,xw,y))-0.5*(centreU(src,x,yn)-centreU(src,x,ys));
+		}
+		function vorticityAt(x,y){
+			return vorticity(grid.curBuf(vel),x,y);
 		}
 		// cell centred force from the velocity field of this step. two passes
 		// over the grid: omega and |omega|, then the force.
@@ -415,7 +429,7 @@
 			for(let y=1;y<texH-1;y++){
 				for(let x=1;x<texW-1;x++){
 					const i=x+y*texW;
-					const w=vorticity(src,x,y);
+					const w=isBlocked(x,y)?0:vorticity(src,x,y);
 					confW[i]=w;
 					confS[i]=w<0?-w:w;
 				}
@@ -426,8 +440,11 @@
 					const i=x+y*texW;
 					const w=confW[i];
 					if(w===0){confFx[i]=0;confFy[i]=0;continue;}
-					const xm=x>1?i-1:i,xp=x<texW-2?i+1:i;
-					const ym=y>1?i-texW:i,yp=y<texH-2?i+texW:i;
+					// |omega| mirrors across a wall too, for the same reason
+					// the curl does: the 0 stored in a blocked cell would
+					// otherwise point the gradient into the wall.
+					const xm=x>1&&!isBlocked(x-1,y)?i-1:i,xp=x<texW-2&&!isBlocked(x+1,y)?i+1:i;
+					const ym=y>1&&!isBlocked(x,y-1)?i-texW:i,yp=y<texH-2&&!isBlocked(x,y+1)?i+texW:i;
 					const gx=0.5*(confS[xp]-confS[xm]);
 					const gy=0.5*(confS[yp]-confS[ym]);
 					const len=Math.sqrt(gx*gx+gy*gy);
@@ -1000,7 +1017,7 @@
 		reset();
 		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,sfield,flags,ledger,thermDiag,diag,mg,
 			isWall,isFrozen,isBlocked,uBlocked,vBlocked,reset,step,stats,forces,advectVelocity,poissonRhs,project,applyGrad,computeFlux,advectScalar,
-			phaseEos,conduction,heatSources,
+			phaseEos,conduction,heatSources,vorticityAt,
 			applyDyePatch,applyWallPatch};
 	}
 	Fluid.core.solver={create,buildScenario,buildDyePatch,buildWallPatch,patchTotals,paintBlob,

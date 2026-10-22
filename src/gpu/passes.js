@@ -38,6 +38,7 @@
 		return {
 			forces:comp("forces",PS+sh.forces),
 			advectVel:comp("advectVel",PS+sh.advectVel),
+			advectVelMac:comp("advectVelMac",PS+sh.advectVelMac),
 			rhs:comp("rhs",PS+sh.poissonRhs),
 			projRed:projPipe("projRed",0),
 			projBlack:projPipe("projBlack",1),
@@ -93,7 +94,7 @@
 		const limiterAView=viewRes(pool.limiterA);
 		const limiterBView=viewRes(pool.limiterB);
 		const groups={
-			forces:[],advectVel:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
+			forces:[],advectVel:[],macFwd:[],advectVelMac:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
 			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],heatSources:[],
 		limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
 		poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],render:null
@@ -292,6 +293,22 @@
 				{binding:2,resource:viewRes(vn)},
 				{binding:3,resource:flagsView}
 			]);
+			// mac-cormack (t16): pass 1 is the semi-lagrangian kernel into the
+			// scratch, pass 2 corrects from (src, scratch) into the ping-pong
+			// partner. both indexed by the source parity, like advectVel.
+			groups.macFwd[v]=bg(device,"macFwd"+v,pipes.advectVel.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(vv)},
+				{binding:2,resource:viewRes(pool.macTmp)},
+				{binding:3,resource:flagsView}
+			]);
+			groups.advectVelMac[v]=bg(device,"advectVelMac"+v,pipes.advectVelMac.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(vv)},
+				{binding:2,resource:viewRes(pool.macTmp)},
+				{binding:3,resource:viewRes(vn)},
+				{binding:4,resource:flagsView}
+			]);
 			groups.rhs[v]=bg(device,"rhs"+v,pipes.rhs.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
 				{binding:1,resource:viewRes(pool.divsrc)},
@@ -413,12 +430,22 @@
 	// them so encodeStepProfiled can split passes at the segment boundaries
 	// (0.6.0 t1) without changing the dispatch sequence.
 	const stepIo={m:0,t:0,v:0};
-	function encodeVelAdv(cpass,pool,pipes,groups,io){
+	function encodeVelAdv(cpass,pool,pipes,groups,io,macOn){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
 		cpass.setPipeline(pipes.forces);
 		cpass.setBindGroup(0,groups.forces[io.m][io.t][io.v]);
 		cpass.dispatchWorkgroups(wx,wy);
 		io.v=1-io.v;
+		if(macOn){
+			cpass.setPipeline(pipes.advectVel);
+			cpass.setBindGroup(0,groups.macFwd[io.v]);
+			cpass.dispatchWorkgroups(wx,wy);
+			cpass.setPipeline(pipes.advectVelMac);
+			cpass.setBindGroup(0,groups.advectVelMac[io.v]);
+			cpass.dispatchWorkgroups(wx,wy);
+			io.v=1-io.v;
+			return;
+		}
 		cpass.setPipeline(pipes.advectVel);
 		cpass.setBindGroup(0,groups.advectVel[io.v]);
 		cpass.dispatchWorkgroups(wx,wy);
@@ -562,18 +589,18 @@
 		io.t=ts;
 		io.v=v;
 	}
-	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual){
+	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn){
 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
-		encodeVelAdv(cpass,pool,pipes,groups,stepIo);
+		encodeVelAdv(cpass,pool,pipes,groups,stepIo,macOn);
 		encodeRhs(cpass,pool,pipes,groups,stepIo);
 		encodePressure(cpass,pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
 		encodeTransport(cpass,pool,pipes,groups,state,stepIo,fctOn);
 		encodePhaseChain(cpass,pool,pipes,groups,state,stepIo);
 	}
-	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual){
+	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn){
 		const G=Fluid.gpu.profiler.GROUP;
 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
-		encodeVelAdv(prof.pass(encoder,G.vel,"vel"),pool,pipes,groups,stepIo);
+		encodeVelAdv(prof.pass(encoder,G.vel,"vel"),pool,pipes,groups,stepIo,macOn);
 		encodeRhs(prof.pass(encoder,G.rhs,"rhs"),pool,pipes,groups,stepIo);
 		encodePressure(prof.pass(encoder,G.press,"press"),pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
 		encodeTransport(prof.pass(encoder,G.trans,"trans"),pool,pipes,groups,state,stepIo,fctOn);

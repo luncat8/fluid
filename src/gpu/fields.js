@@ -52,6 +52,7 @@
 			mgMass:null,
 			mgFlags:null,
 			mgDiv:null,
+			macTmp:null,
 			mgPress:{tex:[],cur:0},
 			mgParams:null,
 			mgNc:0,mgS:0,
@@ -74,6 +75,10 @@
 		};
 		pool.vel.tex[0]=makeTexture(device,"vel0","rg32float",texW,texH);
 		pool.vel.tex[1]=makeTexture(device,"vel1","rg32float",texW,texH);
+		// mac-cormack forward pass scratch (t16): written by the plain
+		// semi-lagrangian kernel, read by the correction kernel. allocated
+		// with the pool like every other field; unused while advectMac is 0.
+		pool.macTmp=makeTexture(device,"macTmp","rg32float",texW,texH);
 		pool.mass.tex[0]=makeTexture(device,"mass0","rgba32float",texW,texH);
 		pool.mass.tex[1]=makeTexture(device,"mass1","rgba32float",texW,texH);
 		pool.mass.tex[2]=makeTexture(device,"mass2","rgba32float",texW,texH);
@@ -131,7 +136,7 @@
 	// every allocation the pool owns, in one place: destroy and the memory audit both
 	// read these lists, so a new field cannot be destroyed-but-uncounted or the reverse.
 	function poolTextures(pool){
-		return [pool.vel.tex[0],pool.vel.tex[1],pool.mass.tex[0],pool.mass.tex[1],pool.mass.tex[2],
+		return [pool.vel.tex[0],pool.vel.tex[1],pool.macTmp,pool.mass.tex[0],pool.mass.tex[1],pool.mass.tex[2],
 			pool.therm.tex[0],pool.therm.tex[1],pool.press.tex[0],pool.press.tex[1],
 			pool.flags,pool.flagsTmp,pool.flux,pool.limiterA,pool.limiterB,pool.divsrc,
 			pool.sfield,pool.sfieldTmp,pool.accum,pool.accumTmp,

@@ -3,7 +3,10 @@
 // scheme keeps. viscosity is 0, so every joule that disappears is numerical
 // diffusion and KE(t)/KE(0) is the number plan 4.2 ranks (adopt at >= 1.25x
 // retained energy for <= 15 % extra frame time). peak vorticity and enstrophy
-// come along because "soft vortices" is a sharpness complaint, not an energy one.
+// come along because "soft vortices" is a sharpness complaint, not an energy one,
+// and errL2 against the initial field because the vortex is a steady solution:
+// it is the only row here that punishes a scheme for distorting the profile
+// while keeping its integrals.
 //
 // the loop is velocity only: mass stays uniform, so the projection is constant
 // coefficient and can neither cause nor hide the advection difference. dt=1/240
@@ -34,12 +37,18 @@ const SCHEMES = [
 // 0.6.0 t6: vorticity confinement is a force, not an advection scheme, so it
 // rides on the shipping scheme as another row of the same stirred vortex. eps is
 // in 1/s (F = eps*h*(N x omega)); the force adds energy on purpose, so the
-// retained-KE row stops being a diffusion metric for these rows and the
-// vorticity and enstrophy rows are the ones that rank them. the sweep that
-// picked these two is in `2026-10-21-vortex-decay-conf.log`: eps=2 is the
-// setting that costs no divergence, eps=8 is the sharp one, eps=32 is the
-// over-driven row that shows where the force stops being free.
-const CONF_EPS = [2, 8];
+// retained-KE row stops being a diffusion metric for these rows. they are
+// ranked on errL2 against the (steady) initial field, with the vorticity and
+// enstrophy keeps read as the concentration the force buys that error with:
+// every eps overshoots peak vorticity past its initial value, so "more
+// vorticity" alone would rank the most distorted row first. the sweep that
+// picked these two is in `2026-10-22-vortex-decay-conf.log` (eps 0.5..8):
+// at 4 s eps=1 improves errL2 0.274 -> 0.201 with the divergence unchanged,
+// eps=2 is the errL2 optimum (0.161, enstrophy keep 0.934) for 1.1x the
+// divergence, and eps=4/8 are over-driven (errL2 turns back up, divergence
+// 3x/15x, peak speed past its initial value). the 2026-10-21 conf rows and
+// their eps=2/8 picks used a curl that was not a curl; see curlFixedPoints.
+const CONF_EPS = [1, 2];
 
 function make(N, over) {
 	const cfg = Object.assign({}, cfg0, { N, scenario: "still" }, over);
@@ -82,7 +91,11 @@ function paintVortex(sim, cfg) {
 	}
 }
 // one pass over the field into a caller owned object: no per face allocation.
-function measure(sim, cfg, out) {
+// errL2 is the distance from the initial field, relative to its norm: the
+// gaussian vortex is a steady solution, so a scheme that merely concentrates
+// the core (peak vorticity up, energy wherever) is wrong in a way the three
+// keep ratios cannot rank. this ratio can.
+function measure(sim, cfg, out, vel0) {
 	const vel = grid.curBuf(sim.vel), mass = grid.curBuf(sim.mass);
 	const texW = cfg.texW, texH = cfg.texH;
 	let ke = 0, peakVort = 0, enstrophy = 0, peakSpeed = 0, peakDiv = 0;
@@ -92,7 +105,12 @@ function measure(sim, cfg, out) {
 			const uL = vel[vi], uR = vel[vi + 2], vB = vel[vi + 1], vT = vel[vi + texW * 2 + 1];
 			const uc = 0.5 * (uL + uR), vc = 0.5 * (vB + vT);
 			ke += 0.5 * mass[i * 4 + 3] * (uc * uc + vc * vc);
-			const w = (vT - vB) - (uR - uL);
+			// the solver's curl, not a second copy of it: t5/t6 first shipped
+			// with (vT - vB) - (uR - uL) in both places, which is dv/dy-du/dx
+			// (0 for solid-body rotation), so force and oracle agreed on a
+			// quantity that was never vorticity. curlFixedPoints below pins
+			// this one definition to analytic values instead.
+			const w = sim.vorticityAt(x, y);
 			enstrophy += w * w;
 			const aw = Math.abs(w);
 			if (aw > peakVort) peakVort = aw;
@@ -102,22 +120,34 @@ function measure(sim, cfg, out) {
 			if (d > peakDiv) peakDiv = d;
 		}
 	}
+	let errL2 = 0;
+	if (vel0) {
+		let num = 0, den = 0;
+		for (let i = 0; i < vel.length; i++) {
+			const d = vel[i] - vel0[i];
+			num += d * d;
+			den += vel0[i] * vel0[i];
+		}
+		errL2 = den > 0 ? Math.sqrt(num / den) : 0;
+	}
 	out.t = cfg.time;
 	out.ke = ke;
 	out.peakVort = peakVort;
 	out.enstrophy = enstrophy;
 	out.peakSpeed = peakSpeed;
 	out.peakDiv = peakDiv;
+	out.errL2 = errL2;
 }
 function run(name, N, T, proj, over) {
 	const { cfg, sim } = make(N, over);
 	sim.reset();
 	paintVortex(sim, cfg);
+	const vel0 = Float32Array.from(grid.curBuf(sim.vel));
 	const iters = Fluid.core.config.solverIters(cfg);
 	const steps = Math.round(T / DT);
 	const perSec = Math.round(1 / DT);
-	const m = { t: 0, ke: 0, peakVort: 0, enstrophy: 0, peakSpeed: 0, peakDiv: 0 };
-	measure(sim, cfg, m);
+	const m = { t: 0, ke: 0, peakVort: 0, enstrophy: 0, peakSpeed: 0, peakDiv: 0, errL2: 0 };
+	measure(sim, cfg, m, vel0);
 	const rows = [Object.assign({}, m)];
 	const r0Peak = m.peakSpeed;
 	let limitTotal = 0, limitPeak = 0, clampTotal = 0, peakSpeedMax = m.peakSpeed;
@@ -146,7 +176,7 @@ function run(name, N, T, proj, over) {
 		clampTotal += sim.diag.macClamp;
 		if (sim.diag.macLimit > limitPeak) limitPeak = sim.diag.macLimit;
 		if (s % perSec !== 0 && s !== steps) continue;
-		measure(sim, cfg, m);
+		measure(sim, cfg, m, vel0);
 		if (m.peakSpeed > peakSpeedMax) peakSpeedMax = m.peakSpeed;
 		rows.push(Object.assign({}, m));
 	}
@@ -155,14 +185,17 @@ function run(name, N, T, proj, over) {
 	const forceMs = Number(forceNs) / 1e6 / steps;
 	// the raw row exists to show what the limiter prevents, so its overshoot is a
 	// result, not a failure. every scheme the product could ship must hold 0.
-	if (cfg.macLimiter || !cfg.advectMac) {
+	// confinement rows are exempt from the extremum assert: the force is an
+	// energy source, so a spun-up core can pass its initial rim speed, and
+	// whether that eps is over-driven is the decision block's call (the old
+	// condition read as exempt in the t6 worklog but never was in code).
+	if ((cfg.macLimiter || !cfg.advectMac) && !cfg.vorticityConfinement) {
 		assert.equal(clampTotal, 0, name + ": vClamp watchdog must stay 0, got " + clampTotal);
 		assert.ok(peakSpeedMax <= r0Peak * (1 + 1e-6),
 			name + ": the limited scheme must not create a new extremum, " + peakSpeedMax + " vs " + r0Peak);
 	}
-	// the confinement force is an energy source, so it may not create a new
-	// extremum the way an advection scheme may not. what it may not do is push
-	// the velocity into the absolute clamp: that is the blowup signal.
+	// what confinement may not do is push the velocity into the absolute
+	// clamp: that is the blowup signal.
 	const velClamp = sim.diag.velClamp;
 	assert.equal(velClamp, 0, name + ": the velocity clamp watchdog must stay 0, got " + velClamp);
 	return { name, rows, limitTotal, limitPeak, clampTotal, peakSpeedMax, velClamp, ms, advMs, forceMs, eps: cfg.vorticityConfinement };
@@ -181,6 +214,7 @@ function printRun(r) {
 			" KE keep=" + keep(row.ke, r0.ke).toFixed(6) +
 			" vort keep=" + keep(row.peakVort, r0.peakVort).toFixed(6) +
 			" enst keep=" + keep(row.enstrophy, r0.enstrophy).toFixed(6) +
+			" errL2=" + row.errL2.toFixed(4) +
 			" peakSpeed=" + row.peakSpeed.toFixed(2) +
 			" maxDiv=" + row.peakDiv.toExponential(2));
 	}
@@ -256,6 +290,48 @@ function constantField(N) {
 	assert.ok(wallOver <= 0, "the limited scheme must not overshoot at the wall, " + wallOver);
 	assert.ok(rawOver > 0, "the raw correction is expected to overshoot at the wall, that is why the limiter is mandatory");
 }
+// the curl has analytic values on fields with no scheme in them, and those are
+// the assertions that would have caught the t5/t6 formula: solid-body rotation
+// has curl 2*Omega everywhere, pure shear u=k*y has curl -k, and the gaussian
+// vortex peaks at 2*A/sigma in its core. the wrong stencil read 0, 0 and a
+// diagonal lobe at 37 % of the core value.
+function curlFixedPoints(N) {
+	const { cfg, sim } = make(N, {});
+	sim.reset();
+	const texW = cfg.texW, texH = cfg.texH, cx = N * 0.5, cy = N * 0.5;
+	const mid = Math.floor(texW / 2);
+	const paintLinear = (fu, fv) => {
+		const vel = grid.curBuf(sim.vel);
+		vel.fill(0);
+		for (let y = 1; y < texH - 1; y++) {
+			for (let x = 1; x < texW - 1; x++) {
+				const vi = (x + y * texW) * 2;
+				if (!sim.uBlocked(x, y)) vel[vi] = fu((x - 1) - cx, (y - 0.5) - cy);
+				if (!sim.vBlocked(x, y)) vel[vi + 1] = fv((x - 0.5) - cx, (y - 1) - cy);
+			}
+		}
+	};
+	const OMEGA = 0.1, SHEAR = 0.3;
+	paintLinear((dx, dy) => -OMEGA * dy, dx => OMEGA * dx);
+	const solid = sim.vorticityAt(mid, mid);
+	paintLinear((dx, dy) => SHEAR * dy, () => 0);
+	const shear = sim.vorticityAt(mid, mid);
+	paintLinear(() => 37, () => -11);
+	const uniform = sim.vorticityAt(mid, mid);
+	paintVortex(sim, cfg);
+	const m = { t: 0, ke: 0, peakVort: 0, enstrophy: 0, peakSpeed: 0, peakDiv: 0 };
+	measure(sim, cfg, m);
+	const analytic = 2 * (PEAK / Math.exp(-0.5)) / (N * SIGMA_FRAC);
+	console.log("  curl: solid-body " + solid.toFixed(4) + " (exact " + (2 * OMEGA).toFixed(4) +
+		") · shear " + shear.toFixed(4) + " (exact " + (-SHEAR).toFixed(4) +
+		") · uniform " + uniform.toExponential(2) + " (exact 0)" +
+		" · gaussian peak " + m.peakVort.toFixed(3) + " (analytic " + analytic.toFixed(3) + ")");
+	assert.ok(Math.abs(solid - 2 * OMEGA) < 1e-3, "curl of solid-body rotation must be 2*Omega, got " + solid);
+	assert.ok(Math.abs(shear + SHEAR) < 1e-3, "curl of pure shear u=k*y must be -k, got " + shear);
+	assert.ok(uniform === 0, "curl of a uniform field must be 0, got " + uniform);
+	assert.ok(Math.abs(m.peakVort / analytic - 1) < 0.02,
+		"measured peak vorticity must match the analytic core value, " + m.peakVort + " vs " + analytic);
+}
 function at(r, t) {
 	for (const row of r.rows) if (Math.abs(row.t - t) < 1e-9) return row;
 	return r.rows[r.rows.length - 1];
@@ -299,7 +375,8 @@ function confinementDecision(sl, rows, T) {
 		const ke = a.ke > 0 ? b.ke / a.ke : 0;
 		console.log("  eps=" + r.eps + " 1/s at t=" + T + "s: peak vorticity " + a.peakVort.toFixed(3) +
 			" -> " + b.peakVort.toFixed(3) + " (" + vort.toFixed(3) + "x sl), enstrophy " +
-			enst.toFixed(3) + "x, KE " + ke.toFixed(3) + "x (the force adds energy), maxDiv " +
+			enst.toFixed(3) + "x, KE " + ke.toFixed(3) + "x (the force adds energy), errL2 " +
+			a.errL2.toFixed(4) + " -> " + b.errL2.toFixed(4) + ", maxDiv " +
 			a.peakDiv.toExponential(2) + " -> " + b.peakDiv.toExponential(2) +
 			", peak speed " + b.peakSpeed.toFixed(2) + " (initial " +
 			sl.rows[0].peakSpeed.toFixed(2) + "), velClamp " + r.velClamp + ".");
@@ -327,6 +404,7 @@ console.log("vortex-decay · N=" + N + " sigma=" + (N * SIGMA_FRAC).toFixed(1) +
 	" rim=" + PEAK + " cells/s · dt=" + DT + " · " + Math.round(T / DT) + " steps (" + T + " s)");
 console.log("== fixed points ==");
 constantField(N);
+curlFixedPoints(N);
 console.log(proj ? "== with the shipping projection (mg 2 cycles, K20) =="
 	: "== no projection (Burgers: steepens, attribution row only) ==");
 const runs = SCHEMES.map(s => run(s.name, N, T, proj, s.over));
