@@ -130,5 +130,156 @@ runMacCase("random faces", paintRandom(), 0);
 check("the limiter branch was actually exercised", wallLimited > 0 && randomLimited > 0,
 	"wall=" + wallLimited + " random=" + randomLimited);
 
+// ---- 3. execute t8 fused passes (advectScalar, phaseSources) ----
+// fused WGSL kernels must be bit-identical (maxDiff === 0) to the unfused
+// WGSL sequence they replace, and match the CPU oracle within f32 rounding.
+{
+	const n = 16, tw = n + 2, th = n + 2;
+	const wx = Math.ceil(tw / 8), wy = Math.ceil(th / 8);
+	const fcfg = Object.assign({}, Fluid.core.config.defaults, {
+		N: n, texW: tw, texH: th, scenario: "cycle", dt: DT,
+		fctLimiter: 0, thermalSources: 1, chargeLatent: 1
+	});
+	Fluid.core.config.prepareScenario(fcfg);
+	fcfg.N = n; fcfg.texW = tw; fcfg.texH = th; fcfg.dt = DT; fcfg.fctLimiter = 0;
+	fcfg.chargeLatent = 1; fcfg.TCeil = 265; fcfg.heatTarget = 390;
+	const fsim = Fluid.core.solver.create(fcfg);
+	fsim.reset();
+	fcfg.dt = DT; fcfg.fctLimiter = 0; fcfg.chargeLatent = 1;
+	fcfg.TCeil = 265; fcfg.heatTarget = 390;
+	const pa = Fluid.core.config.makeParamsArray();
+	Fluid.core.config.writeParams(pa, fcfg);
+	const uniform = { uniform: pa.buffer.slice(0) };
+	const rg = d => ({ texture: [d.buffer], descriptor: { size: [tw, th], format: "rg32float" } });
+	const rgba = d => ({ texture: [d.buffer], descriptor: { size: [tw, th], format: "rgba32float" } });
+	const u8 = d => ({ texture: [d.buffer], descriptor: { size: [tw, th], format: "rgba8uint" } });
+
+	let seed = 24680;
+	const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+	const vel = grid.curBuf(fsim.vel);
+	const mass0 = Float32Array.from(grid.curBuf(fsim.mass));
+	const therm0 = Float32Array.from(grid.curBuf(fsim.therm));
+	for (let y = 1; y < th - 1; y++) for (let x = 1; x < tw - 1; x++) {
+		const i4 = (x + y * tw) * 4, i2 = (x + y * tw) * 2;
+		vel[i2] = (rnd() * 2 - 1) * 20;
+		vel[i2 + 1] = (rnd() * 2 - 1) * 20;
+		mass0[i4] = 0.2 * rnd(); mass0[i4 + 1] = 0.3 * rnd(); mass0[i4 + 2] = 0.4 * rnd();
+		mass0[i4 + 3] = y === 2 && x === 2 ? 0 : 0.4 + 0.6 * rnd();
+		const T = 250 + 160 * (1 - y / n) + 15 * (rnd() - 0.5);
+		therm0[i4] = mass0[i4 + 3] * fcfg.cLiq * T;
+		therm0[i4 + 1] = T;
+		therm0[i4 + 2] = 5 * rnd();
+		therm0[i4 + 3] = 3 * rnd();
+	}
+	fsim.computeFlux(DT);
+	const flux = Float32Array.from(fsim.flux);
+	grid.curBuf(fsim.mass).set(mass0);
+	grid.curBuf(fsim.therm).set(therm0);
+	fsim.advectScalar();
+	const cpuMass = Float32Array.from(grid.curBuf(fsim.mass));
+	const cpuTherm = Float32Array.from(grid.curBuf(fsim.therm));
+
+	const mUnf = Float32Array.from(mass0), tUnf = Float32Array.from(therm0);
+	const mFus = Float32Array.from(mass0), tFus = Float32Array.from(therm0);
+	new WgslExec(WgslParser.Parse(PS + sh.advectMass))
+		.dispatchWorkgroups("main", [wx, wy], { 0: { 0: uniform, 1: rg(flux), 2: rgba(mass0), 3: rgba(mUnf) } });
+	new WgslExec(WgslParser.Parse(PS + sh.advectTherm))
+		.dispatchWorkgroups("main", [wx, wy], { 0: { 0: uniform, 1: rg(flux), 2: rgba(therm0), 3: rgba(tUnf) } });
+	new WgslExec(WgslParser.Parse(PS + sh.advectScalar))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: { 0: uniform, 1: rg(flux), 2: rgba(mass0), 3: rgba(therm0), 4: rgba(mFus), 5: rgba(tFus) }
+		});
+	let diffScalarM = 0, diffScalarT = 0, diffCpuM = 0, diffCpuT = 0;
+	for (let i = 0; i < mFus.length; i++) {
+		diffScalarM = Math.max(diffScalarM, Math.abs(mFus[i] - mUnf[i]));
+		diffScalarT = Math.max(diffScalarT, Math.abs(tFus[i] - tUnf[i]));
+		diffCpuM = Math.max(diffCpuM, Math.abs(mFus[i] - cpuMass[i]));
+		diffCpuT = Math.max(diffCpuT, Math.abs(tFus[i] - cpuTherm[i]));
+	}
+	check("t8 advectScalar: bit-exact with unfused advectMass + advectTherm",
+		diffScalarM === 0 && diffScalarT === 0,
+		"massDiff=" + diffScalarM + " thermDiff=" + diffScalarT);
+	check("t8 advectScalar: matches CPU oracle",
+		diffCpuM < 1e-5 && diffCpuT < 5e-2,
+		"cpuMassDiff=" + diffCpuM.toExponential(3) + " cpuThermDiff=" + diffCpuT.toExponential(3));
+
+	const flagsPrev = new Uint8Array(tw * th * 4);
+	flagsPrev[(3 + 1 * tw) * 4] = 1; // wall cell inside bottom heater band
+	const sfieldPrev = new Float32Array(tw * th * 4);
+	const accumPrev = new Float32Array(tw * th * 2);
+	for (let i = 0; i < tw * th; i++) {
+		sfieldPrev[i * 4 + 1] = 0.8;
+		sfieldPrev[i * 4 + 2] = 0.1;
+		accumPrev[i * 2] = 1.5;
+		accumPrev[i * 2 + 1] = 0.25;
+	}
+	const tMid = Float32Array.from(therm0);
+	const tOutUnf = new Float32Array(therm0.length), tOutFus = new Float32Array(therm0.length);
+	const flUnf = new Uint8Array(flagsPrev.length), flFus = new Uint8Array(flagsPrev.length);
+	const sfUnf = new Float32Array(sfieldPrev.length), sfFus = new Float32Array(sfieldPrev.length);
+	const acUnf = new Float32Array(accumPrev.length), acFus = new Float32Array(accumPrev.length);
+
+	const phaseAst = WgslParser.Parse(PS + sh.phaseEos);
+	new WgslExec(WgslParser.Parse(PS + sh.heatSources))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: { 0: uniform, 1: rgba(mass0), 2: rgba(therm0), 3: rgba(tMid), 4: u8(flagsPrev) }
+		});
+	new WgslExec(phaseAst)
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: {
+				0: uniform, 1: rgba(mass0), 2: rgba(tMid), 3: rg(vel),
+				4: u8(flagsPrev), 5: rgba(sfieldPrev), 6: rg(accumPrev),
+				7: rgba(tOutUnf), 8: u8(flUnf), 9: rgba(sfUnf), 10: rg(acUnf)
+			}
+		}, { constants: { APPLY_SOURCES: 0 } });
+	new WgslExec(phaseAst)
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: {
+				0: uniform, 1: rgba(mass0), 2: rgba(therm0), 3: rg(vel),
+				4: u8(flagsPrev), 5: rgba(sfieldPrev), 6: rg(accumPrev),
+				7: rgba(tOutFus), 8: u8(flFus), 9: rgba(sfFus), 10: rg(acFus)
+			}
+		}, { constants: { APPLY_SOURCES: 1 } });
+	let diffPT = 0, diffPF = 0, diffPS = 0, diffPA = 0, heatedCells = 0;
+	for (let i = 0; i < tOutFus.length; i++) {
+		diffPT = Math.max(diffPT, Math.abs(tOutFus[i] - tOutUnf[i]));
+		diffPF = Math.max(diffPF, Math.abs(flFus[i] - flUnf[i]));
+		diffPS = Math.max(diffPS, Math.abs(sfFus[i] - sfUnf[i]));
+	}
+	for (let i = 0; i < acFus.length; i++) diffPA = Math.max(diffPA, Math.abs(acFus[i] - acUnf[i]));
+	for (let i = 0; i < therm0.length; i += 4) if (tOutFus[i] !== therm0[i]) heatedCells++;
+	const wallCellIdx = (3 + 1 * tw) * 4;
+	const vacCellIdx = (2 + 2 * tw) * 4;
+	check("t8 phaseSources: bit-exact with unfused heatSources -> phaseEos across all 4 outputs",
+		diffPT === 0 && diffPF === 0 && diffPS === 0 && diffPA === 0 && heatedCells > 0,
+		"therm=" + diffPT + " flags=" + diffPF + " sfield=" + diffPS + " accum=" + diffPA + " active=" + heatedCells);
+	check("t8 phaseSources: skips wall and vacuum cells in heater band",
+		tOutFus[wallCellIdx] === therm0[wallCellIdx] && tOutFus[vacCellIdx] === therm0[vacCellIdx],
+		"wallUnchanged=" + (tOutFus[wallCellIdx] === therm0[wallCellIdx]) +
+		" vacUnchanged=" + (tOutFus[vacCellIdx] === therm0[vacCellIdx]));
+
+	grid.curBuf(fsim.mass).set(mass0);
+	grid.curBuf(fsim.therm).set(therm0);
+	grid.curBuf(fsim.vel).set(vel);
+	fsim.flags.set(flagsPrev);
+	fsim.sfield.set(sfieldPrev);
+	fsim.ledger.latentChargedE = 0;
+	fsim.ledger.frozenMomentum = 0;
+	fsim.heatSources(DT);
+	fsim.phaseEos(true);
+	const cpuT2 = grid.curBuf(fsim.therm);
+	let diffCpuPT = 0, diffCpuPF = 0;
+	for (let y = 1; y < th - 1; y++) for (let x = 1; x < tw - 1; x++) {
+		const i = (x + y * tw) * 4;
+		for (let c = 0; c < 4; c++) {
+			diffCpuPT = Math.max(diffCpuPT, Math.abs(tOutFus[i + c] - cpuT2[i + c]));
+			diffCpuPF = Math.max(diffCpuPF, Math.abs(flFus[i + c] - fsim.flags[i + c]));
+		}
+	}
+	check("t8 phaseSources: matches CPU heatSources + phaseEos",
+		diffCpuPT < 1e-2 && diffCpuPF === 0,
+		"cpuThermDiff=" + diffCpuPT.toExponential(3) + " cpuFlagsDiff=" + diffCpuPF);
+}
+
 console.log(failures ? "FAILURES: " + failures : "ALL WGSL-EXEC CHECKS PASSED");
 process.exit(failures ? 1 : 0);

@@ -666,7 +666,44 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	textureStore(thermDst, vec2<i32>(x, y), out);
 }
 `;
-	// ---------- 0.5.0 phase_eos + freezeVel ----------
+	// 0.6.0 t8: fused donor-cell transport for mass and therm (mirrors cpu advectScalar)
+	shaders.advectScalar=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var fluxTex: texture_2d<f32>;
+@group(0) @binding(2) var massSrc: texture_2d<f32>;
+@group(0) @binding(3) var thermSrc: texture_2d<f32>;
+@group(0) @binding(4) var massDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(5) var thermDst: texture_storage_2d<rgba32float,write>;
+
+fn donorUpwind(src: texture_2d<f32>, x: i32, y: i32, rem: f32, wW: f32, wE: f32, wS: f32, wN: f32) -> vec4<f32> {
+	return textureLoad(src, vec2<i32>(x, y), 0) * rem
+		+ textureLoad(src, vec2<i32>(x - 1, y), 0) * wW
+		+ textureLoad(src, vec2<i32>(x + 1, y), 0) * wE
+		+ textureLoad(src, vec2<i32>(x, y - 1), 0) * wS
+		+ textureLoad(src, vec2<i32>(x, y + 1), 0) * wN;
+}
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
+	let fw = textureLoad(fluxTex, vec2<i32>(x, y), 0).r;
+	let fe = textureLoad(fluxTex, vec2<i32>(x + 1, y), 0).r;
+	let fs = textureLoad(fluxTex, vec2<i32>(x, y), 0).g;
+	let fN = textureLoad(fluxTex, vec2<i32>(x, y + 1), 0).g;
+	let rem = 1.0 - (max(-fw, 0.0) + max(fe, 0.0) + max(-fs, 0.0) + max(fN, 0.0));
+	let wW = max(fw, 0.0);
+	let wE = max(-fe, 0.0);
+	let wS = max(fs, 0.0);
+	let wN = max(-fN, 0.0);
+	textureStore(massDst, vec2<i32>(x, y), donorUpwind(massSrc, x, y, rem, wW, wE, wS, wN));
+	textureStore(thermDst, vec2<i32>(x, y), donorUpwind(thermSrc, x, y, rem, wW, wE, wS, wN));
+}
+`;
+	// ---------- 0.5.0 phase_eos + freezeVel (0.6.0 t8: APPLY_SOURCES=1 folds heatSources in) ----------
 	shaders.phaseEos=EOS_HELPERS+`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var massTex: texture_2d<f32>;
@@ -679,6 +716,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(8) var flagsDst: texture_storage_2d<rgba8uint,write>;
 @group(0) @binding(9) var sfieldDst: texture_storage_2d<rgba32float,write>;
 @group(0) @binding(10) var accumDst: texture_storage_2d<rg32float,write>;
+override APPLY_SOURCES: u32 = 0u;
+
+fn applyHeatSources(qIn: vec4<f32>, m: f32, wall: u32, y: i32) -> vec4<f32> {
+	if (params.values[43] < 0.5 || m < params.values[58] || wall > 0u) { return qIn; }
+	let band = max(i32(round(params.values[42])), 1);
+	let n = i32(params.values[0]);
+	let inBot = y <= band;
+	let inTop = y > n - band;
+	if (!inBot && !inTop) { return qIn; }
+	let dt = params.values[4];
+	var dE = 0.0;
+	if (inBot && (params.values[44] == 0.0 || qIn.g < params.values[44])) {
+		dE = dE + params.values[39] * dt;
+	}
+	if (inTop) {
+		let own = evalPhase(m, qIn.r);
+		let ceilT = select(params.values[20], params.values[60], params.values[60] > 0.0);
+		dE = dE - ((params.values[40] * (qIn.g - ceilT)) * (m * own.c)) * dt;
+	}
+	if (dE == 0.0) { return qIn; }
+	return vec4<f32>(qIn.r + dE, qIn.g, qIn.b + max(dE, 0.0), qIn.a + max(-dE, 0.0));
+}
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -688,7 +747,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let y = i32(gid.y);
 	if (x >= w || y >= h) { return; }
 	let at = vec2<i32>(x, y);
-	let q = textureLoad(thermSrc, at, 0);
+	var q = textureLoad(thermSrc, at, 0);
 	let prevFl = textureLoad(flagsSrc, at, 0);
 	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) {
 		textureStore(thermDst, at, q);
@@ -698,6 +757,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		return;
 	}
 	let m = textureLoad(massTex, at, 0).a;
+	if (APPLY_SOURCES > 0u) { q = applyHeatSources(q, m, prevFl.r, y); }
 	let s = evalPhase(m, q.r);
 	let prevS = textureLoad(sfieldSrc, at, 0);
 	let prevAcc = textureLoad(accumSrc, at, 0);
@@ -846,10 +906,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			if (y <= band && (params.values[44] == 0.0 || q.g < params.values[44])) { dE = dE + params.values[39] * dt; }
 			if (y > n - band) { dE = dE - ((params.values[40] * (q.g - ceilT)) * (m * own.c)) * dt; }
 			if (dE != 0.0) {
-				q.r = q.r + dE;
-				q.g = evalPhase(m, q.r).T;
-				q.b = q.b + max(dE, 0.0);
-				q.a = q.a + max(-dE, 0.0);
+				let nextE = q.r + dE;
+				q = vec4<f32>(nextE, evalPhase(m, nextE).T, q.b + max(dE, 0.0), q.a + max(-dE, 0.0));
 			}
 		}
 	}

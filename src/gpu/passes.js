@@ -33,6 +33,32 @@
 				compute:{module:projMod,entryPoint:"main",constants:{COLOR:color}}
 			});
 		}
+		// phaseEos (APPLY_SOURCES=0) and phaseSources (APPLY_SOURCES=1) share
+		// groups.phaseB, so WebGPU requires an explicit bind group layout.
+		const phaseLayout=device.createBindGroupLayout({
+			label:"phase",
+			entries:[
+				{binding:0,visibility:GPUShaderStage.COMPUTE,buffer:{type:"uniform"}},
+				{binding:1,visibility:GPUShaderStage.COMPUTE,texture:{sampleType:"unfilterable-float"}},
+				{binding:2,visibility:GPUShaderStage.COMPUTE,texture:{sampleType:"unfilterable-float"}},
+				{binding:3,visibility:GPUShaderStage.COMPUTE,texture:{sampleType:"unfilterable-float"}},
+				{binding:4,visibility:GPUShaderStage.COMPUTE,texture:{sampleType:"uint"}},
+				{binding:5,visibility:GPUShaderStage.COMPUTE,texture:{sampleType:"unfilterable-float"}},
+				{binding:6,visibility:GPUShaderStage.COMPUTE,texture:{sampleType:"unfilterable-float"}},
+				{binding:7,visibility:GPUShaderStage.COMPUTE,storageTexture:{access:"write-only",format:"rgba32float"}},
+				{binding:8,visibility:GPUShaderStage.COMPUTE,storageTexture:{access:"write-only",format:"rgba8uint"}},
+				{binding:9,visibility:GPUShaderStage.COMPUTE,storageTexture:{access:"write-only",format:"rgba32float"}},
+				{binding:10,visibility:GPUShaderStage.COMPUTE,storageTexture:{access:"write-only",format:"rg32float"}}
+			]
+		});
+		const phaseMod=device.createShaderModule({label:"phaseEos-mod",code:PS+sh.phaseEos});
+		function phasePipe(label,applySources){
+			return device.createComputePipeline({
+				label,
+				layout:device.createPipelineLayout({bindGroupLayouts:[phaseLayout]}),
+				compute:{module:phaseMod,entryPoint:"main",constants:{APPLY_SOURCES:applySources}}
+			});
+		}
 		const vertMod=device.createShaderModule({label:"renderVert",code:sh.renderVert});
 		const fragMod=device.createShaderModule({label:"renderFrag",code:sh.renderFrag});
 		return {
@@ -46,7 +72,9 @@
 			flux:comp("flux",PS+sh.computeFlux),
 			advectMass:comp("advectMass",PS+sh.advectMass),
 			advectTherm:comp("advectTherm",PS+sh.advectTherm),
-			phaseEos:comp("phaseEos",PS+sh.phaseEos),
+			advectScalar:comp("advectScalar",PS+sh.advectScalar),
+			phaseEos:phasePipe("phaseEos",0),
+			phaseSources:phasePipe("phaseSources",1),
 			freezeVel:comp("freezeVel",PS+sh.freezeVel),
 			conduction:comp("conduction",PS+sh.conduction),
 			heatSources:comp("heatSources",PS+sh.heatSources),
@@ -72,7 +100,8 @@
 				primitive:{topology:"triangle-list"}
 			}),
 			sampler:device.createSampler({label:"linear",magFilter:"linear",minFilter:"linear"}),
-			projLayout
+			projLayout,
+			phaseLayout
 		};
 	}
 	function bg(device,label,layout,entries){
@@ -94,7 +123,7 @@
 		const limiterAView=viewRes(pool.limiterA);
 		const limiterBView=viewRes(pool.limiterB);
 		const groups={
-			forces:[],advectVel:[],macFwd:[],advectVelMac:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],
+			forces:[],advectVel:[],macFwd:[],advectVelMac:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],advectScalar:[],
 			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],heatSources:[],
 		limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
 		poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],render:null
@@ -111,7 +140,7 @@
 				groups.phaseB[mm][t]=[];
 				for(let v=0;v<2;v++){
 					const velV=viewRes(pool.vel.tex[v]);
-					groups.phaseA[mm][t][v]=bg(device,"phaseA"+mm+t+v,pipes.phaseEos.getBindGroupLayout(0),[
+					groups.phaseA[mm][t][v]=bg(device,"phaseA"+mm+t+v,pipes.phaseLayout,[
 						{binding:0,resource:{buffer:pool.params}},
 						{binding:1,resource:massV},
 						{binding:2,resource:tSrc},
@@ -124,7 +153,7 @@
 						{binding:9,resource:sfieldTmpView},
 						{binding:10,resource:accumTmpView}
 					]);
-					groups.phaseB[mm][t][v]=bg(device,"phaseB"+mm+t+v,pipes.phaseEos.getBindGroupLayout(0),[
+					groups.phaseB[mm][t][v]=bg(device,"phaseB"+mm+t+v,pipes.phaseLayout,[
 						{binding:0,resource:{buffer:pool.params}},
 						{binding:1,resource:massV},
 						{binding:2,resource:tSrc},
@@ -211,12 +240,21 @@
 				{binding:2,resource:viewRes(ml)},
 				{binding:3,resource:viewRes(pool.patchMass)}
 			]);
+			groups.advectScalar[m]=[];
 			groups.applyGrad[m]=[];
 			groups.buoySample[m]=[];
 			groups.statsA[m]=[];
 			groups.toDisplay[m]=[];
 			for(let t=0;t<2;t++){
-				const tt=pool.therm.tex[t];
+				const tt=pool.therm.tex[t],tn=pool.therm.tex[1-t];
+				groups.advectScalar[m][t]=bg(device,"advectScalar"+m+t,pipes.advectScalar.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:fluxView},
+					{binding:2,resource:viewRes(mm)},
+					{binding:3,resource:viewRes(tt)},
+					{binding:4,resource:viewRes(ml)},
+					{binding:5,resource:viewRes(tn)}
+				]);
 				groups.statsA[m][t]=[];
 				groups.toDisplay[m][t]=[];
 				for(let v=0;v<2;v++){
@@ -527,18 +565,24 @@
 		// projection used. only the sampled frame's last substep asks for this.
 		if(captureResidual)encodePoissonReduce(cpass,pool,pipes,groups,io);
 	}
-	function encodeTransport(cpass,pool,pipes,groups,state,io,fctOn){
+	function encodeTransport(cpass,pool,pipes,groups,state,io,fctOn,fuseOn){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
 		const m=io.m;
 		cpass.setPipeline(pipes.flux);
 		cpass.setBindGroup(0,groups.flux[io.v]);
 		cpass.dispatchWorkgroups(wx,wy);
-		cpass.setPipeline(pipes.advectMass);
-		cpass.setBindGroup(0,groups.advectMass[m]);
-		cpass.dispatchWorkgroups(wx,wy);
-		cpass.setPipeline(pipes.advectTherm);
-		cpass.setBindGroup(0,groups.advectTherm[io.t]);
-		cpass.dispatchWorkgroups(wx,wy);
+		if(fuseOn){
+			cpass.setPipeline(pipes.advectScalar);
+			cpass.setBindGroup(0,groups.advectScalar[m][io.t]);
+			cpass.dispatchWorkgroups(wx,wy);
+		}else{
+			cpass.setPipeline(pipes.advectMass);
+			cpass.setBindGroup(0,groups.advectMass[m]);
+			cpass.dispatchWorkgroups(wx,wy);
+			cpass.setPipeline(pipes.advectTherm);
+			cpass.setBindGroup(0,groups.advectTherm[io.t]);
+			cpass.dispatchWorkgroups(wx,wy);
+		}
 		if(fctOn){
 			cpass.setPipeline(pipes.limiterPrepare);
 			cpass.setBindGroup(0,groups.limiterPrepare[m]);
@@ -552,10 +596,11 @@
 		}
 		io.m=state.m;
 	}
-	function encodePhaseChain(cpass,pool,pipes,groups,state,io){
+	function encodePhaseChain(cpass,pool,pipes,groups,state,io,fuseOn){
 		// 0.5.0 phase + thermal chain: phaseEos + freezeVel -> conduction ->
-		// heatSources -> phaseEos + freezeVel. double flip keeps flags/sfield/accum
-		// in their canonical textures and preserves therm/vel ping-pong parity.
+		// heatSources -> phaseEos + freezeVel (or phaseSources when fuseOn).
+		// phaseA->phaseB keeps flags/sfield/accum in their canonical textures;
+		// state.t tracks therm parity (5 flips/substep unfused, 4 when fused).
 		const wx=pool.workgroupX,wy=pool.workgroupY;
 		const mf=io.m;
 		let v=io.v;
@@ -572,11 +617,13 @@
 		cpass.setBindGroup(0,groups.conduction[mf][ts]);
 		cpass.dispatchWorkgroups(wx,wy);
 		ts=1-ts;
-		cpass.setPipeline(pipes.heatSources);
-		cpass.setBindGroup(0,groups.heatSources[mf][ts]);
-		cpass.dispatchWorkgroups(wx,wy);
-		ts=1-ts;
-		cpass.setPipeline(pipes.phaseEos);
+		if(!fuseOn){
+			cpass.setPipeline(pipes.heatSources);
+			cpass.setBindGroup(0,groups.heatSources[mf][ts]);
+			cpass.dispatchWorkgroups(wx,wy);
+			ts=1-ts;
+		}
+		cpass.setPipeline(fuseOn?pipes.phaseSources:pipes.phaseEos);
 		cpass.setBindGroup(0,groups.phaseB[mf][ts][v]);
 		cpass.dispatchWorkgroups(wx,wy);
 		ts=1-ts;
@@ -589,22 +636,22 @@
 		io.t=ts;
 		io.v=v;
 	}
-	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn){
+	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn,fuseOn){
 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
 		encodeVelAdv(cpass,pool,pipes,groups,stepIo,macOn);
 		encodeRhs(cpass,pool,pipes,groups,stepIo);
 		encodePressure(cpass,pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
-		encodeTransport(cpass,pool,pipes,groups,state,stepIo,fctOn);
-		encodePhaseChain(cpass,pool,pipes,groups,state,stepIo);
+		encodeTransport(cpass,pool,pipes,groups,state,stepIo,fctOn,fuseOn);
+		encodePhaseChain(cpass,pool,pipes,groups,state,stepIo,fuseOn);
 	}
-	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn){
+	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn,fuseOn){
 		const G=Fluid.gpu.profiler.GROUP;
 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
 		encodeVelAdv(prof.pass(encoder,G.vel,"vel"),pool,pipes,groups,stepIo,macOn);
 		encodeRhs(prof.pass(encoder,G.rhs,"rhs"),pool,pipes,groups,stepIo);
 		encodePressure(prof.pass(encoder,G.press,"press"),pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
-		encodeTransport(prof.pass(encoder,G.trans,"trans"),pool,pipes,groups,state,stepIo,fctOn);
-		encodePhaseChain(prof.pass(encoder,G.phase,"phase"),pool,pipes,groups,state,stepIo);
+		encodeTransport(prof.pass(encoder,G.trans,"trans"),pool,pipes,groups,state,stepIo,fctOn,fuseOn);
+		encodePhaseChain(prof.pass(encoder,G.phase,"phase"),pool,pipes,groups,state,stepIo,fuseOn);
 	}
 	function encodeStats(cpass,pool,pipes,groups,state){
 		cpass.setPipeline(pipes.statsA);

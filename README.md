@@ -4,9 +4,11 @@ A conservative 2D WebGPU fluid engine for interactive games. One substance acros
 solid/liquid/gas phases, three conserved color tracers, conserved internal energy. The default
 grid is 512×512; 1024×1024 runs about four times as many cells per pass.
 Currently implemented: full velocity solver (forces, semi-Lagrangian advection —
-an optional mac-cormack scheme sits behind `cfg.advectMac`, off by default pending
-a device frame-time row — variable-density red-black Gauss-Seidel projection),
-donor-cell mass/energy transport,
+an optional mac-cormack scheme sits behind `cfg.advectMac`, pinned `ns=4` cost
+measured at `+16..19 µs/substep` on Ampere, off by default: the auto-policy dam capture falls to 57.6 fps — variable-density red-black Gauss-Seidel projection),
+donor-cell mass/energy transport (with optional bit-exact `advectScalar` and
+`phaseSources` pass fusion behind `cfg.fusePasses`, off by default because
+measured frame-time savings do not consistently clear 3 %),
 Zalesak FCT for RGB dye tracers, ledger-accounted dye and wall painting, conservation
 meters, eight view modes, a diagnostic floating body that reads the field without touching
 it (dam scenario), an optional auto-CFL substep policy, thermal conduction with
@@ -86,8 +88,11 @@ grid/frame count, resets between scenarios, and provides **Copy report** and
 Query parameters prefill comparable runs, for example
 `--query "n=512&frames=600&scenarios=blobs,draw"` and the same query plus `&mg=0` for
 multigrid versus red-black; `&auto=0&ns=4` selects the same fixed four-substep
-policy in both, and `&mac=1` switches velocity advection to mac-cormack (presets:
-`python3 run_gpu_mac_fixed_k20.py`, `python3 run_gpu_capture.py jet-mac-auto`).
+policy in both, `&mac=1` switches velocity advection to mac-cormack (presets:
+`python3 run_gpu_mac_fixed_k20.py`, `python3 run_gpu_mac_k20.py`,
+`python3 run_gpu_capture.py jet-mac-auto`), and `&fuse=1` enables t8 pass fusion
+(`python3 run_gpu_fuse_fixed_k20.py`, `python3 run_gpu_fuse_k20.py`,
+`python3 run_gpu_mac_fuse_k20.py`).
 The report records `crossOriginIsolated` and an observed
 `performance.now()` quantum; the Python server's COOP/COEP headers enable the
 finer timer where the browser supports it. These browser measurements are a

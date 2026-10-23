@@ -358,28 +358,32 @@ function decision(sl, mac, T) {
 		mac.ms.toFixed(2) + " ms/step); the advection slice alone is " + sl.advMs.toFixed(3) +
 		" -> " + mac.advMs.toFixed(3) + " ms (+" + (advCost * 100).toFixed(0) + " %) and is " +
 		share.toFixed(0) + " % of that step.");
-	console.log("  the 15 % bar is a device number and the wgsl kernel does not exist, so" +
-		" neither cpu number is the gate. on the device the projection is 67-87 % of the" +
-		" substep and the whole vel group is 2 % of it (plan 3, `05_55` jet).");
+	console.log("  the 15 % bar is a device number, so neither cpu number is the gate." +
+		" on Ampere pinned ns=4 (`2026-10-23-04_53`), wgsl mac-cormack adds +16..19 us/substep" +
+		" (-0.6 %..+0.6 % fps); default flip awaits the auto-policy row (`run_gpu_mac_k20.py`).");
 }
-// 0.6.0 t6: the confinement rows are read against the shipping scheme. the
-// energy row is not a ranking here (the force adds energy on purpose); the
-// ranking is the vorticity and the enstrophy it keeps, against a bounded
-// divergence and an untouched velocity clamp.
-function confinementDecision(sl, rows, T) {
-	console.log("== confinement decision (plan 4.2 t6: a force on the shipping scheme) ==");
+// 0.6.0 t6/t17: confinement rows are read against their host advection scheme
+// (sl for t6, mac for t17). the energy row is not a ranking here (the force adds
+// energy on purpose); the ranking is vorticity/enstrophy/errL2 against bounded
+// divergence, peak speed <= initial rim speed, and macLimit activity.
+function confinementDecision(base, baseName, rows, T) {
+	if (!rows.length) return;
+	console.log("== confinement decision on " + baseName + " ==");
 	for (const r of rows) {
-		const a = at(sl, T), b = at(r, T);
+		const a = at(base, T), b = at(r, T);
 		const vort = a.peakVort > 0 ? b.peakVort / a.peakVort : 0;
 		const enst = a.enstrophy > 0 ? b.enstrophy / a.enstrophy : 0;
 		const ke = a.ke > 0 ? b.ke / a.ke : 0;
+		const limNote = r.limitTotal > 0 || base.limitTotal > 0
+			? ", macLimit " + base.limitTotal + " -> " + r.limitTotal
+			: "";
 		console.log("  eps=" + r.eps + " 1/s at t=" + T + "s: peak vorticity " + a.peakVort.toFixed(3) +
-			" -> " + b.peakVort.toFixed(3) + " (" + vort.toFixed(3) + "x sl), enstrophy " +
-			enst.toFixed(3) + "x, KE " + ke.toFixed(3) + "x (the force adds energy), errL2 " +
+			" -> " + b.peakVort.toFixed(3) + " (" + vort.toFixed(3) + "x " + baseName + "), enstrophy " +
+			enst.toFixed(3) + "x, KE " + ke.toFixed(3) + "x, errL2 " +
 			a.errL2.toFixed(4) + " -> " + b.errL2.toFixed(4) + ", maxDiv " +
 			a.peakDiv.toExponential(2) + " -> " + b.peakDiv.toExponential(2) +
-			", peak speed " + b.peakSpeed.toFixed(2) + " (initial " +
-			sl.rows[0].peakSpeed.toFixed(2) + "), velClamp " + r.velClamp + ".");
+			", max speed " + r.peakSpeedMax.toFixed(2) + " (initial " +
+			base.rows[0].peakSpeed.toFixed(2) + "), velClamp " + r.velClamp + limNote + ".");
 	}
 }
 
@@ -388,6 +392,13 @@ function opt(name, fallback) {
 	const i = args.indexOf(name);
 	return i >= 0 ? Number(args[i + 1]) : fallback;
 }
+function parseEpsArg(flag, fallback) {
+	const i = args.indexOf(flag);
+	if (i < 0) return fallback;
+	const raw = args[i + 1] || "";
+	if (!raw || raw === "none") return [];
+	return raw.split(",").map(Number);
+}
 const N = opt("--n", 128);
 const T = opt("--t", 4);
 // projection is the product path and the default. without it the momentum
@@ -395,10 +406,10 @@ const T = opt("--t", 4);
 // vorticity rises and maxDiv reaches 1e4, so that row attributes diffusion but
 // is not a candidate anyone could ship.
 const proj = !args.includes("--no-proj");
-// the confinement strengths to sweep, in 1/s. `--eps 0,1,4` overrides.
-const epsList = args.includes("--eps")
-	? args[args.indexOf("--eps") + 1].split(",").map(Number)
-	: CONF_EPS;
+// the confinement strengths to sweep, in 1/s. `--eps 0,1,4` or `--eps none`
+// overrides the sl sweep; `--mac-eps 0.25,0.5,1,2` sweeps confinement on mac (t17).
+const epsList = parseEpsArg("--eps", CONF_EPS);
+const macEpsList = parseEpsArg("--mac-eps", []);
 
 console.log("vortex-decay · N=" + N + " sigma=" + (N * SIGMA_FRAC).toFixed(1) +
 	" rim=" + PEAK + " cells/s · dt=" + DT + " · " + Math.round(T / DT) + " steps (" + T + " s)");
@@ -410,14 +421,18 @@ console.log(proj ? "== with the shipping projection (mg 2 cycles, K20) =="
 const runs = SCHEMES.map(s => run(s.name, N, T, proj, s.over));
 for (const r of runs) printRun(r);
 if (proj) {
-	// the confinement rows are a force on the shipping scheme, so they are read
+	// the confinement rows are a force on the host scheme, so they are read
 	// on the product path. without the projection the momentum equation is
 	// inviscid Burgers and the force has nothing to work against: that row
 	// belongs to the advection schemes, not to the force.
 	const confRuns = epsList.map(eps => run("sl+conf" + eps, N, T, proj,
 		{ advectMac: 0, vorticityConfinement: eps }));
 	for (const r of confRuns) printRun(r);
+	const macConfRuns = macEpsList.map(eps => run("mac+conf" + eps, N, T, proj,
+		{ advectMac: 1, macLimiter: 1, vorticityConfinement: eps }));
+	for (const r of macConfRuns) printRun(r);
 	decision(runs[0], runs[1], T);
-	confinementDecision(runs[0], confRuns, T);
+	confinementDecision(runs[0], "sl", confRuns, T);
+	confinementDecision(runs[1], "mac", macConfRuns, T);
 } else console.log("== no decision: the bar is read on the projection row (`node experiments/vortex-decay.js`) ==");
 console.log("done");

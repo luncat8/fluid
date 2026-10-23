@@ -177,7 +177,7 @@
 				for(let s=0;s<substeps;s++){
 					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
-						needStats&&s===substeps-1,cfg.advectMac>0);
+						needStats&&s===substeps-1,cfg.advectMac>0,cfg.fusePasses>0);
 				}
 				if(needStats||needBuoy){
 					const cp=prof.pass(encoder,PROFILE_GROUP.stats,"stats");
@@ -191,7 +191,7 @@
 				for(let s=0;s<substeps;s++){
 					passes.encodeStep(cpass,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
-						needStats&&s===substeps-1,cfg.advectMac>0);
+						needStats&&s===substeps-1,cfg.advectMac>0,cfg.fusePasses>0);
 				}
 				if(needStats){
 					passes.encodeStats(cpass,pool,pipes,groups,state);

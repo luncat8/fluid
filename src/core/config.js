@@ -94,11 +94,16 @@
 		vMax:8,
 		// velocity advection scheme (0.6.0 t5/t16). 0 = semi-lagrangian, the
 		// shipping path on both cpu and gpu. 1 = mac-cormack with the
-		// stencil-bounds limiter, implemented in both solvers; stays off
-		// until a device row says the second advection dispatch costs less
-		// than the 15 % frame-time bar (plan 4.2).
+		// stencil-bounds limiter; pinned ns=4 device cost is +18 us/substep
+		// (<= 0.6 % frame time), stays off until the 4-scenario auto-policy row
+		// confirms higher peak speeds do not push ns below the 60 fps gate.
 		advectMac:0,
 		macLimiter:1,
+		// 0.6.0 t8 pass fusion on the gpu: 1 fuses advectMass+advectTherm into
+		// advectScalar and heatSources into the second phaseEos (bit-identical,
+		// two fewer full-grid dispatches per substep). off until its device row
+		// clears the 3 % frame-time bar (plan 4.3).
+		fusePasses:0,
 		// 0.6.0 t6: vorticity confinement, F = eps*h*(N x omega) with N the unit
 		// gradient of |omega|. eps is in 1/s, 0 is off. a force, not a change to
 		// the advection scheme: it costs one extra pass over the velocity field.

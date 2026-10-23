@@ -783,3 +783,82 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   three simultaneous edits to `src/core/solver.js` reported success and two
   were lost; the test run caught it (a missing export). edit one file at a
   time and re-read the diff before trusting a batch.
+
+## 2026-10-23 Ampere MacCormack rows, t17 rejection on MacCormack, and t8 pass fusion
+
+- finding: WGSL MacCormack (`t16`, `mac-fixed-k20`, `2026-10-23-04_53-GPU-browser-tests.log`,
+  Ampere, `N=512`, 600f, `K=20`, pinned `ns=4`) adds `+16..19 us/substep` to the
+  `vel` group (`0.034 -> 0.050` blobs, `0.035 -> 0.054` dam, `0.025/0.031 -> 0.048`
+  cycle, `0.029 -> 0.047 ms` jet) and moves overall fps by `-0.6 %` to `+0.6 %`
+  (`104.5 / 105.0 / 106.1 / 158.6 fps`), clearing the `<= 15 %` equal-`ns` bar by
+  more than 10x with exact conservation (`[ok]` on all five channels) and equal or
+  lower settled `true` Poisson residual (`3.89e-5 / 1.68e-4 / 7.19e-3 / 2.97e-3`).
+  the `rgba32float` trace-helper scratch idea is closed: `18 us` is ~1 % of a
+  2-cycle substep, so doubling scratch bandwidth to save four velocity taps in
+  pass 2 has no headroom.
+- pitfall: an equal-`ns` A/B proves kernel cost, not auto-CFL frame rate, when a
+  higher-order advection scheme preserves larger peak speeds. at pinned `ns=4`,
+  MacCormack keeps `dam` end `maxVel` at `108.8` vs `67.0` on semi-Lagrangian
+  (and on the CPU auto policy at `N=64`, raises mean `ns` `+19.6 %` on `blobs`
+  and `+9.8 %` on `dam`). because `dam` (`67.9 fps`, `ns=7`) and `cycle` (`71.6 fps`,
+  `ns=12`, `CFL=0.7819` in `2026-10-23-04_54`) sit within one substep step-up of
+  the 60 fps gate, `cfg.advectMac` stays `0` until the 4-scenario auto-policy
+  capture (`python3 run_gpu_mac_k20.py`) is recorded.
+- pitfall: every preset that needs a hardware capture should have a dedicated
+  one-click `run_gpu_*.py` wrapper. `run_gpu_capture.py` with no arguments runs
+  `k20` (`mac=0`), which is why `04_54` re-captured the `mac=0` auto baseline
+  (`71.8 / 67.9 / 71.6 / 76.8 fps`) instead of `mac=1` auto.
+- pitfall: `browser-tests.html` does not report a continuous per-frame GPU trace.
+  It accumulates the unique timestamp-query results read during stats polls
+  (typically ~20 samples across a 600-frame run), while `frames/s` measures all
+  600 frames. `04_54` blobs has `step=2.400 ms` and `press/step=75.3 %` in that
+  sparse aggregate at `71.8 fps`; the log has no per-sample series, so do not
+  assign the timing to frames 541-600 or infer a late-run P-state change from it.
+  Use `frames/s` for full-run throughput and the profile line for sampled group
+  proportions only.
+- finding: vorticity confinement (`t17`) is rejected when stacked on MacCormack
+  (`2026-10-23-vortex-decay-mac-conf.log`, `N=128`, 4 s, shipping projection).
+  confinement compensates first-order numerical viscosity by injecting core spin;
+  once MacCormack cuts `errL2` from `0.2737` to `0.0855`, `eps=1, 2` make `errL2`
+  worse (`0.1096 / 0.2312`), inflate `maxDiv` `6.7x / 20x`, push peak speed past
+  the initial `80` (`84.19 / 95.54`), and trip `macLimiter` `44x / 86x`. even
+  `eps=0.5` overshoots initial peak speed (`80.63` at 3 s) with `5.7x` `maxDiv`,
+  and `eps=0.25` spins core vorticity to `1.81x` with `3.3x` `maxDiv` for `-0.023`
+  `errL2`. rejecting the WGSL port avoids two extra velocity passes and a scratch
+  texture.
+- skill: when two `override`-specialized compute pipelines share prebuilt bind
+  groups (like `projRed`/`projBlack` sharing `projLayout`, or `t8`'s `phaseEos`/
+  `phaseSources` sharing `groups.phaseB`), declare an explicit
+  `device.createBindGroupLayout(...)`. under `layout: "auto"`, WebGPU treats each
+  pipeline's derived bind group layout as distinct even when compiled from the
+  same shader module, which passes a recording mock and fails real-device
+  validation.
+- pitfall: `wgsl_reflect`'s `WgslExec` CPU interpreter silently drops `.r/.g/.b/.a`
+  component writes on `var q: vec4<f32>` (`q.r = ...` leaves `q` unchanged), while
+  supporting `.r/.g/.b/.a` reads and `vec4<f32>(...)` value construction. writing
+  `q = vec4<f32>(nextE, nextT, ...)` is cleaner WGSL on hardware and lets
+  `experiments/wgsl-exec.mjs` verify bit-exactness (`maxDiff === 0`) of fused vs
+  unfused WGSL passes before any device run.
+
+- pitfall: a +3% fps change is only 2.91% frame-time saving. For a >3%
+  frame-time adoption gate use `1 - baselineFps / candidateFps`. Match MG cycle
+  count and MacCormack setting as well as ns; gpu-log-table's dt/ns grouping
+  alone does not guarantee comparable work. Repeated paired captures matter
+  when observed savings are comparable to historical baseline variation.
+- finding: the follow-up Ampere t8 captures (`2026-10-23-06_38*`, `06_40`,
+  `06_41`, `06_42`, `06_43`) keep `cfg.fusePasses = 0`. Two fixed runs per
+  setting (ns=4) average 1.37/2.02/1.16/2.51 % frame-time savings for
+  blobs/dam/cycle/jet; no scenario clears 3 %. The single auto pair gives
+  0.93/1.32/3.79/2.78 %; only cycle clears 3 %, once. All matched on/off
+  state and diagnostic lines are identical; the auto jet E drift warning
+  (`1.216e-6`) is identical too. See `archive/0.6.0-mac-captures-t8-worklog.md`.
+- pitfall: these browser captures report fps across all 600 measured frames and
+  do not discard a warm-up window. Their GPU timestamp line aggregates sparse
+  samples read at stats polls (20/21 samples here), not a last-60-frame window;
+  the blobs averages vary sharply across runs, but the logs do not expose the
+  individual samples needed to localize that variation. The fixed fusion runs
+  were grouped by setting, not interleaved. Do not label them warmed, interleaved
+  A/B evidence; if chasing the one auto cycle win, add an explicit warm-up/discard
+  period and alternate several runs. This cycle-specific repeat is deferred in
+  `deferred/0.6.0-t8-cycle-fusion-validation-plan.md`; continue with the next
+  planned 0.6.0 optimization instead of adding the warm-up harness now.

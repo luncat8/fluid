@@ -248,6 +248,23 @@ async function testPlumbing() {
 			sink.pipeOrder.filter(p => p === "advectVel").length === 2,
 			"mac=" + sink.pipeOrder.filter(p => p === "advectVelMac").length);
 	}
+	{
+		const t0 = solver.state.t;
+		solver.frame(cfg.frameDt / 3, 3, false);
+		const tUnfused3 = solver.state.t;
+		sink.pipeOrder.length = 0;
+		cfg.fusePasses = 1;
+		solver.frame(cfg.frameDt / 3, 3, false);
+		const cnt = name => sink.pipeOrder.filter(p => p === name).length;
+		const tFused3 = solver.state.t;
+		check("t8 pass fusion: advectScalar and phaseSources replace 2 dispatches/substep and track therm parity",
+			cnt("advectScalar") === 3 && cnt("advectMass") === 0 && cnt("advectTherm") === 0 &&
+			cnt("heatSources") === 0 && cnt("phaseEos") === 3 && cnt("phaseSources") === 3 &&
+			tUnfused3 === 1 - t0 && tFused3 === tUnfused3,
+			"scalar=" + cnt("advectScalar") + " phaseSrc=" + cnt("phaseSources") +
+			" t:" + t0 + "->" + tUnfused3 + "(unf3)->" + tFused3 + "(fus3)");
+		cfg.fusePasses = 0;
+	}
 
 	// the body must go away with the scenario
 	cfg.scenario = "blobs";
