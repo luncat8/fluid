@@ -160,6 +160,8 @@ struct Params { values: array<f32,128> };
 @group(0) @binding(3) var massTex: texture_2d<f32>;
 @group(0) @binding(4) var thermTex: texture_2d<f32>;
 @group(0) @binding(5) var flagsTex: texture_2d<u32>;
+@group(0) @binding(6) var<storage,read> emitters: array<f32>;
+@group(0) @binding(7) var<storage,read> emitterLedger: array<f32>;
 
 fn isBlocked(x: i32, y: i32, w: i32, h: i32) -> bool {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
@@ -201,18 +203,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let y = i32(gid.y);
 	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) { return; }
 	let dt = params.values[4];
+	let invN = params.values[1];
 	let gx = params.values[16];
 	let gy = params.values[17];
 	let rhoRef = params.values[18];
 	let beta = params.values[19];
 	let tref = params.values[20];
-	let rhoMean = params.values[27];
+	let rhoMean = params.values[95] + (emitterLedger[0] - emitterLedger[5]) * invN * invN;
 	let ms = params.values[23];
 	let mvx = params.values[24];
 	let mvy = params.values[25];
 	let mr = params.values[26];
 	let vclamp = params.values[38];
 	let mEps = params.values[58];
+	let momCnt = i32(emitters[2]);
+	let emMax = i32(emitters[1]);
 	let src = textureLoad(velSrc, vec2<i32>(x, y));
 	var u = 0.0;
 	var v = 0.0;
@@ -222,6 +227,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let f = mouseFall(f32(x - 1) - params.values[21], f32(y) - 0.5 - params.values[22], mr);
 			u = u + dt * mvx * f * ms;
 		}
+		if (momCnt > 0) {
+			let px = f32(x - 1);
+			let py = f32(y) - 0.5;
+			for (var s = 0; s < emMax; s = s + 1) {
+				let b = 16 + s * 16;
+				if (i32(emitters[b + 4]) == 4) {
+					let dx = px - emitters[b];
+					let dy = py - emitters[b + 1];
+					let d2 = dx * dx + dy * dy;
+					if (d2 < emitters[b + 3]) {
+						let tf = max(0.0, 1.0 - d2 * emitters[b + 2]);
+						let fw = tf * tf;
+						u = u + dt * (emitters[b + 9] * fw);
+					}
+				}
+			}
+		}
 		u = clamp(u, -vclamp, vclamp);
 	}
 	if (!vBlocked(x, y, w, h)) {
@@ -229,6 +251,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		if (ms > 0.0) {
 			let f = mouseFall(f32(x) - 0.5 - params.values[21], f32(y - 1) - params.values[22], mr);
 			v = v + dt * mvy * f * ms;
+		}
+		if (momCnt > 0) {
+			let px = f32(x) - 0.5;
+			let py = f32(y - 1);
+			for (var s = 0; s < emMax; s = s + 1) {
+				let b = 16 + s * 16;
+				if (i32(emitters[b + 4]) == 4) {
+					let dx = px - emitters[b];
+					let dy = py - emitters[b + 1];
+					let d2 = dx * dx + dy * dy;
+					if (d2 < emitters[b + 3]) {
+						let tf = max(0.0, 1.0 - d2 * emitters[b + 2]);
+						let fw = tf * tf;
+						v = v + dt * (emitters[b + 10] * fw);
+					}
+				}
+			}
 		}
 		v = clamp(v, -vclamp, vclamp);
 	}
@@ -1079,6 +1118,262 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	textureStore(thermDst, vec2<i32>(x, y), q);
 }
 `;
+	// ---------- 0.7.0 t3 emitters: shared realized-delta cell kernel + 1-workgroup Kahan tally ----------
+	const EMITTER_HELPERS=EOS_HELPERS+`
+struct EmitCellOut {
+	dr: f32, dg: f32, db: f32, m: f32,
+	e: f32, t: f32, hIn: f32, hOut: f32,
+	injM: f32, injDr: f32, injDg: f32, injDb: f32, injE: f32,
+	remM: f32, remDr: f32, remDg: f32, remDb: f32, remE: f32,
+	changed: u32
+};
+
+fn evalScalarCell(x: i32, y: i32, mIn: vec4<f32>, qIn: vec4<f32>, wall: u32) -> EmitCellOut {
+	var o: EmitCellOut;
+	o.dr = mIn.r; o.dg = mIn.g; o.db = mIn.b; o.m = mIn.a;
+	o.e = qIn.r; o.t = qIn.g; o.hIn = qIn.b; o.hOut = qIn.a;
+	o.injM = 0.0; o.injDr = 0.0; o.injDg = 0.0; o.injDb = 0.0; o.injE = 0.0;
+	o.remM = 0.0; o.remDr = 0.0; o.remDg = 0.0; o.remDb = 0.0; o.remE = 0.0;
+	o.changed = 0u;
+	if (wall > 0u) { return o; }
+	let nSlots = i32(emitters[1]);
+	let dt = params.values[4];
+	let mEps = params.values[58];
+	let px = f32(x) - 0.5;
+	let py = f32(y) - 0.5;
+	for (var s = 0; s < nSlots; s = s + 1) {
+		let b = 16 + s * 16;
+		let kind = i32(emitters[b + 4]);
+		let val = emitters[b + 5];
+		if (kind != 0 && kind != 4 && val > 0.0) {
+			let dx = px - emitters[b];
+			let dy = py - emitters[b + 1];
+			let d2 = dx * dx + dy * dy;
+			if (d2 < emitters[b + 3]) {
+				let tf = max(0.0, 1.0 - d2 * emitters[b + 2]);
+				let fw = tf * tf;
+				let amt = (val * dt) * fw;
+				if (amt > 0.0) {
+					if (kind == 1) {
+						let ddr = emitters[b + 6] * amt;
+						let ddg = emitters[b + 7] * amt;
+						let ddb = emitters[b + 8] * amt;
+						let dE = amt * emitters[b + 11];
+						let mNew = o.m + amt;
+						let drNew = o.dr + ddr;
+						let dgNew = o.dg + ddg;
+						let dbNew = o.db + ddb;
+						let eNew = o.e + dE;
+						o.injM = o.injM + (mNew - o.m);
+						o.injDr = o.injDr + (drNew - o.dr);
+						o.injDg = o.injDg + (dgNew - o.dg);
+						o.injDb = o.injDb + (dbNew - o.db);
+						o.injE = o.injE + (eNew - o.e);
+						o.m = mNew; o.dr = drNew; o.dg = dgNew; o.db = dbNew; o.e = eNew;
+						o.changed = 1u;
+					} else if (kind == 5) {
+						if (o.m > 0.0) {
+							if (amt >= o.m) {
+								o.remM = o.remM + o.m;
+								o.remDr = o.remDr + o.dr;
+								o.remDg = o.remDg + o.dg;
+								o.remDb = o.remDb + o.db;
+								o.remE = o.remE + o.e;
+								o.m = 0.0; o.dr = 0.0; o.dg = 0.0; o.db = 0.0; o.e = 0.0;
+							} else {
+								let frac = clamp(amt / o.m, 0.0, 1.0);
+								let mNew = max(0.0, o.m - amt);
+								let drNew = max(0.0, o.dr - o.dr * frac);
+								let dgNew = max(0.0, o.dg - o.dg * frac);
+								let dbNew = max(0.0, o.db - o.db * frac);
+								let eNew = max(0.0, o.e - o.e * frac);
+								o.remM = o.remM + (o.m - mNew);
+								o.remDr = o.remDr + (o.dr - drNew);
+								o.remDg = o.remDg + (o.dg - dgNew);
+								o.remDb = o.remDb + (o.db - dbNew);
+								o.remE = o.remE + (o.e - eNew);
+								o.m = mNew; o.dr = drNew; o.dg = dgNew; o.db = dbNew; o.e = eNew;
+							}
+							o.changed = 1u;
+						}
+					} else if (kind == 2) {
+						if (o.m >= mEps) {
+							var dE = amt;
+							let hCap = emitters[b + 11];
+							if (hCap > 0.0) {
+								let eCeil = o.m * hCap;
+								if (o.e >= eCeil) { dE = 0.0; }
+								else { dE = min(dE, eCeil - o.e); }
+							}
+							if (dE > 0.0) {
+								let eNew = o.e + dE;
+								let dReal = eNew - o.e;
+								o.e = eNew;
+								o.hIn = o.hIn + dReal;
+								o.changed = 1u;
+							}
+						}
+					} else if (kind == 3 || kind == 6) {
+						if (o.m >= mEps) {
+							let eFloor = o.m * emitters[b + 11];
+							if (o.e > eFloor) {
+								let cool = min(amt, o.e - eFloor);
+								let eNew = max(eFloor, o.e - cool);
+								let dReal = o.e - eNew;
+								o.e = eNew;
+								o.hOut = o.hOut + dReal;
+								o.changed = 1u;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if (o.changed > 0u) {
+		let ps = evalPhase(o.m, o.e);
+		o.t = ps.T;
+	}
+	return o;
+}
+`;
+	shaders.applyEmitters=EMITTER_HELPERS+`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage,read> emitters: array<f32>;
+@group(0) @binding(2) var massSrc: texture_2d<f32>;
+@group(0) @binding(3) var thermSrc: texture_2d<f32>;
+@group(0) @binding(4) var flagsTex: texture_2d<u32>;
+@group(0) @binding(5) var massDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(6) var thermDst: texture_storage_2d<rgba32float,write>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	let at = vec2<i32>(x, y);
+	let mIn = textureLoad(massSrc, at, 0);
+	let qIn = textureLoad(thermSrc, at, 0);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) {
+		textureStore(massDst, at, mIn);
+		textureStore(thermDst, at, qIn);
+		return;
+	}
+	let fl = textureLoad(flagsTex, at, 0);
+	let r = evalScalarCell(x, y, mIn, qIn, fl.r);
+	if (r.changed == 0u) {
+		textureStore(massDst, at, mIn);
+		textureStore(thermDst, at, qIn);
+	} else {
+		textureStore(massDst, at, vec4<f32>(r.dr, r.dg, r.db, r.m));
+		textureStore(thermDst, at, vec4<f32>(r.e, r.t, r.hIn, r.hOut));
+	}
+}
+`;
+	shaders.emitterTally=EMITTER_HELPERS+`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage,read> emitters: array<f32>;
+@group(0) @binding(2) var massSrc: texture_2d<f32>;
+@group(0) @binding(3) var thermSrc: texture_2d<f32>;
+@group(0) @binding(4) var flagsTex: texture_2d<u32>;
+@group(0) @binding(5) var<storage,read_write> emitterLedger: array<f32>;
+
+var<workgroup> shEmit: array<f32,640>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(local_invocation_index) lid: u32) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let nSlots = i32(emitters[1]);
+	var acc0 = 0.0; var acc1 = 0.0; var acc2 = 0.0; var acc3 = 0.0; var acc4 = 0.0;
+	var acc5 = 0.0; var acc6 = 0.0; var acc7 = 0.0; var acc8 = 0.0; var acc9 = 0.0;
+	for (var s = 0; s < nSlots; s = s + 1) {
+		let b = 16 + s * 16;
+		let sk = i32(emitters[b + 4]);
+		if ((sk == 1 || sk == 5) && emitters[b + 5] > 0.0) {
+			let x0 = i32(emitters[b + 12]);
+			let y0 = i32(emitters[b + 13]);
+			let x1 = i32(emitters[b + 14]);
+			let y1 = i32(emitters[b + 15]);
+			let bw = x1 - x0 + 1;
+			let bh = y1 - y0 + 1;
+			if (bw > 0 && bh > 0) {
+				let wu = u32(bw);
+				let total = u32(bw * bh);
+				var k = lid;
+				loop {
+					if (k >= total) { break; }
+					let cx = x0 + i32(k % wu);
+					let cy = y0 + i32(k / wu);
+					var owned = true;
+					for (var p = 0; p < s; p = p + 1) {
+						let pb = 16 + p * 16;
+						let pk = i32(emitters[pb + 4]);
+						if ((pk == 1 || pk == 5) && emitters[pb + 5] > 0.0) {
+							if (cx >= i32(emitters[pb + 12]) && cx <= i32(emitters[pb + 14]) &&
+								cy >= i32(emitters[pb + 13]) && cy <= i32(emitters[pb + 15])) {
+								owned = false;
+							}
+						}
+					}
+					if (owned && cx >= 1 && cx < w - 1 && cy >= 1 && cy < h - 1) {
+						let at = vec2<i32>(cx, cy);
+						let mIn = textureLoad(massSrc, at, 0);
+						let qIn = textureLoad(thermSrc, at, 0);
+						let fl = textureLoad(flagsTex, at, 0);
+						let r = evalScalarCell(cx, cy, mIn, qIn, fl.r);
+						acc0 = acc0 + r.injM;
+						acc1 = acc1 + r.injDr;
+						acc2 = acc2 + r.injDg;
+						acc3 = acc3 + r.injDb;
+						acc4 = acc4 + r.injE;
+						acc5 = acc5 + r.remM;
+						acc6 = acc6 + r.remDr;
+						acc7 = acc7 + r.remDg;
+						acc8 = acc8 + r.remDb;
+						acc9 = acc9 + r.remE;
+					}
+					k = k + 64u;
+				}
+			}
+		}
+	}
+	let base = lid * 10u;
+	shEmit[base + 0u] = acc0; shEmit[base + 1u] = acc1; shEmit[base + 2u] = acc2;
+	shEmit[base + 3u] = acc3; shEmit[base + 4u] = acc4; shEmit[base + 5u] = acc5;
+	shEmit[base + 6u] = acc6; shEmit[base + 7u] = acc7; shEmit[base + 8u] = acc8;
+	shEmit[base + 9u] = acc9;
+	workgroupBarrier();
+	var stride = 32u;
+	loop {
+		if (stride == 0u) { break; }
+		if (lid < stride) {
+			let a = lid * 10u;
+			let o = (lid + stride) * 10u;
+			for (var c = 0u; c < 10u; c = c + 1u) {
+				shEmit[a + c] = shEmit[a + c] + shEmit[o + c];
+			}
+		}
+		workgroupBarrier();
+		stride = stride >> 1u;
+	}
+	if (lid == 0u) {
+		for (var c = 0u; c < 10u; c = c + 1u) {
+			let d = shEmit[c];
+			if (d != 0.0) {
+				let sOld = emitterLedger[c];
+				let cOld = emitterLedger[10u + c];
+				let yv = d - cOld;
+				let tv = sOld + yv;
+				emitterLedger[10u + c] = (tv - sOld) - yv;
+				emitterLedger[c] = tv;
+			}
+		}
+	}
+}
+`;
 	// solve-time poisson residual: same operator the projection just used, reduced
 	// before transport so a later density or freeze change cannot inflate it.
 	// shares the stats partial buffer; statsReduceB must not overwrite slots 32/33.
@@ -1270,11 +1565,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 	}
 }
 `;
-	// ---------- level 2 with kahan sums (35 partial slots -> 36 stats slots) ----------
+	// ---------- level 2 with kahan sums (35 partial slots -> 46 stats slots) ----------
 	shaders.statsReduceB=`
 @group(0) @binding(0) var<storage,read> partials: array<f32>;
 @group(0) @binding(1) var<storage,read_write> stats: array<f32>;
 @group(0) @binding(2) var<uniform> dims: vec4<u32>;
+@group(0) @binding(3) var<storage,read> emitterLedger: array<f32>;
 
 fn kahanSlot(num: u32, slot: u32) -> f32 {
 	var s = 0.0;
@@ -1347,6 +1643,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	stats[21u] = select(0.0, sTS / tCnt, tCnt > 0.0);
 	stats[22u] = sKin;
 	for (var k = 0u; k < 9u; k++) { stats[23u + k] = kahanSlot(num, 24u + k); }
+	for (var k = 0u; k < 10u; k++) { stats[36u + k] = emitterLedger[k]; }
 }
 `;
 	// ---------- buoy field sample: one workgroup over the body footprint ----------

@@ -77,6 +77,8 @@
 			phaseSources:phasePipe("phaseSources",1),
 			freezeVel:comp("freezeVel",PS+sh.freezeVel),
 			conduction:comp("conduction",PS+sh.conduction),
+			applyEmitters:comp("applyEmitters",PS+sh.applyEmitters),
+			emitterTally:comp("emitterTally",PS+sh.emitterTally),
 			heatSources:comp("heatSources",PS+sh.heatSources),
 			limiterPrepare:comp("limiterPrepare",PS+sh.limiterPrepare),
 			limiterApply:comp("limiterApply",PS+sh.limiterApply),
@@ -125,7 +127,7 @@
 		const limiterBView=viewRes(pool.limiterB);
 		const groups={
 			forces:[],advectVel:[],macFwd:[],advectVelMac:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],advectScalar:[],
-			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],heatSources:[],
+			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],applyEmitters:[],emitterTally:[],heatSources:[],
 		limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
 		poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],probeSample:[],render:null
 		};
@@ -133,8 +135,11 @@
 			groups.phaseA[mm]=[];
 			groups.phaseB[mm]=[];
 			groups.conduction[mm]=[];
+			groups.applyEmitters[mm]=[];
+			groups.emitterTally[mm]=[];
 			groups.heatSources[mm]=[];
 			const massV=viewRes(pool.mass.tex[mm]);
+			const massNextV=viewRes(pool.mass.tex[(mm+1)%3]);
 			for(let t=0;t<2;t++){
 				const tSrc=viewRes(pool.therm.tex[t]),tDst=viewRes(pool.therm.tex[1-t]);
 				groups.phaseA[mm][t]=[];
@@ -174,6 +179,23 @@
 					{binding:2,resource:tSrc},
 					{binding:3,resource:tDst},
 					{binding:4,resource:flagsTmpView}
+				]);
+				groups.applyEmitters[mm][t]=bg(device,"applyEmitters"+mm+t,pipes.applyEmitters.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:{buffer:pool.emitters}},
+					{binding:2,resource:massV},
+					{binding:3,resource:tSrc},
+					{binding:4,resource:flagsTmpView},
+					{binding:5,resource:massNextV},
+					{binding:6,resource:tDst}
+				]);
+				groups.emitterTally[mm][t]=bg(device,"emitterTally"+mm+t,pipes.emitterTally.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:{buffer:pool.emitters}},
+					{binding:2,resource:massV},
+					{binding:3,resource:tSrc},
+					{binding:4,resource:flagsTmpView},
+					{binding:5,resource:{buffer:pool.emitterLedger}}
 				]);
 				groups.heatSources[mm][t]=bg(device,"heatSources"+mm+t,pipes.heatSources.getBindGroupLayout(0),[
 					{binding:0,resource:{buffer:pool.params}},
@@ -270,7 +292,9 @@
 						{binding:2,resource:viewRes(vn)},
 						{binding:3,resource:viewRes(mm)},
 						{binding:4,resource:viewRes(tt)},
-						{binding:5,resource:flagsView}
+						{binding:5,resource:flagsView},
+						{binding:6,resource:{buffer:pool.emitters}},
+						{binding:7,resource:{buffer:pool.emitterLedger}}
 					]);
 					if(t===0){
 						groups.applyGrad[m][v]=bg(device,"applyGrad"+m+v,pipes.applyGrad.getBindGroupLayout(0),[
@@ -447,7 +471,8 @@
 		groups.statsB=bg(device,"statsB",pipes.statsB.getBindGroupLayout(0),[
 			{binding:0,resource:{buffer:pool.statsPart}},
 			{binding:1,resource:{buffer:pool.stats}},
-			{binding:2,resource:{buffer:pool.dims}}
+			{binding:2,resource:{buffer:pool.dims}},
+			{binding:3,resource:{buffer:pool.emitterLedger}}
 		]);
 		groups.render=bg(device,"render",pipes.renderPipe.getBindGroupLayout(0),[
 			{binding:0,resource:pipes.sampler},
@@ -609,13 +634,13 @@
 		}
 		io.m=state.m;
 	}
-	function encodePhaseChain(cpass,pool,pipes,groups,state,io,fuseOn){
+	function encodePhaseChain(cpass,pool,pipes,groups,state,io,fuseOn,scalarEmit,massDrainEmit){
 		// 0.5.0 phase + thermal chain: phaseEos + freezeVel -> conduction ->
-		// heatSources -> phaseEos + freezeVel (or phaseSources when fuseOn).
-		// phaseA->phaseB keeps flags/sfield/accum in their canonical textures;
-		// state.t tracks therm parity (5 flips/substep unfused, 4 when fused).
+		// [applyEmitters + emitterTally] -> heatSources -> phaseEos + freezeVel
+		// (or phaseSources when fuseOn). phaseA->phaseB keeps flags/sfield/accum
+		// in their canonical textures; state.m/state.t track parity dynamically.
 		const wx=pool.workgroupX,wy=pool.workgroupY;
-		const mf=io.m;
+		let mf=io.m;
 		let v=io.v;
 		let ts=1-io.t;
 		cpass.setPipeline(pipes.phaseEos);
@@ -630,6 +655,20 @@
 		cpass.setBindGroup(0,groups.conduction[mf][ts]);
 		cpass.dispatchWorkgroups(wx,wy);
 		ts=1-ts;
+		if(scalarEmit){
+			if(massDrainEmit){
+				cpass.setPipeline(pipes.emitterTally);
+				cpass.setBindGroup(0,groups.emitterTally[mf][ts]);
+				cpass.dispatchWorkgroups(1);
+			}
+			cpass.setPipeline(pipes.applyEmitters);
+			cpass.setBindGroup(0,groups.applyEmitters[mf][ts]);
+			cpass.dispatchWorkgroups(wx,wy);
+			mf=(mf+1)%3;
+			state.m=mf;
+			io.m=mf;
+			ts=1-ts;
+		}
 		if(!fuseOn){
 			cpass.setPipeline(pipes.heatSources);
 			cpass.setBindGroup(0,groups.heatSources[mf][ts]);
@@ -649,22 +688,22 @@
 		io.t=ts;
 		io.v=v;
 	}
-	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn,fuseOn){
+	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn,fuseOn,scalarEmit,massDrainEmit){
 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
 		encodeVelAdv(cpass,pool,pipes,groups,stepIo,macOn);
 		encodeRhs(cpass,pool,pipes,groups,stepIo);
 		encodePressure(cpass,pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
 		encodeTransport(cpass,pool,pipes,groups,state,stepIo,fctOn,fuseOn);
-		encodePhaseChain(cpass,pool,pipes,groups,state,stepIo,fuseOn);
+		encodePhaseChain(cpass,pool,pipes,groups,state,stepIo,fuseOn,scalarEmit,massDrainEmit);
 	}
-	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn,fuseOn){
+	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn,fuseOn,scalarEmit,massDrainEmit){
 		const G=Fluid.gpu.profiler.GROUP;
 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
 		encodeVelAdv(prof.pass(encoder,G.vel,"vel"),pool,pipes,groups,stepIo,macOn);
 		encodeRhs(prof.pass(encoder,G.rhs,"rhs"),pool,pipes,groups,stepIo);
 		encodePressure(prof.pass(encoder,G.press,"press"),pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
 		encodeTransport(prof.pass(encoder,G.trans,"trans"),pool,pipes,groups,state,stepIo,fctOn,fuseOn);
-		encodePhaseChain(prof.pass(encoder,G.phase,"phase"),pool,pipes,groups,state,stepIo,fuseOn);
+		encodePhaseChain(prof.pass(encoder,G.phase,"phase"),pool,pipes,groups,state,stepIo,fuseOn,scalarEmit,massDrainEmit);
 	}
 	function encodeStats(cpass,pool,pipes,groups,state){
 		cpass.setPipeline(pipes.statsA);

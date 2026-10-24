@@ -13,6 +13,7 @@ require(path.join(root, "src/core/grid.js"));
 require(path.join(root, "src/core/stats.js"));
 require(path.join(root, "src/core/solver.js"));
 require(path.join(root, "src/core/probes.js"));
+require(path.join(root, "src/core/emitters.js"));
 require(path.join(root, "src/core/buoy.js"));
 require(path.join(root, "src/gpu/shaders.js"));
 require(path.join(root, "src/gpu/fields.js"));
@@ -538,6 +539,105 @@ async function testPhasePlumbing() {
 	solver.destroy();
 }
 
+async function testEmitterPlumbing() {
+	const S = Fluid.core.stats;
+	const E = Fluid.core.emitters;
+	const statsSnap = new Float32Array(S.STATS_LEN);
+	const m = mock.create({ stats: statsSnap, probes: new Float32Array(Fluid.core.probes.LEN) });
+	const sink = m.sink;
+	const N = 64;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {
+		N, texW: N + 2, texH: N + 2, scenario: "still", buoyEnabled: 0
+	});
+	const canvas = { width: N, height: N };
+	const solver = Fluid.gpu.solver.create(m.device, canvas, mock.mockContext(), "bgra8unorm", cfg);
+	check("emitter pool: storage table + 80B Kahan ledger buffer allocated",
+		solver.pool.emitters.size === E.LEN * 4 &&
+		solver.pool.emitterLedger.size === S.EMIT_LEDGER_LEN * 4,
+		"emitters=" + solver.pool.emitters.size + "B ledger=" + solver.pool.emitterLedger.size + "B");
+
+	// 0 emitters: neither applyEmitters nor emitterTally dispatches
+	let p0 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	let slice = sink.pipeOrder.slice(p0);
+	check("emitter dispatch gating: idle table adds zero dispatches",
+		!slice.includes("applyEmitters") && !slice.includes("emitterTally"));
+
+	// momentum-only emitter: folded into forces, zero extra dispatches
+	const momId = solver.addEmitter({ kind: "momentum", x: 32, y: 32, radius: 6, vx: 120, vy: 40 });
+	p0 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	slice = sink.pipeOrder.slice(p0);
+	check("emitter dispatch gating: momentum-only emitter runs inside forces with zero extra passes",
+		momId === 0 && !slice.includes("applyEmitters") && !slice.includes("emitterTally"));
+
+	// thermal-only emitter (freeze): runs applyEmitters, skips emitterTally (therm.a accounts heatOut)
+	const fzId = solver.addEmitter({ kind: "freeze", x: 20, y: 20, radius: 5, value: 90 });
+	p0 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	slice = sink.pipeOrder.slice(p0);
+	check("emitter dispatch gating: freeze/heat/cold runs applyEmitters without emitterTally",
+		fzId === 1 && slice.filter(n => n === "applyEmitters").length === 2 && !slice.includes("emitterTally"));
+
+	// dye + drain emitters: runs both emitterTally and applyEmitters, and profiled vs unprofiled leave identical parities
+	const dyeId = solver.addEmitter({ kind: "dye", x: 16, y: 16, radius: 5, value: 0.4, dye: [1, 0.2, 0.1] });
+	const drnId = solver.addEmitter({ kind: "drain", x: 48, y: 48, radius: 5, value: 0.3 });
+	p0 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	slice = sink.pipeOrder.slice(p0);
+	check("emitter dispatch gating: dye/drain runs emitterTally (1 wg) before applyEmitters each substep",
+		dyeId === 2 && drnId === 3 &&
+		slice.filter(n => n === "emitterTally").length === 2 &&
+		slice.filter(n => n === "applyEmitters").length === 2 &&
+		slice.indexOf("emitterTally") < slice.indexOf("applyEmitters"));
+
+	// async readback pairing: simulate GPU emitterLedger + heatIn/Out arriving while paintDye interleaves
+	const initM = solver.getStats().ledger.initialM;
+	const initDr = solver.getStats().ledger.initialDr;
+	const initE = solver.getStats().ledger.initialE;
+	statsSnap[0] = initM + 12.5 - 3.25;
+	statsSnap[1] = initDr + 6.0 - 1.5;
+	statsSnap[4] = initE + 400.0 - 90.0 + 50.0 - 20.0;
+	statsSnap[17] = 50.0;
+	statsSnap[18] = 20.0;
+	statsSnap[S.IDX_EMIT_INJ_M] = 12.5;
+	statsSnap[S.IDX_EMIT_INJ_DR] = 6.0;
+	statsSnap[S.IDX_EMIT_INJ_E] = 400.0;
+	statsSnap[S.IDX_EMIT_REM_M] = 3.25;
+	statsSnap[S.IDX_EMIT_REM_DR] = 1.5;
+	statsSnap[S.IDX_EMIT_REM_E] = 90.0;
+	solver.frame(cfg.frameDt, 1, true);
+	// interleave a brush paint AFTER stats copy was queued, BEFORE mapAsync resolves
+	solver.paintDye(0.5, 0.5, [0, 1, 0]);
+	const paintM = solver.getStats().ledger.injectedM;
+	await solver.pollReadback();
+	const st = solver.getStats();
+	check("emitter readback pairing: expected totals pair with GPU emitterLedger without losing interleaved paintDye",
+		Math.abs(st.expected.m - statsSnap[0]) < 1e-5 &&
+		Math.abs(st.expected.dr - statsSnap[1]) < 1e-5 &&
+		Math.abs(st.expected.E - statsSnap[4]) < 1e-3 &&
+		Math.abs(st.ledger.injectedM - (paintM + 12.5)) < 1e-5 &&
+		Math.abs(st.ledger.removedM - 3.25) < 1e-5 &&
+		Math.abs(cfg.rhoBase - (initM + paintM) / (N * N)) < 1e-6,
+		"expM=" + st.expected.m.toFixed(3) + " ledgerInjM=" + st.ledger.injectedM.toFixed(3));
+
+	// resize clamps coordinates to new grid and re-uploads live slots
+	solver.moveEmitter(dyeId, 60, 62);
+	solver.resize(128);
+	const uploaded = new Float32Array(solver.pool.emitters._buf);
+	check("emitter resize: live slots survive pool rebuild and re-upload to new buffer",
+		solver.emitterCount() === 4 && uploaded[0] === 4 &&
+		uploaded[E.slotBase(dyeId) + E.E_X] === 60,
+		"live=" + uploaded[0]);
+	solver.removeEmitter(momId);
+	solver.removeEmitter(fzId);
+	solver.removeEmitter(dyeId);
+	solver.removeEmitter(drnId);
+	solver.destroy();
+	check("emitter pool buffers destroyed cleanly with zero leaks",
+		m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0);
+}
+
 (async function main() {
 	testParams();
 	testWgsl();
@@ -546,6 +646,7 @@ async function testPhasePlumbing() {
 	await testPlumbing();
 	await testProbePlumbing();
 	await testPhasePlumbing();
+	await testEmitterPlumbing();
 	console.log(failures === 0 ? "ALL GPU-MOCK CHECKS PASSED" : failures + " FAILURES");
 	process.exitCode = failures === 0 ? 0 : 1;
 })();

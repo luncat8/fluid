@@ -13,6 +13,7 @@ require(path.join(root, "src/core/grid.js"));
 require(path.join(root, "src/core/stats.js"));
 require(path.join(root, "src/core/solver.js"));
 require(path.join(root, "src/core/probes.js"));
+require(path.join(root, "src/core/emitters.js"));
 require(path.join(root, "src/core/buoy.js"));
 require(path.join(root, "src/core/pacing.js"));
 require(path.join(root, "src/gpu/device.js"));
@@ -203,6 +204,35 @@ async function testStatsAndProbes() {
 	sim.destroy();
 }
 
+async function testEmitters() {
+	const { sim, m } = await makeSim({ substepsAuto: false });
+	const q = m.device.queue;
+	const E = Fluid.core.emitters;
+	const e0 = sim.addEmitter({ kind: "dye", x: 16, y: 20, radius: 5, value: 0.4, dye: [0.9, 0.2, 0.1] });
+	const e1 = sim.addEmitter({ kind: "freeze", x: 40, y: 42, radius: 6, value: 120 });
+	const e2 = sim.addEmitter({ kind: "momentum", x: 32, y: 12, radius: 4, vx: 80, vy: 150 });
+	const e3 = sim.addEmitter({ kind: "drain", x: 48, y: 18, radius: 5, value: 0.35 });
+	check(e0 === 0 && e1 === 1 && e2 === 2 && e3 === 3 && sim.emitterCount() === 4 &&
+		sim.addEmitter({ kind: "unknown", x: 10, y: 10, radius: 4 }) === -1,
+		"addEmitter assigns stable slot ids across kinds and rejects unknown kinds",
+		"count=" + sim.emitterCount());
+	check(sim.moveEmitter(e0, 24, 28) === true && sim.setEmitter(e1, { value: 90, radius: 7 }) === true &&
+		sim.moveEmitter(99, 1, 1) === false && sim.setEmitter(e1, { kind: "bad" }) === false,
+		"moveEmitter/setEmitter mutate slots in place and validate arguments");
+	sim.setGrid(128);
+	q.completeAll();
+	const raw = new Float32Array(sim.solver.pool.emitters._buf);
+	check(raw[0] === 4 && raw[E.slotBase(e0) + E.E_X] === 24 && raw[E.slotBase(e1) + E.E_VAL] === 90,
+		"setGrid re-uploads live emitters into the rebuilt pool",
+		"live=" + raw[0] + " x0=" + raw[E.slotBase(e0) + E.E_X]);
+	check(sim.removeEmitter(e2) === true && sim.emitterCount() === 3 && sim.removeEmitter(e2) === false,
+		"removeEmitter frees the slot and drops emitterCount");
+	sim.destroy();
+	check(sim.emitterCount() === 0 && sim.addEmitter({ kind: "heat", x: 8, y: 8, radius: 4 }) === -1 &&
+		sim.moveEmitter(e0, 5, 5) === false && sim.setEmitter(e0, { value: 1 }) === false && sim.removeEmitter(e0) === false,
+		"emitter methods become safe no-ops after destroy()");
+}
+
 async function testViewAndGrid() {
 	const { sim, m, canvas } = await makeSim({ substepsAuto: false });
 	let seen = -1;
@@ -253,7 +283,7 @@ async function testInputLifecycle() {
 	globalThis.document = { getElementById: () => null, addEventListener() {}, removeEventListener() {}, hidden: false };
 	try {
 		require(path.join(root, "src/app/input.js"));
-		const { sim } = await makeSim({ substepsAuto: false });
+		const { sim, canvas: simCanvas } = await makeSim({ substepsAuto: false });
 		const canvas = new Target();
 		canvas.setPointerCapture = () => {};
 		canvas.hasPointerCapture = () => false;
@@ -292,6 +322,12 @@ async function testInputLifecycle() {
 		sim.detachKeys();
 		check(canvas.count() === pointerListeners && (canvas.listeners.pointerdown || []).length === 1,
 			"detachKeys leaves an attached pointer stroke handler active");
+		check(sim.bindKeys(null) === null && sim.bindKeys() !== null && (win.listeners.keydown || []).length === 1,
+			"bindKeys() defaults omitted target to window while bindKeys(null) refuses");
+		win.listeners.keydown[0]({ key: "]", target: {}, repeat: false, preventDefault() {} });
+		check(sim.params.N === 128 && simCanvas.width === 128,
+			"keyboard grid shortcut routes through engine.setGrid and resizes the canvas",
+			"N=" + sim.params.N + " canvas=" + simCanvas.width);
 		sim.destroy();
 		check(win.count() + canvas.count() === before && keyTarget.count() === 0,
 			"destroy() detaches all input owners before releasing the pool");
@@ -311,6 +347,7 @@ async function testTeardown() {
 		});
 		sim.step(1 / 60);
 		sim.addProbe(4, 4);
+		sim.addEmitter({ kind: "dye", x: 16, y: 16, radius: 4, value: 0.5 });
 		sim.destroy();
 		sim.destroy();
 		assert.equal(m.counts.buffersAlive, 0, "buffer leak on create/destroy cycle " + i);
@@ -428,7 +465,7 @@ async function testDemoPage() {
 	const origWindow = globalThis.window, origDocument = globalThis.document;
 	const origRaf = globalThis.requestAnimationFrame, origCancel = globalThis.cancelAnimationFrame;
 	const els = {};
-	for (const id of ["c", "status", "error-panel", "scenario", "pause", "step", "reset", "clear-probes", "views", "probe-body", "meters"]) {
+	for (const id of ["c", "status", "error-panel", "scenario", "pause", "step", "reset", "clear-probes", "toggle-emitters", "emitter-status", "views", "probe-body", "meters"]) {
 		els[id] = new El(id === "c" ? "canvas" : "div");
 	}
 	const win = new El("window");
@@ -509,6 +546,13 @@ async function testDemoPage() {
 		els["clear-probes"].fire("click");
 		check(sim.probeCount() === 0 && els["probe-body"].children[0].hidden === true,
 			"demo: clear drops every probe slot and hides the rows");
+		els["toggle-emitters"].fire("click");
+		check(sim.emitterCount() === 6 && els["emitter-status"].textContent === "6 active",
+			"demo: toggle-emitters installs the 6-emitter RGB + thermal + drain rig",
+			els["emitter-status"].textContent);
+		els["toggle-emitters"].fire("click");
+		check(sim.emitterCount() === 0 && els["emitter-status"].textContent === "0 active",
+			"demo: second click removes all demo emitters cleanly");
 		win.fire("pagehide");
 		check(sim.destroyed === true && m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0,
 			"demo: leaving the page destroys the engine and its pool",
@@ -528,6 +572,7 @@ async function testDemoPage() {
 	await testEngineCreate();
 	await testPacing();
 	await testStatsAndProbes();
+	await testEmitters();
 	await testViewAndGrid();
 	await testInputLifecycle();
 	await testTeardown();

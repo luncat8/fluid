@@ -7,7 +7,16 @@
 		const opt=options||{};
 		const pointerEnabled=opt.pointer!==false;
 		const keysEnabled=opt.keys!==false;
-		const keyTarget=opt.keyTarget||window;
+		const win=typeof window!=="undefined"&&window&&window.addEventListener?window:null;
+		const keyTarget=opt.keyTarget||win;
+		const doReset=opt.onReset||(()=>{
+			if(solver)solver.reset();
+			cfg._dirty=true;
+		});
+		const doResize=opt.onResize||(n=>{
+			if(solver&&n!==cfg.N)solver.resize(n);
+			cfg._dirty=true;
+		});
 		const state={
 			x:0,y:0,dx:0,dy:0,down:false,
 			lastX:0,lastY:0,lastT:0,
@@ -43,13 +52,14 @@
 		const pointerBindings=[];
 		const keyBindings=[];
 		function on(target,type,fn,bindings){
+			if(!target||typeof target.addEventListener!=="function")return;
 			target.addEventListener(type,fn);
 			bindings.push([target,type,fn]);
 		}
 		function removeBindings(bindings){
 			for(let i=0;i<bindings.length;i++){
 				const b=bindings[i];
-				b[0].removeEventListener(b[1],b[2]);
+				if(typeof b[0].removeEventListener==="function")b[0].removeEventListener(b[1],b[2]);
 			}
 			bindings.length=0;
 		}
@@ -130,19 +140,21 @@
 			on(canvas,"pointerup",pointerEnd,pointerBindings);
 			on(canvas,"pointercancel",pointerEnd,pointerBindings);
 			on(canvas,"lostpointercapture",pointerEnd,pointerBindings);
-			on(window,"blur",()=>{
+			if(win)on(win,"blur",()=>{
 				pointerEnd();
 				state.pending=null;
 			},pointerBindings);
 		}
-		if(keysEnabled){
-			on(window,"blur",()=>{
+		if(keysEnabled&&keyTarget){
+			const clearKeys=()=>{
 				for(const k in state.keys)state.keys[k]=false;
-			},keyBindings);
+			};
+			if(win)on(win,"blur",clearKeys,keyBindings);
+			if(keyTarget!==win)on(keyTarget,"blur",clearKeys,keyBindings);
 			on(keyTarget,"keydown",e=>{
 			if(e.defaultPrevented||e.ctrlKey||e.metaKey||e.altKey||e.isComposing)return;
 			const target=e.target;
-			if(target&&(target.isContentEditable||target.closest("input, select, textarea, button, a[href]")))return;
+			if(target&&(target.isContentEditable||(typeof target.closest==="function"&&target.closest("input, select, textarea, button, a[href]"))))return;
 			const k=e.key.toLowerCase();
 			if(e.repeat&&k!=="+"&&k!=="="&&k!=="-"&&k!=="_")return;
 			state.keys[k]=true;
@@ -154,8 +166,7 @@
 			}else if(k==="."){
 				cfg._stepOnce=true;
 			}else if(k==="r"){
-				if(solver)solver.reset();
-				cfg._dirty=true;
+				doReset();
 			}else if(k==="h"){
 				state.help=!state.help;
 				const el=document.getElementById("help-overlay");
@@ -169,13 +180,9 @@
 			}else if(k==="-"||k==="_"){
 				Fluid.core.config.setSolverIters(cfg,Math.max(1,Fluid.core.config.solverIters(cfg)-5));
 			}else if(k==="["){
-				const n=Math.max(64,cfg.N-64);
-				if(solver&&n!==cfg.N)solver.resize(n);
-				cfg._dirty=true;
+				doResize(Math.max(64,cfg.N-64));
 			}else if(k==="]"){
-				const n=Math.min(1024,cfg.N+64);
-				if(solver&&n!==cfg.N)solver.resize(n);
-				cfg._dirty=true;
+				doResize(Math.min(1024,cfg.N+64));
 			}else if(k==="f"){
 				cfg.fctLimiter=cfg.fctLimiter?0:1;
 				cfg._dirty=true;
@@ -189,10 +196,9 @@
 			}else if(k==="n"){
 				const names=Fluid.core.config.scenarioNames;
 				cfg.scenario=names[(names.indexOf(cfg.scenario)+1)%names.length];
-				if(solver)solver.reset();
+				doReset();
 				// convection is a temperature show: land on the map that shows it
 				if(cfg.scenario==="convection"&&setMode)setMode(Fluid.core.config.viewModes.temperature);
-				cfg._dirty=true;
 			}else if(k==="u"){
 				cfg.substepsAuto=!cfg.substepsAuto;
 			}else if(k==="y"){
@@ -207,8 +213,9 @@
 		}
 		return {state,flushPaint,destroy,destroyKeys};
 	}
-	function createKeys(element,cfg,solver,setMode){
-		return createInput(null,cfg,solver,setMode,{pointer:false,keyTarget:element});
+	function createKeys(element,cfg,solver,setMode,options){
+		const opt=options||{};
+		return createInput(null,cfg,solver,setMode,{pointer:false,keyTarget:element,onReset:opt.onReset,onResize:opt.onResize});
 	}
 	Fluid.app.input={create:createInput,createKeys,DYE_COLORS};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.app.input;

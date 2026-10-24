@@ -40,6 +40,7 @@
 	<script defer src="../src/core/multigrid.js"></script>
 	<script defer src="../src/core/solver.js"></script>
 	<script defer src="../src/core/probes.js"></script>
+	<script defer src="../src/core/emitters.js"></script>
 	<script defer src="../src/core/buoy.js"></script>
 	<script defer src="../src/core/pacing.js"></script>
 	<script defer src="../src/gpu/device.js"></script>
@@ -75,6 +76,13 @@
 					<button id="reset" type="button">Reset</button>
 				</div>
 				<div class="row" id="views"></div>
+			</div>
+			<div class="block">
+				<h2>Emitters</h2>
+				<div class="row">
+					<button id="toggle-emitters" type="button">Enable RGB + thermal rig</button>
+					<span id="emitter-status" class="muted">0 active</span>
+				</div>
 			</div>
 			<div class="block">
 				<h2>Probes</h2>

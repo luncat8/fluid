@@ -907,3 +907,59 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 - pitfall: a 20-cycle create/destroy loop is the only cheap leak test available
   without a GPU. The shared recording mock (`experiments/mock-device.js`) tracks
   live buffers/textures, so "pool destroyed" is an assertion rather than a comment.
+
+## 2026-10-24 preallocated emitter slots, exact GPU ledger closure, and t8b input review
+
+- skill: state-dependent GPU emitters (`drain` clamping at vacuum `m -> 0`,
+  `heat`/`cold`/`freeze` clamping at target enthalpy floors/ceilings) cannot be
+  pre-summed on the CPU like additive `paintDye` patches because the CPU does not
+  have the live substep `mass`/`therm` textures. Close the conservation ledger on
+  the GPU without per-substep CPU stalls by splitting channels:
+  1. Sensible/latent thermal emitters (`heat`, `cold`, `freeze`) accumulate
+     `eNew - eOld` / `eOld - eNew` directly into per-cell `therm.b` / `therm.a`
+     (Sterbenz-exact in `f32` when `0.5 * vOld <= vNew <= 2 * vOld`), which
+     `statsReduceA`/`statsReduceB` already Kahan-sum into `heatInE`/`heatOutE`.
+  2. Mass/tracer emitters (`dye`, `drain`) run a single-workgroup `emitterTally`
+     pass (`@workgroup_size(64)`) over only active `dye`/`drain` bounding boxes
+     (with first-emitter bounding-box ownership so overlapping discs evaluate each
+     cell once) and Kahan-accumulate the exact `vNew - vOld` / `vOld - vNew` into
+     an 80-byte `pool.emitterLedger` (`[0..9]` sums + `[10..19]` compensations).
+  3. `forces` reads `(emitterLedger[0] - emitterLedger[5]) * invN * invN + rhoBase`
+     every substep so hydrostatic `rhoMean` stays live during multi-substep mass
+     injection/drain without waiting for a `statsEvery` readback.
+  4. `statsReduceB` copies `emitterLedger[0..9]` into `stats[36..45]`. At copy
+     launch, `gpu/solver.js` snapshots `pendingEmitNet = emitNetKnown`, and on
+     `mapAsync` completion adds `(emitNetGpu - pendingEmitNet)` to the snapshot's
+     `expected` totals while advancing live `expected` by `(emitNetGpu - emitNetKnown)`.
+     Interleaved CPU `paintDye` patches between readback launch and completion
+     remain exact and are never double-counted or overwritten.
+- finding: dispatch gating keeps idle emitters completely free on the GPU. Header
+  counters `[momentumCount, scalarCount, massDrainCount]` in `src/core/emitters.js`
+  gate `forces` (loop bound 0 when `momentumCount == 0`), skip `applyEmitters`
+  entirely when `scalarCount == 0`, and skip `emitterTally` when `massDrainCount == 0`
+  (thermal-only `heat`/`cold`/`freeze` rigs add 1 dispatch/substep, not 2).
+- pitfall: in Boussinesq convection (`gravityY = 300, beta = 0.002`), liquid cooled
+  from `293 K` to `TMelt = 273 K` gains `-12 cells/s^2` downward acceleration and
+  sinks out of a suspended `freeze` emitter disc in `< 0.7 s`. Crossing the fusion
+  plateau (`cLiq * 20 + Lf = 84 + 334 = 418` energy/cell) requires either enough
+  power density (`value >= ~900`) to extract `Lf` within the parcel's residence
+  time or placing the sink against a boundary/interface. `cold` floors enthalpy
+  strictly above `E2 = cSol * TMelt + Lf` (`TMelt + 2` by default) so even high
+  power never crosses into slush/ice, whereas `freeze` floors enthalpy below
+  `E1 = cSol * TMelt` (`TMelt - 25` by default) so `phaseEos` drives `phi_l -> 0`.
+- pitfall: `wgsl_reflect` (`WgslParser` / `WgslExec`) rejects two valid WGSL
+  constructs in compute kernels: vector swizzle assignments (`q.r = ...`) and
+  `continue`/`break` inside `for (...)` headers (use structured `if/else` or
+  `loop { if (...) { break; } }`). In addition, `WgslExec` does not coroutine-yield
+  at `workgroupBarrier()` and leaves `@builtin(local_invocation_index)` bogus on 1D
+  `@workgroup_size(64)` dispatches, so shared-memory tree reductions are parse-checked
+  with `WgslReflect` while cell/slot kernels (`applyEmitters`, `forces`,
+  `statsReduceB`, `probeSample`) are executed cell-for-cell against the CPU oracle.
+- pitfall: `0.7.0 t8b` review caught four subtle keyboard-binding edge cases in
+  `src/app/input.js` and `src/api/engine.js`: `e.target` on `window`/`document`
+  lacks `.closest()`, `blur` on a custom `keyTarget !== window` did not clear
+  `state.keys`, `r`/`n`/`[`/`]` bypassed `engine.reset()`/`engine.setGrid()`
+  (skipping canvas resize and pacing reset), and `sim.bindKeys()` with an omitted
+  argument returned `null` instead of defaulting to `window`. All four are fixed
+  and pinned in `experiments/input.js` and `experiments/engine.js`.
+

@@ -20,8 +20,14 @@
 	// not solver error. a boiling spike lives there.
 	const IDX_POISSON_RES=32,IDX_POISSON_RHS=33;
 	const IDX_POISSON_DRIFT=34,IDX_POISSON_DRIFT_RHS=35;
-	const STATS_LEN=36;
+	// 0.7.0 t3: cumulative GPU emitter mass/dye/enthalpy injections and drain
+	// removals, Kahan-accumulated in pool.emitterLedger and copied into 36..45
+	// by statsReduceB alongside totals 0..4 so pollStats pairs them exactly.
+	const IDX_EMIT_INJ_M=36,IDX_EMIT_INJ_DR=37,IDX_EMIT_INJ_DG=38,IDX_EMIT_INJ_DB=39,IDX_EMIT_INJ_E=40;
+	const IDX_EMIT_REM_M=41,IDX_EMIT_REM_DR=42,IDX_EMIT_REM_DG=43,IDX_EMIT_REM_DB=44,IDX_EMIT_REM_E=45;
+	const STATS_LEN=46;
 	const PARTIAL_STRIDE=40;
+	const EMIT_LEDGER_LEN=20;
 	// negatives below -1e-9 are real; smaller is f32/FCT roundoff (≈1e-28 seen at N=512).
 	// over threshold 1.001 catches any liquid overpack; severity is decided in the hud.
 	const NEG_EPS=1e-9;
@@ -162,6 +168,6 @@
 		if(a<1e-3)return "warn";
 		return "bad";
 	}
-	Fluid.core.stats={STATS_LEN,PARTIAL_STRIDE,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,IDX_HEAT_IN,IDX_HEAT_OUT,IDX_T_MIN,IDX_T_MAX,IDX_T_MEAN,IDX_KINETIC,IDX_PH_VAC,IDX_PH_SOL,IDX_PH_MELT,IDX_PH_LIQ,IDX_PH_BOIL,IDX_PH_GAS,IDX_S_SAT,IDX_LATENT,IDX_FROZEN_MOM,IDX_POISSON_RES,IDX_POISSON_RHS,IDX_POISSON_DRIFT,IDX_POISSON_DRIFT_RHS,STATS_FIELDS,totalsFromFields,motionTotals,thermalTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift};
+	Fluid.core.stats={STATS_LEN,PARTIAL_STRIDE,EMIT_LEDGER_LEN,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,IDX_HEAT_IN,IDX_HEAT_OUT,IDX_T_MIN,IDX_T_MAX,IDX_T_MEAN,IDX_KINETIC,IDX_PH_VAC,IDX_PH_SOL,IDX_PH_MELT,IDX_PH_LIQ,IDX_PH_BOIL,IDX_PH_GAS,IDX_S_SAT,IDX_LATENT,IDX_FROZEN_MOM,IDX_POISSON_RES,IDX_POISSON_RHS,IDX_POISSON_DRIFT,IDX_POISSON_DRIFT_RHS,IDX_EMIT_INJ_M,IDX_EMIT_INJ_DR,IDX_EMIT_INJ_DG,IDX_EMIT_INJ_DB,IDX_EMIT_INJ_E,IDX_EMIT_REM_M,IDX_EMIT_REM_DR,IDX_EMIT_REM_DG,IDX_EMIT_REM_DB,IDX_EMIT_REM_E,STATS_FIELDS,totalsFromFields,motionTotals,thermalTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.stats;
 })(globalThis);

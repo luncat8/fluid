@@ -10,6 +10,7 @@ const root = path.resolve(__dirname, "..");
 require(path.join(root, "src/core/config.js"));
 require(path.join(root, "src/core/grid.js"));
 require(path.join(root, "src/core/stats.js"));
+require(path.join(root, "src/core/emitters.js"));
 const solverMod = require(path.join(root, "src/core/solver.js"));
 const buoyMod = require(path.join(root, "src/core/buoy.js"));
 const sharpness = require(path.join(root, "experiments/sharpness.js"));
@@ -599,6 +600,117 @@ function testLimiter() {
 		"negCells=" + negCells);
 }
 
+// 12. 0.7.0 t3 emitter slots: preallocated CRUD, all six kinds, vacuum/wall guards,
+// freeze phi_l extraction, and realized-delta conservation closure across long runs.
+function testEmitterSlots() {
+	// 12a. 32-slot preallocated table + CRUD + invalid-input guards
+	{
+		const cfg = makeCfg({ N: 32, scenario: "still", gravityY: 0, pressureIters: 20 });
+		const sim = solverMod.create(cfg);
+		check("emitter table: rejects invalid specs and unknown kinds",
+			sim.addEmitter(null) === -1 && sim.addEmitter({ kind: "bogus", x: 8, y: 8, radius: 4 }) === -1);
+		const ids = [];
+		for (let i = 0; i < Fluid.core.emitters.MAX; i++) {
+			ids.push(sim.addEmitter({ kind: "dye", x: 1 + i * 0.5, y: 8, radius: 3, value: 0.2, dye: [1, 0, 0] }));
+		}
+		check("emitter table: fills 32 preallocated slots and refuses the 33rd",
+			ids.every((id, i) => id === i) && sim.emitterCount() === 32 &&
+			sim.addEmitter({ kind: "heat", x: 8, y: 8, radius: 3, value: 10 }) === -1,
+			"live=" + sim.emitterCount());
+		const slotRef = sim.emitterTable.slots[5];
+		const uploadRef = sim.emitterTable.upload;
+		const removed = sim.removeEmitter(5);
+		const reused = sim.addEmitter({ kind: "freeze", x: 16, y: 16, radius: 4, value: 50 });
+		const moved = sim.moveEmitter(reused, 20, 22);
+		const patched = sim.setEmitter(reused, { value: 75, radius: 5 });
+		check("emitter table: remove frees only its slot, add reuses it in place with zero reallocation",
+			removed && reused === 5 && moved && patched &&
+			sim.emitterTable.slots[5] === slotRef && sim.emitterTable.upload === uploadRef &&
+			!sim.removeEmitter(99) && !sim.setEmitter(5, { kind: "invalid" }));
+	}
+	// 12b. momentum emitter accelerates flow without altering any conserved ledger channel;
+	// cold cools warm fluid while staying liquid (phi_l == 1); freeze pulls phi_l < 0.5 into solid ice
+	{
+		const cfg = makeCfg({ N: 32, scenario: "still", gravityY: 0, pressureIters: 24, dt: 1 / 120 });
+		const sim = solverMod.create(cfg);
+		const momId = sim.addEmitter({ kind: "momentum", x: 16, y: 16, radius: 6, vx: 180, vy: -90 });
+		for (let s = 0; s < 20; s++) sim.step(cfg.dt);
+		const stMom = sim.stats();
+		const momDrift = Math.max(
+			Math.abs(stats.driftRel(stMom.tot.sumM, stats.expectedTotal(stMom.ledger, "m"))),
+			Math.abs(stats.driftRel(stMom.tot.sumE, stats.expectedTotal(stMom.ledger, "E")))
+		);
+		check("emitter momentum: injects velocity while keeping mass and energy conserved",
+			momId === 0 && stMom.mot.maxVel > 5 && momDrift < 1e-6 &&
+			stMom.ledger.injectedM === 0 && stMom.ledger.heatInE === 0,
+			"maxVel=" + stMom.mot.maxVel.toFixed(2) + " drift=" + momDrift.toExponential(2));
+
+		sim.removeEmitter(momId);
+		const coldId = sim.addEmitter({ kind: "cold", x: 8, y: 16, radius: 5, value: 900 });
+		const freezeId = sim.addEmitter({ kind: "freeze", x: 24, y: 16, radius: 5, value: 900 });
+		for (let s = 0; s < 120; s++) sim.step(cfg.dt);
+		const stFreeze = sim.stats();
+		const iCold = (8 + 16 * sim.texW) * 4, iFreeze = (24 + 16 * sim.texW) * 4;
+		const phiLCold = sim.sfield[iCold + 1], phiLFreeze = sim.sfield[iFreeze + 1];
+		const tCold = (sim.therm.cur === 0 ? sim.therm.a : sim.therm.b)[iCold + 1];
+		const eDrift = Math.abs(stats.driftRel(stFreeze.tot.sumE, stats.expectedTotal(stFreeze.ledger, "E")));
+		check("emitter cold vs freeze: cold stays liquid above TMelt while freeze forces phi_l down to solid",
+			coldId >= 0 && freezeId >= 0 && tCold < cfg.TAmb - 5 && phiLCold === 1 &&
+			phiLFreeze < 0.5 && stFreeze.phaseCounts[1] > 0 && stFreeze.ledger.latentChargedE > 0 &&
+			eDrift < 1e-6,
+			"TCold=" + tCold.toFixed(1) + " phiLCold=" + phiLCold.toFixed(2) +
+			" phiLFreeze=" + phiLFreeze.toFixed(2) + " solidCells=" + stFreeze.phaseCounts[1] +
+			" eDrift=" + eDrift.toExponential(2));
+	}
+	// 12c. simultaneous 6-emitter rig (overlapping dye + drain + heat + cold + momentum + freeze
+	// plus a static wall inside an emitter disc and vacuum drain clamping) over 240 steps
+	{
+		const cfg = makeCfg({ N: 32, scenario: "blobs", gravityY: 120, pressureIters: 28, dt: 1 / 120 });
+		const sim = solverMod.create(cfg);
+		const wallPatch = solverMod.buildWallPatch(Object.assign({}, cfg, { paintR: 4 }), 0.25, 0.25, false);
+		sim.applyWallPatch(wallPatch);
+		const d1 = sim.addEmitter({ kind: "dye", x: 8, y: 8, radius: 6, value: 0.45, dye: [0.9, 0.1, 0.2] });
+		const d2 = sim.addEmitter({ kind: "dye", x: 22, y: 10, radius: 5, value: 0.35, dye: [0.1, 0.85, 0.3] });
+		const drId = sim.addEmitter({ kind: "drain", x: 22, y: 24, radius: 6, value: 2.4 });
+		const htId = sim.addEmitter({ kind: "heat", x: 14, y: 6, radius: 5, value: 90 });
+		const clId = sim.addEmitter({ kind: "cold", x: 16, y: 27, radius: 5, value: 70 });
+		const fzId = sim.addEmitter({ kind: "freeze", x: 6, y: 24, radius: 4, value: 180 });
+		const mmId = sim.addEmitter({ kind: "momentum", x: 16, y: 14, radius: 6, value: 140 });
+		let wallMassChanged = false;
+		const mBuf0 = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
+		const wallIdx = (8 + 8 * sim.texW) * 4;
+		const wallM0 = mBuf0[wallIdx + 3];
+		for (let s = 0; s < 240; s++) {
+			if (s === 120) {
+				sim.moveEmitter(d1, 10, 9);
+				sim.setEmitter(drId, { value: 1.2 });
+				sim.moveEmitter(mmId, 18, 16);
+			}
+			sim.step(cfg.dt);
+			const mc = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
+			if (sim.flags[wallIdx] > 0 && mc[wallIdx + 3] !== wallM0) wallMassChanged = true;
+		}
+		const st = sim.stats();
+		const drifts = [
+			stats.driftRel(st.tot.sumM, stats.expectedTotal(st.ledger, "m")),
+			stats.driftRel(st.tot.sumDr, stats.expectedTotal(st.ledger, "dr")),
+			stats.driftRel(st.tot.sumDg, stats.expectedTotal(st.ledger, "dg")),
+			stats.driftRel(st.tot.sumDb, stats.expectedTotal(st.ledger, "db")),
+			stats.driftRel(st.tot.sumE, stats.expectedTotal(st.ledger, "E"))
+		];
+		const worst = Math.max(...drifts.map(Math.abs));
+		check("emitter conservation: all 5 invariants close below 1e-6 with simultaneous dye/drain/heat/cold/freeze/momentum",
+			worst < 1e-6 && st.tot.cntNeg === 0 && !wallMassChanged &&
+			st.ledger.injectedM > 0 && st.ledger.removedM > 0 &&
+			st.ledger.heatInE > 0 && st.ledger.heatOutE > 0 &&
+			d2 >= 0 && htId >= 0 && clId >= 0 && fzId >= 0,
+			"worst_rel=" + worst.toExponential(2) +
+			" injM=" + st.ledger.injectedM.toFixed(2) +
+			" remM=" + st.ledger.removedM.toFixed(2) +
+			" neg=" + st.tot.cntNeg);
+	}
+}
+
 testPressureColoring();
 testLedgerSnapshot();
 testReduction();
@@ -614,5 +726,6 @@ testWall();
 testEmitter();
 testDraw();
 testLimiter();
+testEmitterSlots();
 console.log(failures === 0 ? "ALL CONFORMANCE TESTS PASSED" : failures + " FAILURES");
 process.exitCode = failures === 0 ? 0 : 1;

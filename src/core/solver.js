@@ -290,6 +290,8 @@
 		// centred force), allocated on first use so the shipping path (eps=0)
 		// does not pay for it.
 		let confW=null,confS=null,confFx=null,confFy=null;
+		const emitMod=Fluid.core.emitters;
+		const emitterTable=emitMod?emitMod.create():null;
 		let mg=null;
 		if(cfg.useMultigrid && Fluid.core.multigrid){
 			mg=Fluid.core.multigrid.create(cfg,texW,texH,{
@@ -331,6 +333,7 @@
 			diag.poissonRes=0;diag.poissonRhs=0;diag.poissonDrift=0;diag.poissonDriftRhs=0;diag.poissonDriftRel=0;
 			diag.macLimit=0;diag.macClamp=0;
 			diag.velClamp=0;
+			if(emitterTable)emitMod.syncConfig(emitterTable,cfg,false);
 			phaseEos(false);
 		}
 		function captureSolveResidual(){
@@ -345,6 +348,11 @@
 			const ms=grid.curBuf(mass),ts=grid.curBuf(therm);
 			const R=cfg.mouseR,R2=R*R;
 			const rhoMean=(ledger.initialM+ledger.injectedM-ledger.removedM)/(N*N);
+			if(emitterTable)emitMod.syncConfig(emitterTable,cfg,false);
+			const emU=emitterTable?emitterTable.upload:null;
+			const momCnt=emU?emU[2]:0;
+			const emMax=emU?emU[1]:0;
+			const dtf=f32(dt);
 			const conf=cfg.vorticityConfinement>0;
 			if(conf)confine(src);
 			for(let y=1;y<texH-1;y++){
@@ -357,6 +365,19 @@
 							const f=mouseFall((x-1)-cfg.mouseX,(y-0.5)-cfg.mouseY,R,R2);
 							u+=dt*cfg.mouseVX*f*cfg.mouseStrength;
 						}
+						if(momCnt>0){
+							const px=f32(x-1),py=f32(y-0.5);
+							for(let s=0;s<emMax;s++){
+								const b=16+s*16;
+								if(emU[b+4]!==4)continue;
+								const dx=f32(px-emU[b]),dy=f32(py-emU[b+1]);
+								const d2=f32(f32(dx*dx)+f32(dy*dy));
+								if(d2>=emU[b+3])continue;
+								const tf=Math.max(0,f32(1-f32(d2*emU[b+2])));
+								const fw=f32(tf*tf);
+								u=f32(f32(u)+f32(dtf*f32(emU[b+9]*fw)));
+							}
+						}
 						// the u face (x,y) sits between the cells (x-1,y) and (x,y)
 						if(conf)u+=dt*0.5*(confFx[ci-1]+confFx[ci]);
 						u=clampAbs(u,cfg.vClamp);
@@ -366,6 +387,19 @@
 						if(cfg.mouseStrength>0){
 							const f=mouseFall((x-0.5)-cfg.mouseX,(y-1)-cfg.mouseY,R,R2);
 							v+=dt*cfg.mouseVY*f*cfg.mouseStrength;
+						}
+						if(momCnt>0){
+							const px=f32(x-0.5),py=f32(y-1);
+							for(let s=0;s<emMax;s++){
+								const b=16+s*16;
+								if(emU[b+4]!==4)continue;
+								const dx=f32(px-emU[b]),dy=f32(py-emU[b+1]);
+								const d2=f32(f32(dx*dx)+f32(dy*dy));
+								if(d2>=emU[b+3])continue;
+								const tf=Math.max(0,f32(1-f32(d2*emU[b+2])));
+								const fw=f32(tf*tf);
+								v=f32(f32(v)+f32(dtf*f32(emU[b+10]*fw)));
+							}
 						}
 						// the v face (x,y) sits between the cells (x,y-1) and (x,y)
 						if(conf)v+=dt*0.5*(confFy[ci-texW]+confFy[ci]);
@@ -938,6 +972,131 @@
 				}
 			}
 		}
+		// 0.7.0 t3 scalar/thermal emitters: realized texel deltas (mNew - m, eNew - E)
+		// are charged directly so f32 quantization at high base mass/enthalpy cannot
+		// accumulate systematic drift over tens of thousands of substeps.
+		function applyEmitters(dt){
+			if(!emitterTable)return;
+			emitMod.syncConfig(emitterTable,cfg,false);
+			const emU=emitterTable.upload;
+			if(!(emU[3]>0))return;
+			const emMax=emU[1];
+			const ms=grid.curBuf(mass),ts=grid.curBuf(therm);
+			const dtf=f32(dt),mEps=f32(cfg.mEps);
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					if(isWall(x,y))continue;
+					const i=(x+y*texW)*4;
+					let dr=ms[i],dg=ms[i+1],db=ms[i+2],m=ms[i+3];
+					let E=ts[i],hIn=ts[i+2],hOut=ts[i+3];
+					let changed=false;
+					const px=f32(x-0.5),py=f32(y-0.5);
+					for(let s=0;s<emMax;s++){
+						const b=16+s*16;
+						const kind=emU[b+4]|0;
+						if(kind===0||kind===4)continue;
+						const val=emU[b+5];
+						if(!(val>0))continue;
+						const dx=f32(px-emU[b]),dy=f32(py-emU[b+1]);
+						const d2=f32(f32(dx*dx)+f32(dy*dy));
+						if(d2>=emU[b+3])continue;
+						const tf=Math.max(0,f32(1-f32(d2*emU[b+2])));
+						const fw=f32(tf*tf);
+						const amt=f32(f32(val*dtf)*fw);
+						if(!(amt>0))continue;
+						if(kind===1){
+							const ddr=f32(emU[b+6]*amt),ddg=f32(emU[b+7]*amt),ddb=f32(emU[b+8]*amt);
+							const dE=f32(amt*emU[b+11]);
+							const mNew=f32(m+amt),drNew=f32(dr+ddr),dgNew=f32(dg+ddg),dbNew=f32(db+ddb),eNew=f32(E+dE);
+							ledger.injectedM+=f32(mNew-m);
+							ledger.injectedDr+=f32(drNew-dr);
+							ledger.injectedDg+=f32(dgNew-dg);
+							ledger.injectedDb+=f32(dbNew-db);
+							ledger.injectedE+=f32(eNew-E);
+							m=mNew;dr=drNew;dg=dgNew;db=dbNew;E=eNew;
+							changed=true;
+						}else if(kind===5){
+							if(m>0){
+								if(amt>=m){
+									ledger.removedM+=m;
+									ledger.removedDr+=dr;
+									ledger.removedDg+=dg;
+									ledger.removedDb+=db;
+									ledger.removedE+=E;
+									m=0;dr=0;dg=0;db=0;E=0;
+								}else{
+									const frac=Math.min(1,Math.max(0,f32(amt/m)));
+									const mNew=Math.max(0,f32(m-amt));
+									const drNew=Math.max(0,f32(dr-f32(dr*frac)));
+									const dgNew=Math.max(0,f32(dg-f32(dg*frac)));
+									const dbNew=Math.max(0,f32(db-f32(db*frac)));
+									const eNew=Math.max(0,f32(E-f32(E*frac)));
+									ledger.removedM+=f32(m-mNew);
+									ledger.removedDr+=f32(dr-drNew);
+									ledger.removedDg+=f32(dg-dgNew);
+									ledger.removedDb+=f32(db-dbNew);
+									ledger.removedE+=f32(E-eNew);
+									m=mNew;dr=drNew;dg=dgNew;db=dbNew;E=eNew;
+								}
+								changed=true;
+							}
+						}else if(kind===2){
+							if(m>=mEps){
+								let dE=amt;
+								const hCap=emU[b+11];
+								if(hCap>0){
+									const eCeil=f32(m*hCap);
+									if(E>=eCeil)dE=0;
+									else dE=Math.min(dE,f32(eCeil-E));
+								}
+								if(dE>0){
+									const eNew=f32(E+dE);
+									const dReal=f32(eNew-E);
+									E=eNew;
+									hIn=f32(hIn+dReal);
+									ledger.heatInE+=dReal;
+									changed=true;
+								}
+							}
+						}else if(kind===3||kind===6){
+							if(m>=mEps){
+								const eFloor=f32(m*emU[b+11]);
+								if(E>eFloor){
+									const cool=Math.min(amt,f32(E-eFloor));
+									const eNew=Math.max(eFloor,f32(E-cool));
+									const dReal=f32(E-eNew);
+									E=eNew;
+									hOut=f32(hOut+dReal);
+									ledger.heatOutE+=dReal;
+									changed=true;
+								}
+							}
+						}
+					}
+					if(changed){
+						ms[i]=dr;ms[i+1]=dg;ms[i+2]=db;ms[i+3]=m;
+						ts[i]=E;ts[i+2]=hIn;ts[i+3]=hOut;
+						phaseInto(phaseScratch,m,E,cfg);
+						ts[i+1]=phaseScratch.T;
+					}
+				}
+			}
+		}
+		function addEmitter(spec){
+			return emitterTable?emitMod.add(emitterTable,cfg,spec):-1;
+		}
+		function moveEmitter(id,x,y){
+			return emitterTable?emitMod.move(emitterTable,cfg,id,x,y):false;
+		}
+		function setEmitter(id,patch){
+			return emitterTable?emitMod.set(emitterTable,cfg,id,patch):false;
+		}
+		function removeEmitter(id){
+			return emitterTable?emitMod.remove(emitterTable,id):false;
+		}
+		function emitterCount(){
+			return emitterTable?emitterTable.live:0;
+		}
 		function step(dt){
 			forces(dt);
 			advectVelocity(dt);
@@ -951,6 +1110,7 @@
 			advectScalar();
 			phaseEos(true);
 			conduction(dt);
+			applyEmitters(dt);
 			heatSources(dt);
 			phaseEos(true);
 			cfg.frame++;
@@ -1015,10 +1175,10 @@
 			}
 		}
 		reset();
-		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,sfield,flags,ledger,thermDiag,diag,mg,
+		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,sfield,flags,ledger,thermDiag,diag,mg,emitterTable,
 			isWall,isFrozen,isBlocked,uBlocked,vBlocked,reset,step,stats,forces,advectVelocity,poissonRhs,project,applyGrad,computeFlux,advectScalar,
-			phaseEos,conduction,heatSources,vorticityAt,
-			applyDyePatch,applyWallPatch};
+			phaseEos,conduction,applyEmitters,heatSources,vorticityAt,
+			applyDyePatch,applyWallPatch,addEmitter,moveEmitter,setEmitter,removeEmitter,emitterCount};
 	}
 	Fluid.core.solver={create,buildScenario,buildDyePatch,buildWallPatch,patchTotals,paintBlob,
 		phaseOf,phaseInto,energyFromT,eqDist,PHASE_VAC,PHASE_SOLID,PHASE_MELTING,PHASE_LIQUID,PHASE_BOILING,PHASE_GAS};

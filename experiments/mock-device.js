@@ -83,8 +83,18 @@ function create(patterns) {
 		},
 		createRenderPipeline: d => ({ label: d.label, getBindGroupLayout: () => ({}) }),
 		queue: {
-			writeBuffer(buf, offset, src) {
-				new Float32Array(buf._buf, offset, src.length).set(src);
+			writeBuffer(buf, offset, src, dataOffset, size) {
+				if (ArrayBuffer.isView(src)) {
+					const bpe = src.BYTES_PER_ELEMENT || 1;
+					const elemOff = dataOffset || 0;
+					const elemCnt = size !== undefined ? size : (src.length !== undefined ? src.length - elemOff : src.byteLength - elemOff);
+					const bytes = new Uint8Array(src.buffer, src.byteOffset + elemOff * bpe, elemCnt * bpe);
+					new Uint8Array(buf._buf, offset, bytes.byteLength).set(bytes);
+				} else if (src instanceof ArrayBuffer) {
+					const byteOff = dataOffset || 0;
+					const byteCnt = size !== undefined ? size : src.byteLength - byteOff;
+					new Uint8Array(buf._buf, offset, byteCnt).set(new Uint8Array(src, byteOff, byteCnt));
+				}
 				sink.writes.push(labelOf(buf));
 			},
 			writeTexture() {},

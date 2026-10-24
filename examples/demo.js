@@ -15,6 +15,7 @@
 	let lastUi=0;
 	let probeCursor=0;
 	let viewButtons=null;
+	const emitterIds=[];
 	const probes=[];
 	const stats=Fluid.engine.makeStats();
 	const meter={};
@@ -88,6 +89,26 @@
 				p.row.hidden=true;
 			}
 		});
+		const toggleEmit=$("toggle-emitters");
+		if(toggleEmit){
+			toggleEmit.addEventListener("click",()=>{
+				if(emitterIds.length){
+					while(emitterIds.length)sim.removeEmitter(emitterIds.pop());
+				}else{
+					const n=sim.params.N;
+					emitterIds.push(
+						sim.addEmitter({kind:"heat",x:n*0.5,y:n*0.08,radius:n*0.14,value:180}),
+						sim.addEmitter({kind:"freeze",x:n*0.5,y:n*0.88,radius:n*0.08,value:1100}),
+						sim.addEmitter({kind:"dye",x:n*0.24,y:n*0.20,radius:n*0.04,value:0.35,dye:[0.95,0.2,0.18]}),
+						sim.addEmitter({kind:"dye",x:n*0.50,y:n*0.16,radius:n*0.04,value:0.35,dye:[0.18,0.9,0.28]}),
+						sim.addEmitter({kind:"dye",x:n*0.76,y:n*0.20,radius:n*0.04,value:0.35,dye:[0.2,0.45,0.98]}),
+						sim.addEmitter({kind:"drain",x:n*0.50,y:n*0.56,radius:n*0.06,value:0.45})
+					);
+				}
+				setText(toggleEmit,emitterIds.length?"Disable emitters":"Enable RGB + thermal rig");
+				setText($("emitter-status"),sim.emitterCount()+" active");
+			});
+		}
 		const views=$("views");
 		const names=Fluid.core.config.viewModeNames;
 		const buttons=[];
@@ -159,6 +180,7 @@
 		// the space key toggles the same flag, so the button follows sim.paused
 		// instead of remembering what it last clicked
 		setText($("pause"),sim.paused?"Resume":"Pause");
+		setText($("emitter-status"),sim.emitterCount()+" active");
 		// the buttons follow cfg.viewMode, the one value every writer (keys, clicks) sets
 		for(let i=0;i<viewButtons.length;i++)viewButtons[i].classList.toggle("active",i===sim.params.viewMode);
 	}

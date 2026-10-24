@@ -12,6 +12,12 @@ function check(value,message){
 class Target{
 	constructor(){this.listeners={};}
 	addEventListener(type,fn){(this.listeners[type]??=[]).push(fn);}
+	removeEventListener(type,fn){
+		const list=this.listeners[type];
+		if(!list)return;
+		const idx=list.indexOf(fn);
+		if(idx>=0)list.splice(idx,1);
+	}
 	fire(type,props={}){
 		const e={type,key:"",pointerId:1,button:0,clientX:50,clientY:50,defaultPrevented:false,
 			preventDefault(){this.defaultPrevented=true;},...props};
@@ -117,4 +123,34 @@ key("]");
 check(resizes===0,"maximum-grid shortcut does not rebuild an unchanged grid");
 key("[");
 check(resizes===1&&cfg.N===960,"grid shortcut still resizes within bounds");
+
+// keyboard-only binding (0.7.0 t8b): non-Element EventTargets lack .closest,
+// and blurring the bound element itself must clear held keys even without window blur
+{
+	const ktListeners={};
+	const keyTarget={
+		addEventListener(type,fn){(ktListeners[type]||(ktListeners[type]=[])).push(fn);},
+		removeEventListener(type,fn){
+			const a=ktListeners[type]||[];
+			const i=a.indexOf(fn);
+			if(i>=0)a.splice(i,1);
+		}
+	};
+	let hookResets=0,hookResizes=0;
+	const kOnly=Fluid.app.input.createKeys(keyTarget,cfg,solver,m=>{mode=m;},{
+		onReset(){hookResets++;},
+		onResize(n){hookResizes++;cfg.N=n;}
+	});
+	// dispatch with target=keyTarget (no .closest method, like window/document)
+	for(const fn of ktListeners.keydown||[])fn({key:"3",target:keyTarget,preventDefault(){}});
+	check(mode===3&&kOnly.state.keys["3"]===true,"createKeys handles non-Element e.target without .closest");
+	for(const fn of ktListeners.blur||[])fn({type:"blur",target:keyTarget});
+	check(!kOnly.state.keys["3"],"blur on the bound keyTarget clears held keys");
+	for(const fn of ktListeners.keydown||[])fn({key:"r",target:keyTarget,preventDefault(){}});
+	for(const fn of ktListeners.keydown||[])fn({key:"[",target:keyTarget,preventDefault(){}});
+	check(hookResets===1&&hookResizes===1&&cfg.N===896,"createKeys routes reset/resize hooks when supplied");
+	kOnly.destroy();
+	const remaining=Object.values(ktListeners).reduce((s,a)=>s+a.length,0);
+	check(remaining===0,"createKeys destroy removes all keyTarget listeners");
+}
 console.log("\nall "+checks+" checks pass");

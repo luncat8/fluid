@@ -193,6 +193,22 @@
 			cfg._dirty=true;
 			return cfg.overlay;
 		}
+		function addEmitter(spec){
+			if(!active()||!solver.addEmitter)return -1;
+			return solver.addEmitter(spec);
+		}
+		function moveEmitter(id,x,y){
+			return active()&&solver.moveEmitter?solver.moveEmitter(id,x,y):false;
+		}
+		function setEmitter(id,patch){
+			return active()&&solver.setEmitter?solver.setEmitter(id,patch):false;
+		}
+		function removeEmitter(id){
+			return active()&&solver.removeEmitter?solver.removeEmitter(id):false;
+		}
+		function emitterCount(){
+			return active()&&solver.emitterCount?solver.emitterCount():0;
+		}
 		function addProbe(x,y){
 			if(!active())return -1;
 			return solver.addProbe(x,y);
@@ -213,17 +229,19 @@
 			if(active())copyStats(dst,solver.getStats());
 			return dst;
 		}
+		const inputHooks={onReset:()=>reset(),onResize:n=>setGrid(n)};
 		function attachInput(element){
 			// the input helper is a page module: an embedder that does not load
 			// src/app/input.js keeps the engine, it just has no DOM binding
 			if(!active()||!Fluid.app||!Fluid.app.input)return null;
 			detachInput();
-			inputState=Fluid.app.input.create(element||canvas,cfg,solver,setViewMode);
+			inputState=Fluid.app.input.create(element||canvas,cfg,solver,setViewMode,inputHooks);
 			keyState=inputState;
 			return inputState;
 		}
 		function bindKeys(element){
-			if(!active()||!element||!Fluid.app||!Fluid.app.input||!Fluid.app.input.createKeys)return null;
+			const target=element===undefined&&typeof window!=="undefined"?window:element;
+			if(!active()||!target||!Fluid.app||!Fluid.app.input||!Fluid.app.input.createKeys)return null;
 			if(keyState===inputState&&inputState){
 				inputState.destroyKeys();
 				keyState=null;
@@ -231,7 +249,7 @@
 				keyState.destroy();
 				keyState=null;
 			}
-			keyState=Fluid.app.input.createKeys(element,cfg,solver,setViewMode);
+			keyState=Fluid.app.input.createKeys(target,cfg,solver,setViewMode,inputHooks);
 			return keyState;
 		}
 		function detachKeys(){
@@ -269,6 +287,7 @@
 			makeProbeSample:Fluid.core.probes.makeSample,
 			step,update,render,reset,setGrid,setViewMode,setOverlay,
 			bindViewMode(fn){viewWriter=typeof fn==="function"?fn:null;return !!viewWriter;},
+			addEmitter,moveEmitter,setEmitter,removeEmitter,emitterCount,
 			addProbe,moveProbe,removeProbe,sample:sampleProbe,stats,attachInput,detachInput,bindKeys,detachKeys,pollReadback,
 			probeCount(){return active()?solver.probes.live:0;},
 			singleStep(){cfg._stepOnce=true;},

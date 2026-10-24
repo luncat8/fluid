@@ -19,7 +19,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 for (const file of [
 	"src/core/config.js", "src/core/grid.js", "src/core/stats.js",
-	"src/core/multigrid.js", "src/core/solver.js", "src/core/probes.js", "src/gpu/shaders.js"
+	"src/core/multigrid.js", "src/core/emitters.js", "src/core/solver.js", "src/core/probes.js", "src/gpu/shaders.js"
 ]) require(path.join(root, file));
 
 let reflectLib;
@@ -364,6 +364,141 @@ function runProbeCase() {
 }
 
 runProbeCase();
+
+// ---- 5. 0.7.0 t3 emitter kernels: forces (momentum + rhoMean) and applyEmitters (all 5 scalar/thermal kinds) ----
+function runEmitterExecCases() {
+	const en = 16, etw = en + 2, eth = en + 2, edt = 1 / 120;
+	const ecfg = Object.assign({}, Fluid.core.config.defaults, {
+		N: en, texW: etw, texH: eth, dt: edt,
+		scenario: "blobs", gravityX: 10, gravityY: 180
+	});
+	const es = Fluid.core.solver.create(ecfg);
+	// paint one static wall cell inside an emitter disc and set a low-mass cell to exercise full-vacuum drain
+	es.flags[(5 + 5 * etw) * 4] = 255;
+	const mCur0 = grid.curBuf(es.mass), tCur0 = grid.curBuf(es.therm);
+	const vacTestIdx = (12 + 12 * etw) * 4;
+	mCur0[vacTestIdx] = 0.001; mCur0[vacTestIdx + 1] = 0.002; mCur0[vacTestIdx + 2] = 0.0005; mCur0[vacTestIdx + 3] = 0.003;
+	tCur0[vacTestIdx] = Fluid.core.solver.energyFromT(0.003, ecfg.TAmb, ecfg);
+
+	es.addEmitter({ kind: "dye", x: 5, y: 5, radius: 3.5, value: 0.8, dye: [0.9, 0.25, 0.1] });
+	es.addEmitter({ kind: "drain", x: 12, y: 12, radius: 3.5, value: 1.5 });
+	es.addEmitter({ kind: "heat", x: 5, y: 12, radius: 3.5, value: 120 });
+	es.addEmitter({ kind: "cold", x: 12, y: 5, radius: 3.5, value: 110 });
+	es.addEmitter({ kind: "freeze", x: 8, y: 8, radius: 3.0, value: 320 });
+	es.addEmitter({ kind: "momentum", x: 8, y: 8, radius: 4.5, vx: 160, vy: -95 });
+
+	const wx = Math.ceil(etw / 8), wy = Math.ceil(eth / 8);
+	const rgba = a => ({ texture: [a.buffer], descriptor: { size: [etw, eth], format: "rgba32float" } });
+	const rg = a => ({ texture: [a.buffer], descriptor: { size: [etw, eth], format: "rg32float" } });
+	const u8x4 = a => ({ texture: [a.buffer], descriptor: { size: [etw, eth], format: "rgba8uint" } });
+
+	// 5a. applyEmitters vs cpu.applyEmitters across all 5 scalar/thermal kinds
+	const massBefore = Float32Array.from(grid.curBuf(es.mass));
+	const thermBefore = Float32Array.from(grid.curBuf(es.therm));
+	const flagsSnap = Uint8Array.from(es.flags);
+	es.applyEmitters(edt);
+	const cpuMass = Float32Array.from(grid.curBuf(es.mass));
+	const cpuTherm = Float32Array.from(grid.curBuf(es.therm));
+
+	const pa = Fluid.core.config.makeParamsArray();
+	Fluid.core.config.writeParams(pa, ecfg);
+	const uniform = { uniform: pa.buffer.slice(0) };
+	const emitBuf = es.emitterTable.upload.buffer.slice(0);
+	const gpuMassDst = new Float32Array(massBefore.length);
+	const gpuThermDst = new Float32Array(thermBefore.length);
+
+	new WgslExec(WgslParser.Parse(PS + sh.applyEmitters))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: {
+				0: uniform,
+				1: emitBuf,
+				2: rgba(Float32Array.from(massBefore)),
+				3: rgba(Float32Array.from(thermBefore)),
+				4: u8x4(Uint8Array.from(flagsSnap)),
+				5: rgba(gpuMassDst),
+				6: rgba(gpuThermDst)
+			}
+		});
+
+	let maxMassErr = 0, maxThermErr = 0;
+	for (let i = 0; i < cpuMass.length; i++) {
+		const dm = Math.abs(gpuMassDst[i] - cpuMass[i]);
+		if (dm > maxMassErr) maxMassErr = dm;
+		const dtErr = Math.abs(gpuThermDst[i] - cpuTherm[i]);
+		if (dtErr > maxThermErr) maxThermErr = dtErr;
+	}
+	check("applyEmitters exec: WGSL matches CPU across dye/drain/heat/cold/freeze + wall/vacuum guards",
+		maxMassErr < 1e-6 && maxThermErr < 1e-3 && gpuMassDst[vacTestIdx + 3] === 0,
+		"maxMassErr=" + maxMassErr.toExponential(2) + " maxThermErr=" + maxThermErr.toExponential(2));
+
+	// 5b. statsReduceB exec: copies emitterLedger[0..9] into stats[36..45] alongside Kahan cell partials
+	// (emitterTally uses @builtin(local_invocation_index) + workgroupBarrier(), which WgslExec does not
+	// coroutine-schedule — same reason statsReduceA/poissonReduceA/buoySample are parse-checked in section 1;
+	// emitterTally shares evalScalarCell verbatim with applyEmitters via EMITTER_HELPERS).
+	const gpuEmitLedger = Float32Array.from([
+		es.ledger.injectedM, es.ledger.injectedDr, es.ledger.injectedDg, es.ledger.injectedDb, es.ledger.injectedE,
+		es.ledger.removedM, es.ledger.removedDr, es.ledger.removedDg, es.ledger.removedDb, es.ledger.removedE,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+	]);
+	const statsPart = new Float32Array(4 * 40);
+	const statsOut = new Float32Array(Fluid.core.stats.STATS_LEN);
+	const dimsU = { uniform: new Uint32Array([4 * 40, 0, 0, 0]).buffer };
+	new WgslExec(WgslParser.Parse(sh.statsReduceB))
+		.dispatchWorkgroups("main", [1], {
+			0: {
+				0: statsPart.buffer,
+				1: statsOut.buffer,
+				2: dimsU,
+				3: gpuEmitLedger.buffer
+			}
+		});
+	let statsCopyExact = true;
+	for (let k = 0; k < 10; k++) {
+		if (statsOut[36 + k] !== gpuEmitLedger[k]) statsCopyExact = false;
+	}
+	check("statsReduceB exec: copies emitterLedger[0..9] into stats[36..45] intact",
+		statsCopyExact && statsOut[36] > 0 && statsOut[41] > 0,
+		"injM=" + statsOut[36].toFixed(4) + " remM=" + statsOut[41].toFixed(4));
+
+	// 5c. forces vs cpu.forces with momentum emitter + live emitterLedger rhoMean offset
+	const emitLedger = new Float32Array(Fluid.core.stats.EMIT_LEDGER_LEN);
+	emitLedger[0] = es.ledger.injectedM;
+	emitLedger[5] = es.ledger.removedM;
+	ecfg.rhoBase = es.ledger.initialM / (en * en);
+	ecfg.rhoMean = (es.ledger.initialM + es.ledger.injectedM - es.ledger.removedM) / (en * en);
+	Fluid.core.config.writeParams(pa, ecfg);
+	const uniformForces = { uniform: pa.buffer.slice(0) };
+
+	const velBefore = Float32Array.from(grid.curBuf(es.vel));
+	es.forces(edt);
+	const cpuVel = Float32Array.from(grid.curBuf(es.vel));
+	const gpuVelDst = new Float32Array(velBefore.length);
+
+	new WgslExec(WgslParser.Parse(PS + sh.forces))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: {
+				0: uniformForces,
+				1: rg(Float32Array.from(velBefore)),
+				2: rg(gpuVelDst),
+				3: rgba(Float32Array.from(cpuMass)),
+				4: rgba(Float32Array.from(cpuTherm)),
+				5: u8x4(Uint8Array.from(es.flags)),
+				6: es.emitterTable.upload.buffer.slice(0),
+				7: emitLedger.buffer.slice(0)
+			}
+		});
+
+	let maxVelErr = 0;
+	for (let i = 0; i < cpuVel.length; i++) {
+		const dv = Math.abs(gpuVelDst[i] - cpuVel[i]);
+		if (dv > maxVelErr) maxVelErr = dv;
+	}
+	check("forces exec: WGSL momentum emitter + emitterLedger rhoMean matches CPU forces",
+		maxVelErr < 1e-5,
+		"maxVelErr=" + maxVelErr.toExponential(2));
+}
+
+runEmitterExecCases();
 
 console.log(failures ? "FAILURES: " + failures : "ALL WGSL-EXEC CHECKS PASSED");
 process.exit(failures ? 1 : 0);
