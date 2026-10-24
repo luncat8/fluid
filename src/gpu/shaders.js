@@ -610,7 +610,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 fn isBlocked3(x: i32, y: i32, w: i32, h: i32) -> bool {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
 	let f = textureLoad(flagsTex, vec2<i32>(x, y), 0);
-	return (f.r | f.b) > 0u;
+	return (f.r & 1u) != 0u || f.b > 0u;
 }
 fn rawFx(x: i32, y: i32, w: i32, h: i32, dt: f32) -> f32 {
 	if (x <= 1 || x >= w - 1 || isBlocked3(x - 1, y, w, h) || isBlocked3(x, y, w, h)) { return 0.0; }

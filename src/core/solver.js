@@ -745,12 +745,12 @@
 			return 1/(2*ra*rb/(ra+rb));
 		}
 		function rawFx(vv,dt,x,y){
-			if(uBlocked(x,y))return 0;
+			if(x<=1||x>=texW-1||hardBlockedCell(x-1,y)||hardBlockedCell(x,y))return 0;
 			const u=vv[(x+y*texW)*2]*dt;
 			return u>1?1:(u<-1?-1:u);
 		}
 		function rawFy(vv,dt,x,y){
-			if(vBlocked(x,y))return 0;
+			if(y<=1||y>=texH-1||hardBlockedCell(x,y-1)||hardBlockedCell(x,y))return 0;
 			const v=vv[(x+y*texW)*2+1]*dt;
 			return v>1?1:(v<-1?-1:v);
 		}
