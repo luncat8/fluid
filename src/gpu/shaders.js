@@ -1258,82 +1258,89 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(3) var flagsTex: texture_2d<u32>;
 @group(0) @binding(4) var velDst: texture_storage_2d<rg32float,write>;
 
-fn hardCell(cx: i32, cy: i32, w: i32, h: i32) -> bool {
-	if (cx < 1 || cx > w - 2 || cy < 1 || cy > h - 2) { return true; }
-	let fl = textureLoad(flagsTex, vec2<i32>(cx, cy), 0);
-	return (fl.r & 1u) != 0u || fl.b > 0u;
-}
 fn sampleCollCell(cx: i32, cy: i32, w: i32, h: i32, nSlots: u32) -> vec3<f32> {
-	if (cx < 1 || cx > w - 2 || cy < 1 || cy > h - 2) { return vec3<f32>(0.0, 0.0, 0.0); }
-	let px = f32(cx) - 0.5;
-	let py = f32(cy) - 0.5;
-	var sx = 0.0;
-	var sy = 0.0;
-	var cnt = 0.0;
-	for (var s: u32 = 0u; s < nSlots; s = s + 1u) {
-		let b = 16u + s * 16u;
-		let shape = i32(colliders[b + 2u]);
-		if (shape == 1) {
-			let dx = px - colliders[b];
-			let dy = py - colliders[b + 1u];
-			if (dx * dx + dy * dy < colliders[b + 3u]) {
-				sx = sx + colliders[b + 5u];
-				sy = sy + colliders[b + 6u];
-				cnt = cnt + 1.0;
-			}
-		} else if (shape == 2) {
-			if (abs(px - colliders[b]) <= colliders[b + 3u] && abs(py - colliders[b + 1u]) <= colliders[b + 4u]) {
-				sx = sx + colliders[b + 5u];
-				sy = sy + colliders[b + 6u];
-				cnt = cnt + 1.0;
-			}
-		}
-	}
-	if (cnt > 0.0) {
-		let inv = 1.0 / cnt;
-		return vec3<f32>(sx * inv, sy * inv, 1.0);
-	}
-	return vec3<f32>(0.0, 0.0, 0.0);
+    if (cx < 1 || cx > w - 2 || cy < 1 || cy > h - 2) { return vec3<f32>(0.0, 0.0, 0.0); }
+    let px = f32(cx) - 0.5;
+    let py = f32(cy) - 0.5;
+    var sx = 0.0;
+    var sy = 0.0;
+    var cnt = 0.0;
+    for (var s: u32 = 0u; s < nSlots; s = s + 1u) {
+        let b = 16u + s * 16u;
+        let shape = i32(colliders[b + 2u]);
+        if (shape == 1) {
+            let dx = px - colliders[b];
+            let dy = py - colliders[b + 1u];
+            if (dx * dx + dy * dy < colliders[b + 3u]) {
+                sx = sx + colliders[b + 5u];
+                sy = sy + colliders[b + 6u];
+                cnt = cnt + 1.0;
+            }
+        } else if (shape == 2) {
+            if (abs(px - colliders[b]) <= colliders[b + 3u] && abs(py - colliders[b + 1u]) <= colliders[b + 4u]) {
+                sx = sx + colliders[b + 5u];
+                sy = sy + colliders[b + 6u];
+                cnt = cnt + 1.0;
+            }
+        }
+    }
+    if (cnt > 0.0) {
+        let inv = 1.0 / cnt;
+        return vec3<f32>(sx * inv, sy * inv, 1.0);
+    }
+    return vec3<f32>(0.0, 0.0, 0.0);
 }
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-	let w = i32(params.values[2]);
-	let h = i32(params.values[3]);
-	let x = i32(gid.x);
-	let y = i32(gid.y);
-	if (x >= w || y >= h) { return; }
-	let at = vec2<i32>(x, y);
-	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) {
-		textureStore(velDst, at, vec4<f32>(0.0));
-		return;
-	}
-	let src = textureLoad(velSrc, at, 0);
-	var u = src.r;
-	var v = src.g;
-	let vc = params.values[38];
-	let nSlots = min(u32(colliders[1u]), 32u);
-	if (x <= 1 || x >= w - 1 || hardCell(x - 1, y, w, h) || hardCell(x, y, w, h)) {
-		u = 0.0;
-	} else {
-		let cL = sampleCollCell(x - 1, y, w, h, nSlots);
-		let cR = sampleCollCell(x, y, w, h, nSlots);
-		if (cL.z > 0.0 && cR.z > 0.0) { u = clamp(0.5 * (cL.x + cR.x), -vc, vc); }
-		else if (cL.z > 0.0) { u = clamp(cL.x, -vc, vc); }
-		else if (cR.z > 0.0) { u = clamp(cR.x, -vc, vc); }
-	}
-	if (y <= 1 || y >= h - 1 || hardCell(x, y - 1, w, h) || hardCell(x, y, w, h)) {
-		v = 0.0;
-	} else {
-		let cB = sampleCollCell(x, y - 1, w, h, nSlots);
-		let cT = sampleCollCell(x, y, w, h, nSlots);
-		if (cB.z > 0.0 && cT.z > 0.0) { v = clamp(0.5 * (cB.y + cT.y), -vc, vc); }
-		else if (cB.z > 0.0) { v = clamp(cB.y, -vc, vc); }
-		else if (cT.z > 0.0) { v = clamp(cT.y, -vc, vc); }
-	}
-	textureStore(velDst, at, vec4<f32>(u, v, 0.0, 0.0));
+    let w = i32(params.values[2]);
+    let h = i32(params.values[3]);
+    let x = i32(gid.x);
+    let y = i32(gid.y);
+    if (x >= w || y >= h) { return; }
+    let at = vec2<i32>(x, y);
+    if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) {
+        textureStore(velDst, at, vec4<f32>(0.0));
+        return;
+    }
+    let src = textureLoad(velSrc, at, 0);
+    var u = src.r;
+    var v = src.g;
+    let vc = params.values[38];
+    let nSlots = min(u32(colliders[1u]), 32u);
+    // sample collider occupancy at the west, centre and south cells so the
+    // u-face (west|centre) and v-face (south|centre) can be classified.
+    // static walls and frozen cells keep the velocity advectVel already zeroed
+    // at blocked faces; only moving-collider faces are overwritten here.
+    let cW = sampleCollCell(x - 1, y, w, h, nSlots);
+    let cC = sampleCollCell(x, y, w, h, nSlots);
+    let cS = sampleCollCell(x, y - 1, w, h, nSlots);
+    let westIn = cW.z > 0.0;
+    let centIn = cC.z > 0.0;
+    let southIn = cS.z > 0.0;
+    // u face lies between the west cell and the centre cell
+    if ((westIn && !centIn) || (!westIn && centIn)) {
+        // moving-collider boundary: impose the rigid-body x-velocity (no
+        // penetration) on the fluid side of the face.
+        let ov = select(cC, cW, westIn);
+        u = clamp(ov.x, -vc, vc);
+    }
+    if (westIn && centIn) {
+        u = 0.0; // rigid-body interior: keep fluid velocity at zero
+    }
+    // v face lies between the south cell and the centre cell
+    if ((southIn && !centIn) || (!southIn && centIn)) {
+        // moving-collider boundary: impose the rigid-body y-velocity.
+        let ov = select(cC, cS, southIn);
+        v = clamp(ov.y, -vc, vc);
+    }
+    if (southIn && centIn) {
+        v = 0.0; // rigid-body interior: keep fluid velocity at zero
+    }
+    textureStore(velDst, at, vec4<f32>(u, v, 0.0, 0.0));
 }
 `;
+
 	// ---------- 0.7.0 t3 emitters: shared realized-delta cell kernel + 1-workgroup Kahan tally ----------
 	const EMITTER_HELPERS=EOS_HELPERS+`
 struct EmitCellOut {

@@ -1191,26 +1191,40 @@
 					if(x<1||x>=texW-1||y<1||y>=texH-1){
 						dst[vi]=0;dst[vi+1]=0;continue;
 					}
-					let u=src[vi],v=src[vi+1];
-					if(x<=1||x>=texW-1||hardBlockedCell(x-1,y)||hardBlockedCell(x,y)){
-						u=0;
-					}else{
-						sampleColliderCell(colU,nSlots,x-1,y,collSampleA);
-						sampleColliderCell(colU,nSlots,x,y,collSampleB);
-						if(collSampleA[2]>0&&collSampleB[2]>0)u=clampTo(f32(0.5*f32(collSampleA[0]+collSampleB[0])),-vc,vc);
-						else if(collSampleA[2]>0)u=clampTo(collSampleA[0],-vc,vc);
-						else if(collSampleB[2]>0)u=clampTo(collSampleB[0],-vc,vc);
+					// preserve the advected velocity; only the moving-collider boundary is
+					// overwritten with the rigid-body normal velocity (no penetration). the
+					// collider interior is kept at zero: it is already blocked (zero scalar
+					// flux), and zeroing it each frame prevents the velocity trail (down-left
+					// / down-right drift) left behind in cells the collider vacates.
+					let u=src[vi], v=src[vi+1];
+					dst[vi]=src[vi];dst[vi+1]=src[vi+1];
+					// sample collider occupancy at the west, centre and south cells so the
+					// u-face (west|centre) and v-face (south|centre) can be classified. the
+					// west sample (A) is consumed by the u-face before A is reused for south.
+					sampleColliderCell(colU,nSlots,x-1,y,collSampleA); // west cell (x-1, y)
+					sampleColliderCell(colU,nSlots,x,y,collSampleB);    // centre cell (x, y)
+					const westIn = collSampleA[2]>0;
+					const centIn = collSampleB[2]>0;
+					// u face lies between the west cell and the centre cell
+					if(westIn !== centIn){
+						// moving-collider boundary: impose the rigid-body x-velocity
+						// (no penetration) on the fluid side of the face.
+						const ov = westIn ? collSampleA : collSampleB;
+						u = clampTo(ov[0],-vc,vc); dst[vi]=u;
+					}else if(westIn && centIn){
+						dst[vi]=0; // rigid-body interior: keep fluid velocity at zero
 					}
-					if(y<=1||y>=texH-1||hardBlockedCell(x,y-1)||hardBlockedCell(x,y)){
-						v=0;
-					}else{
-						sampleColliderCell(colU,nSlots,x,y-1,collSampleA);
-						sampleColliderCell(colU,nSlots,x,y,collSampleB);
-						if(collSampleA[2]>0&&collSampleB[2]>0)v=clampTo(f32(0.5*f32(collSampleA[1]+collSampleB[1])),-vc,vc);
-						else if(collSampleA[2]>0)v=clampTo(collSampleA[1],-vc,vc);
-						else if(collSampleB[2]>0)v=clampTo(collSampleB[1],-vc,vc);
+					// reuse A for the south cell (west no longer needed)
+					sampleColliderCell(colU,nSlots,x,y-1,collSampleA); // south cell (x, y-1)
+					const southIn = collSampleA[2]>0;
+					// v face lies between the south cell and the centre cell
+					if(southIn !== centIn){
+						// moving-collider boundary: impose the rigid-body y-velocity.
+						const ov = southIn ? collSampleA : collSampleB;
+						v = clampTo(ov[1],-vc,vc); dst[vi+1]=v;
+					}else if(southIn && centIn){
+						dst[vi+1]=0; // rigid-body interior: keep fluid velocity at zero
 					}
-					dst[vi]=u;dst[vi+1]=v;
 				}
 			}
 			grid.swap(vel);
