@@ -237,11 +237,13 @@
 		for(let i=0;i<patch.ePatch.length;i++)E+=patch.ePatch[i];
 		return {m,dr,dg,db,E};
 	}
-	function buildWallPatch(cfg,u,v,erase){
+	// `radius` is optional: the pointer paints with cfg.paintR, a game paints a
+	// specific obstacle and passes its own size
+	function buildWallPatch(cfg,u,v,erase,radius){
 		const texW=cfg.texW,texH=cfg.texH;
 		const px=u*cfg.N,py=v*cfg.N;
 		const cx=Math.floor(px)+1,cy=Math.floor(py)+1;
-		const r=Math.min(60,Math.max(1,cfg.paintR));
+		const r=Math.min(60,Math.max(1,radius===undefined?cfg.paintR:radius));
 		const x0=Math.max(1,cx-r),x1=Math.min(texW-2,cx+r);
 		const y0=Math.max(1,cy-r),y1=Math.min(texH-2,cy+r);
 		const w=x1-x0+1,h=y1-y0+1;

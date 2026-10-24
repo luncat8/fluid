@@ -8,6 +8,8 @@
 	const STATS=Fluid.core.stats;
 	// probe table layout (slot count, stride, total floats) is owned by src/core/probes.js
 	const PROBES=Fluid.core.probes;
+	// emitter table layout is owned by src/core/emitters.js
+	const EMITTERS=Fluid.core.emitters;
 	function texUsage(){
 		return GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.STORAGE_BINDING|GPUTextureUsage.COPY_SRC|GPUTextureUsage.COPY_DST;
 	}
@@ -64,6 +66,7 @@
 			mgWorkgroupY:0,
 			patchMass:null,
 			patchE:null,
+			patchVel:null,
 			display:null,
 			params:null,
 			stats:null,
@@ -73,6 +76,7 @@
 			buoyRead:null,
 			probes:null,
 			probesRead:null,
+			emitters:null,
 			dims:null,
 			numWorkgroups:0,
 			workgroupX:0,workgroupY:0
@@ -116,6 +120,10 @@
 		pool.accumTmp=makeTexture(device,"accumTmp","rg32float",texW,texH);
 		pool.patchMass=makeTexture(device,"patchMass","rgba32float",PATCH,PATCH);
 		pool.patchE=makeTexture(device,"patchE","r32float",PATCH,PATCH);
+		// (u, v, apply, 0) for the collider imprint: a set, not an add
+		pool.patchVel=makeTexture(device,"patchVel","rgba32float",PATCH,PATCH);
+		// (0, 0, code, 0) for the push: what a body took and how many ways it splits
+		pool.patchGeo=makeTexture(device,"patchGeo","rgba32float",PATCH,PATCH);
 		pool.display=makeTexture(device,"display","rgba16float",texW,texH);
 		const workgroupX=Math.ceil(texW/8);
 		const workgroupY=Math.ceil(texH/8);
@@ -135,6 +143,8 @@
 		const probeBytes=PROBES.LEN*4;
 		pool.probes=device.createBuffer({label:"probes",size:probeBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
 		pool.probesRead=device.createBuffer({label:"probesRead",size:probeBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+		// sources are read by three passes and written only by the cpu, so no readback twin
+		pool.emitters=device.createBuffer({label:"emitters",size:EMITTERS.LEN*4,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
 		pool.dims=device.createBuffer({label:"dims",size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
 		const dimsArr=new Uint32Array([pool.numWorkgroups*PARTIAL_STRIDE,0,0,0]);
 		device.queue.writeBuffer(pool.dims,0,dimsArr);
@@ -147,11 +157,11 @@
 			pool.therm.tex[0],pool.therm.tex[1],pool.press.tex[0],pool.press.tex[1],
 			pool.flags,pool.flagsTmp,pool.flux,pool.limiterA,pool.limiterB,pool.divsrc,
 			pool.sfield,pool.sfieldTmp,pool.accum,pool.accumTmp,
-			pool.patchMass,pool.patchE,pool.display,
+			pool.patchMass,pool.patchE,pool.patchVel,pool.patchGeo,pool.display,
 			pool.mgMass,pool.mgFlags,pool.mgDiv,pool.mgPress.tex[0],pool.mgPress.tex[1]];
 	}
 	function poolBuffers(pool){
-		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.probes,pool.probesRead,pool.dims,pool.mgParams];
+		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.probes,pool.probesRead,pool.emitters,pool.dims,pool.mgParams];
 	}
 	function textureBytes(t){
 		if(!t||!t.fluidSize)return 0;
@@ -199,6 +209,11 @@
 	function writePatch(device,texture,w,h,format,data){
 		writeTextureRect(device,texture,w,h,format,data);
 	}
+	// patch upload at an origin of a full-size field: writeTexture takes the origin,
+	// so a moved body uploads only the cells it changed
+	function writePatchAt(device,texture,x,y,w,h,format,data,pitch){
+		device.queue.writeTexture({texture,origin:{x,y}},data,{bytesPerRow:(pitch||w)*texBpp(format)},[w,h]);
+	}
 	function clearTexture(device,texture,texW,texH,format){
 		const size=texW*texH;
 		let data;
@@ -210,6 +225,6 @@
 		else data=new Float32Array(size*4);
 		writeTextureRect(device,texture,texW,texH,format,data);
 	}
-	Fluid.gpu.fields={createPool,destroyPool,swap,curTex,writeTextureRect,writePatch,clearTexture,memoryReport,poolTextures,poolBuffers,texBpp,PATCH};
+	Fluid.gpu.fields={createPool,destroyPool,swap,curTex,writeTextureRect,writePatch,writePatchAt,clearTexture,memoryReport,poolTextures,poolBuffers,texBpp,PATCH};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.fields;
 })(globalThis);

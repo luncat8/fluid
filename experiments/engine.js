@@ -13,6 +13,8 @@ require(path.join(root, "src/core/grid.js"));
 require(path.join(root, "src/core/stats.js"));
 require(path.join(root, "src/core/solver.js"));
 require(path.join(root, "src/core/probes.js"));
+require(path.join(root, "src/core/emitters.js"));
+require(path.join(root, "src/core/colliders.js"));
 require(path.join(root, "src/core/buoy.js"));
 require(path.join(root, "src/core/pacing.js"));
 require(path.join(root, "src/gpu/device.js"));
@@ -31,14 +33,21 @@ function check(ok, name, detail) {
 }
 const flush = async (n = 4) => { for (let i = 0; i < n; i++) await Promise.resolve(); };
 
-// a queue whose completion the test decides, so backpressure is observable
-function stubQueue() {
+// a queue whose completion the test decides, so backpressure is observable. texture
+// uploads are recorded into the mock's sink so a patch can be checked cell by cell.
+function stubQueue(sink) {
 	const pending = [];
 	return {
 		inflight: () => pending.length,
 		onSubmittedWorkDone() { return new Promise(resolve => pending.push(resolve)); },
 		writeBuffer(buf, offset, src) { new Float32Array(buf._buf, offset, src.length).set(src); },
-		writeTexture() {},
+		writeTexture(dst, data, layout, size) {
+			if (!sink) return;
+			sink.textureWrites.push({
+				label: (dst.texture && dst.texture.label) || "", data, layout, size,
+				origin: dst.origin ? [dst.origin.x || 0, dst.origin.y || 0] : [0, 0]
+			});
+		},
 		submit() {},
 		completeOne() { const r = pending.shift(); if (r) r(); return !!r; },
 		completeAll() { while (pending.length) pending.shift()(); }
@@ -65,7 +74,7 @@ function probePattern() {
 }
 async function makeSim(cfgOverrides, patterns) {
 	const m = mock.create(patterns || {});
-	m.device.queue = stubQueue();
+	m.device.queue = stubQueue(m.sink);
 	const canvas = { width: 0, height: 0 };
 	const sim = await Fluid.engine.create(canvas, {
 		device: m.device, context: mock.mockContext(), format: "bgra8unorm",
@@ -372,6 +381,529 @@ async function testLabWiring() {
 }
 
 
+// sources (0.7.0 t3): the table, the pass staging, the ledger totals and the
+// resize/reset survival. the numbers the ledger books are checked against an
+// independent f64 sum over the same disc, because that is the part a wrong
+// implementation gets right visually and wrong silently.
+async function testEmitters() {
+	const E = Fluid.core.emitters;
+	// the cpu oracle: the injected totals must be exactly the fields it writes
+	const cfg = Object.assign({}, Fluid.core.config.defaults, { N: 32, scenario: "still" });
+	cfg.texW = 34; cfg.texH = 34;
+	const table = E.create();
+	E.add(table, cfg, { kind: "dye", x: 16, y: 16, radius: 5, value: 3, dye: [0, 1, 0] });
+	E.add(table, cfg, { kind: "heat", x: 10, y: 10, radius: 4, value: 50 });
+	check(E.kindOf("heat") === E.KIND_HEAT && E.kindOf("momentum") === E.KIND_MOMENTUM &&
+		E.kindOf("drain") === -1 && table.live === 2,
+		"sources: kind names map to ids, and the deferred kinds are refused instead of guessed");
+	const size = cfg.texW * cfg.texH;
+	const fields = {
+		mass: new Float32Array(size * 4), therm: new Float32Array(size * 4),
+		vel: new Float32Array(size * 2), texW: cfg.texW, texH: cfg.texH
+	};
+	E.header(table, cfg);
+	const oracle = {};
+	E.sweep(table, cfg, 1 / 60, fields, oracle);
+	let sumM = 0, sumDr = 0, sumE = 0;
+	for (let i = 0; i < size; i++) {
+		sumM += fields.mass[i * 4 + 3];
+		sumDr += fields.mass[i * 4];
+		sumE += fields.therm[i * 4];
+	}
+	// the fields store f32 per cell, the ledger sums f64, so only the last bits differ
+	const close = (a, b) => Math.abs(a - b) <= Math.max(Math.abs(b), 1) * 1e-6;
+	check(close(sumM, oracle.inM) && close(sumDr, oracle.inDr) && close(sumE, oracle.inE),
+		"cpu oracle: the injected totals are the fields it writes, not a fitted disc",
+		"m=" + sumM.toFixed(6) + " E=" + sumE.toFixed(1));
+
+	const { sim, m } = await makeSim({ substepsAuto: false, substepsFixed: 2 });
+	check(sim.emitterCount() === 0 && sim.addEmitter({ kind: "nope", x: 4, y: 4 }) === -1 &&
+		sim.addEmitter({ kind: "drain", x: 4, y: 4 }) === -1,
+		"engine: an unknown or deferred kind is refused");
+	const dye = { kind: "dye", x: 32, y: 32, radius: 6, value: 2, dye: [1, 0, 0] };
+	const id = sim.addEmitter(dye);
+	const buf = new Float32Array(sim.solver.pool.emitters._buf);
+	const b = E.slotBase(0);
+	const eAmb = Fluid.core.solver.energyFromT(1, sim.params.TRef, sim.params);
+	check(id === 0 && sim.emitterCount() === 1 && buf[E.H_LIVE] === 1 &&
+		buf[b + E.E_X] === 32 && buf[b + E.E_Y] === 32 && buf[b + E.E_RADIUS] === 6 &&
+		buf[b + E.E_KIND] === E.KIND_DYE && buf[b + E.E_VALUE] === 2 &&
+		buf[b + E.E_DR] === 1 && buf[b + E.E_ACTIVE] === 1 &&
+		Math.abs(buf[E.H_EAMB] - eAmb) < 1e-6,
+		"addEmitter copies the spec into a preallocated slot and pushes the table",
+		"id=" + id + " live=" + buf[E.H_LIVE] + " x=" + buf[b + E.E_X]);
+	// the spec object is copied: mutating it afterwards must not move the slot
+	dye.x = 1;
+	check(new Float32Array(sim.solver.pool.emitters._buf)[b + E.E_X] === 32 && sim.solver.emitters.slots[0].x === 32,
+		"the add-time copy owns the values, so the caller can reuse its spec object");
+
+	const before = m.sink.pipeOrder.length;
+	sim.step(1 / 60);
+	const staged = m.sink.pipeOrder.slice(before);
+	check(staged.indexOf("emitterMass") >= 0 && staged.indexOf("emitterTherm") >= 0 &&
+		staged.indexOf("emitterVel") < 0,
+		"a dye source stages the mass and energy passes and no velocity pass",
+		staged.filter(p => p.indexOf("emitter") === 0).join(","));
+
+	// an independent f64 sum over the same integer disc: inclusion is exact
+	// arithmetic there, so only the per-cell rounding can differ
+	function discMass(spec, dtFrame, texW, texH) {
+		let sum = 0;
+		const r = spec.radius;
+		for (let y = Math.max(1, Math.ceil(spec.y - r)); y <= Math.min(texH - 2, Math.floor(spec.y + r)); y++) {
+			for (let x = Math.max(1, Math.ceil(spec.x - r)); x <= Math.min(texW - 2, Math.floor(spec.x + r)); x++) {
+				const dx = x - spec.x, dy = y - spec.y;
+				const d2 = dx * dx + dy * dy;
+				if (d2 >= r * r) continue;
+				const f = 1 - Math.sqrt(d2) / r;
+				sum += spec.value * f * f * dtFrame;
+			}
+		}
+		return sum;
+	}
+	const want = discMass({ x: 32, y: 32, radius: 6, value: 2 }, 1 / 60, sim.params.texW, sim.params.texH);
+	const ledger = sim.solver.getStats().ledger;
+	const gotM = ledger.injectedM, gotE = ledger.injectedE;
+	check(Math.abs(gotM - want) / want < 1e-6 && Math.abs(gotE - want * eAmb) / (want * eAmb) < 1e-6,
+		"the ledger books the mass and energy the pass adds",
+		"m=" + gotM.toFixed(6) + "/" + want.toFixed(6) + " E=" + gotE.toFixed(0));
+	sim.step(1 / 60);
+	check(Math.abs(ledger.injectedM - 2 * want) / (2 * want) < 1e-6,
+		"a source keeps adding every frame at its rate", "m=" + ledger.injectedM.toFixed(6));
+
+	check(sim.setEmitter(id, { value: 4, radius: 9, dye: [0, 0, 1] }) === true &&
+		sim.moveEmitter(id, 10, 20) === true && sim.moveEmitter(5, 1, 1) === false,
+		"setEmitter patches named fields and moveEmitter moves the live slot only");
+	const moved = new Float32Array(sim.solver.pool.emitters._buf);
+	check(moved[b + E.E_X] === 10 && moved[b + E.E_Y] === 20 && moved[b + E.E_RADIUS] === 9 &&
+		moved[b + E.E_VALUE] === 4 && moved[b + E.E_DB] === 1 && moved[b + E.E_DR] === 0,
+		"the patched slot is what the gpu reads", "x=" + moved[b + E.E_X] + " v=" + moved[b + E.E_VALUE]);
+
+	check(sim.removeEmitter(id) === true && sim.emitterCount() === 0 &&
+		new Float32Array(sim.solver.pool.emitters._buf)[b + E.E_ACTIVE] === 0 &&
+		sim.removeEmitter(id) === false,
+		"removeEmitter clears the active flag and the count, and is idempotent-safe");
+	const momentum = sim.addEmitter({ kind: "momentum", x: 20, y: 20, radius: 5, value: 60, dir: [1, 0] });
+	check(momentum === 0, "an empty slot is reused with the same stable id", "id=" + momentum);
+	const before2 = m.sink.pipeOrder.length;
+	sim.step(1 / 60);
+	const staged2 = m.sink.pipeOrder.slice(before2);
+	check(staged2.indexOf("emitterVel") >= 0 && staged2.indexOf("emitterMass") < 0,
+		"a momentum source stages the velocity pass and nothing else",
+		staged2.filter(p => p.indexOf("emitter") === 0).join(","));
+	let full = 0;
+	for (let i = sim.emitterCount(); i < E.MAX; i++) if (sim.addEmitter({ kind: "heat", x: 4, y: 4, radius: 2, value: 1 }) >= 0) full++;
+	check(full === E.MAX - 1 && sim.emitterCount() === E.MAX &&
+		sim.addEmitter({ kind: "heat", x: 4, y: 4, radius: 2, value: 1 }) === -1,
+		"the table is fixed at " + E.MAX + " slots and refuses the overflow",
+		"live=" + sim.emitterCount());
+	// an idle frame with no live source stages nothing and books nothing
+	for (let i = 0; i < E.MAX; i++) sim.removeEmitter(i);
+	const idleM = sim.solver.getStats().ledger.injectedM;
+	const before3 = m.sink.pipeOrder.length;
+	sim.step(1 / 60);
+	check(m.sink.pipeOrder.slice(before3).every(p => p.indexOf("emitter") !== 0) &&
+		sim.solver.getStats().ledger.injectedM === idleM,
+		"with no live source a frame stages no emitter pass and books nothing");
+	sim.destroy();
+
+	const r = await makeSim({ substepsAuto: false });
+	r.sim.addEmitter({ kind: "heat", x: 16, y: 16, radius: 5, value: 100 });
+	r.sim.setGrid(128);
+	const rebuilt = new Float32Array(r.sim.solver.pool.emitters._buf);
+	check(r.sim.emitterCount() === 1 && rebuilt[E.H_LIVE] === 1 && rebuilt[E.slotBase(0) + E.E_ACTIVE] === 1 &&
+		rebuilt[E.slotBase(0) + E.E_X] === 16,
+		"setGrid re-uploads the live source table into the rebuilt pool",
+		"live=" + rebuilt[E.H_LIVE]);
+	r.sim.reset("dam");
+	const afterReset = new Float32Array(r.sim.solver.pool.emitters._buf);
+	check(r.sim.emitterCount() === 1 && afterReset[E.H_LIVE] === 1 &&
+		r.sim.solver.getStats().ledger.injectedM === 0,
+		"reset() keeps the game's sources and starts a fresh ledger on them");
+	r.sim.destroy();
+}
+
+// geometry (0.7.0 t4): the analytic mask, the delta upload, the velocity imprint and
+// the static mask that a driving body must not erode. a collider is a pressure
+// boundary, so every one of these is checked with mass untouched.
+async function testColliders() {
+	const C = Fluid.core.colliders;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, { N: 32, scenario: "still" });
+	cfg.texW = 34; cfg.texH = 34;
+	const table = C.create();
+	const circle = C.add(table, cfg, { shape: "circle", x: 16, y: 16, radius: 3 });
+	const box = C.add(table, cfg, { shape: "box", x: 6, y: 6, hw: 2, hh: 1 });
+	check(circle === 0 && box === 1 && table.live === 2 && C.add(table, cfg, { shape: "hexagon", x: 1, y: 1 }) === -1,
+		"colliders: circle and box slot ids, an unknown shape is refused");
+	const owner = new Uint8Array(cfg.texW * cfg.texH);
+	const rect = {};
+	C.rasterize(table, cfg, owner, rect);
+	const at = (x, y) => owner[x + y * cfg.texW];
+	check(at(16, 16) === 1 && at(19, 16) === 1 && at(16, 19) === 1 && at(20, 16) === 0 && at(16, 20) === 0 &&
+		at(6, 6) === 2 && at(4, 6) === 2 && at(8, 6) === 2 && at(3, 6) === 0 && at(6, 7) === 2 && at(6, 8) === 0,
+		"the raster is a disc that includes its rim and a 5x3 box, in cell centres",
+		"centre=" + at(16, 16) + " rim=" + at(19, 16) + " outside=" + at(20, 16));
+	check(rect.x0 === 4 && rect.y0 === 5 && rect.x1 === 19 && rect.y1 === 19,
+		"the raster reports the bounds it wrote, so nothing sweeps the grid",
+		"rect=" + rect.x0 + "," + rect.y0 + ".." + rect.x1 + "," + rect.y1);
+	C.move(table, cfg, 0, 16, 16);
+	owner.fill(0);
+	C.remove(table, 1);
+	C.rasterize(table, cfg, owner, rect);
+	check(table.live === 1 && at(6, 6) === 0 && at(16, 16) === 1 && C.remove(table, 1) === false,
+		"remove drops the body from the next raster and is safe to repeat");
+
+	// the push (t4b): a body that takes a cell gives its contents to the fluid around
+	// it, so a body crossing a dye patch carries the colour with it instead of sliding
+	// over a picture of one. one cell, four free neighbours, so the split is readable.
+	const small = Object.assign({}, cfg, { N: 8, texW: 10, texH: 10, TRef: 293 });
+	const one = C.create();
+	C.add(one, small, { shape: "box", x: 5, y: 5, hw: 0.5, hh: 0.5 });
+	const own = new Uint8Array(100), prev = new Uint8Array(100), g = new Float32Array(128 * 128 * 4);
+	const r2 = C.padRect(small, C.rasterize(one, small, own, {}));
+	const mf = new Float32Array(100 * 4), tf = new Float32Array(100 * 4);
+	const kc = 5 + 5 * 10;
+	mf[kc * 4] = 1; mf[kc * 4 + 1] = 2; mf[kc * 4 + 2] = 3; mf[kc * 4 + 3] = 4;
+	tf[kc * 4] = 40; tf[kc * 4 + 1] = 350;
+	const sumOf = (f, stride) => {
+		let t = 0;
+		for (let i = 0; i < f.length; i += 4) t += f[i + (stride || 0)];
+		return t;
+	};
+	const massBefore = sumOf(mf, 3), eBefore = sumOf(tf);
+	const w2 = r2.x1 - r2.x0 + 1;
+	const idx = (x, y) => ((x - r2.x0) + (y - r2.y0) * w2) * 4 + 2;
+	const taken = C.geometry(small, own, prev, r2, g);
+	check(own[kc] === 1 && taken === 1 && g[idx(5, 5)] === 4 && g[idx(5, 4)] === 0 && g[idx(4, 4)] === 0,
+		"the push marks the cells a body takes and counts their free neighbours",
+		"taken=" + taken + " deg=" + g[idx(5, 5)] + " free=" + g[idx(4, 4)]);
+	const scratch = C.makeScratch();
+	C.displace(small, g, r2, mf, tf, scratch);
+	const nb = [[4, 5], [6, 5], [5, 4], [5, 6]];
+	check(mf[kc * 4 + 3] === 0 && tf[kc * 4] === 0 && tf[kc * 4 + 1] === small.TRef &&
+		nb.every(([x, y]) => Math.abs(mf[(x + y * 10) * 4 + 3] - 1) < 1e-6 &&
+			Math.abs(tf[(x + y * 10) * 4] - 10) < 1e-6),
+		"a taken cell is emptied and every free neighbour gathers its quarter of dye and heat",
+		"m=" + nb.map(([x, y]) => mf[(x + y * 10) * 4 + 3].toFixed(2)).join(",") +
+		" E=" + nb.map(([x, y]) => tf[(x + y * 10) * 4].toFixed(1)).join(","));
+	const massAfter = sumOf(mf, 3), eAfter = sumOf(tf);
+	check(Math.abs(massAfter - massBefore) < 1e-6 && Math.abs(eAfter - eBefore) < 1e-4,
+		"the push moves dye and heat to the neighbours without creating either",
+		"m " + massBefore.toFixed(3) + "->" + massAfter.toFixed(3) + " E " + eBefore.toFixed(1) + "->" + eAfter.toFixed(1));
+	// a rect that does not cover the receivers, or a body with no free neighbour: the
+	// contents stay where they are rather than being destroyed
+	const tight = C.rasterize(one, small, own, {});
+	const back = { x0: tight.x0, y0: tight.y0, x1: tight.x1, y1: tight.y1 };
+	C.geometry(small, own, prev, back, g);
+	check(back.x1 === back.x0 && g[2] === -1,
+		"a taken cell whose receivers are outside the patch keeps its contents",
+		"code=" + g[2]);
+	const sealed = new Uint8Array(100).fill(1);
+	C.geometry(small, sealed, prev, r2, g);
+	check(g[idx(5, 5)] === -1,
+		"a taken cell with no free neighbour keeps what it holds, so nothing is destroyed");
+	// a body that was already there keeps its cell: only the newly taken ones push
+	const moved = new Uint8Array(100);
+	own[5 + 5 * 10] = 0; own[6 + 5 * 10] = 1;
+	prev[6 + 5 * 10] = 1; prev[5 + 5 * 10] = 1;
+	C.geometry(small, own, prev, r2, g);
+	check(g[idx(6, 5)] === -1 && g[idx(5, 5)] === 0,
+		"a cell the body already held does not push again when another body cell is released",
+		"held=" + g[idx(6, 5)] + " released=" + g[idx(5, 5)]);
+
+	const { sim, m } = await makeSim({ substepsAuto: false, substepsFixed: 1 });
+	const N = sim.params.N, texW = sim.params.texW;
+	const flagsAt = (x, y) => sim.solver.flagsMirror[(x + y * texW) * 4];
+	const id = sim.addCollider({ shape: "circle", x: 32, y: 32, radius: 4, vx: 0, vy: 0 });
+	check(id === 0 && sim.colliderCount() === 1 && flagsAt(32, 32) === 255 && flagsAt(36, 32) === 255 &&
+		flagsAt(37, 32) === 0,
+		"addCollider paints the wall channel of the cells it covers",
+		"centre=" + flagsAt(32, 32) + " rim=" + flagsAt(36, 32));
+	check(m.sink.textureWrites.some(w => w.label === "flags") && m.sink.pipeOrder.indexOf("phaseEos") >= 0,
+		"adding a body uploads the mask and re-primes the phase fields");
+
+	// a moving body: the released cells come back, the new ones block, and the fluid
+	// it displaced gets the body's velocity while the body's own cells go to zero
+	const writesBefore = m.sink.textureWrites.length;
+	const pipesBefore = m.sink.pipeOrder.length;
+	sim.moveCollider(id, 40, 32, 120, -30);
+	sim.step(1 / 60);
+	const newWrites = m.sink.textureWrites.slice(writesBefore);
+	const velWrite = newWrites.filter(w => w.label === "patchVel").pop();
+	const flagsWrite = newWrites.filter(w => w.label === "flags").pop();
+	check(flagsAt(32, 32) === 0 && flagsAt(40, 32) === 255 && flagsAt(44, 32) === 255,
+		"a moved body clears the cells it left and blocks the ones it entered",
+		"old=" + flagsAt(32, 32) + " new=" + flagsAt(40, 32));
+	check(flagsWrite && flagsWrite.size[0] < N && flagsWrite.origin[0] > 0,
+		"the mask delta uploads a patch, not the whole grid",
+		flagsWrite ? "rect " + flagsWrite.size.join("x") + " at " + flagsWrite.origin.join(",") : "no write");
+	const patch = velWrite ? new Float32Array(velWrite.data.buffer, velWrite.data.byteOffset, velWrite.data.length) : null;
+	// the velocity patch lives at the patch texture's origin, so its grid origin is
+	// the rect the solver recorded in the (shared) patch params
+	const patchAt = (gx, gy) => {
+		if (!velWrite) return null;
+		const px = gx - sim.params.paintX, py = gy - sim.params.paintY;
+		if (px < 0 || py < 0 || px >= velWrite.size[0] || py >= velWrite.size[1]) return null;
+		const i = (px + py * velWrite.size[0]) * 4;
+		return [patch[i], patch[i + 1], patch[i + 2]];
+	};
+	const bodyCell = patchAt(40, 32);
+	const aheadCell = patchAt(45, 32);
+	const trailingCell = patchAt(35, 32);
+	const staged = m.sink.pipeOrder.slice(pipesBefore);
+	check(staged.indexOf("colliderVel") >= 0,
+		"a moving body stages the velocity imprint pass");
+	check(staged.indexOf("colliderPushMass") >= 0 && staged.indexOf("colliderPushTherm") >= 0 &&
+		newWrites.some(w => w.label === "patchGeo"),
+		"a moving body stages both push passes and uploads the geometry patch",
+		staged.filter(n => n.indexOf("collider") === 0).join(","));
+	// every pipeline the collider pass binds needs a group for each parity state, or the
+	// device drops the whole command buffer and the body silently does not move
+	const grp = sim.solver.groups;
+	check(grp && grp.pushMass && grp.pushMass.length === 3 && grp.pushTherm.length === 2 &&
+		grp.colliderVel.length === 2 && grp.pushMass.every(g => g && g._entries.length === 4),
+		"the push and imprint bind groups exist for every parity the state can be in",
+		"pushMass=" + (grp && grp.pushMass ? grp.pushMass.length : "?") +
+		" pushTherm=" + (grp && grp.pushTherm ? grp.pushTherm.length : "?"));
+	// a frame where the body does not move must cost nothing: no patch write, no pass
+	const stillBefore = m.sink.pipeOrder.length;
+	sim.step(1 / 60);
+	const stillPasses = m.sink.pipeOrder.slice(stillBefore).filter(n => n.indexOf("collider") === 0);
+	check(stillPasses.length === 0, "a parked body stages no collider pass at all", "passes=" + stillPasses.length);
+	check(velWrite && bodyCell[2] === 1 && bodyCell[0] === 0 && bodyCell[1] === 0 &&
+		aheadCell && aheadCell[2] === 1 && aheadCell[0] === 120 && aheadCell[1] === -30 &&
+		trailingCell && trailingCell[2] === 0,
+		"the imprint sets the body's own cell to rest and the fluid it pushes to the body's velocity",
+		"body=" + (bodyCell && bodyCell.join(",")) + " ahead=" + (aheadCell && aheadCell.join(",")));
+
+	// mass is a pressure boundary question, never a source: a teleport must not add
+	const ledgerBefore = sim.solver.getStats().ledger.injectedM;
+	sim.moveCollider(id, 56, 56, 0, 0);
+	sim.step(1 / 60);
+	check(flagsAt(40, 32) === 0 && flagsAt(56, 56) === 255 &&
+		sim.solver.getStats().ledger.injectedM === ledgerBefore,
+		"a teleport moves the mask and books no mass", "injected=" + sim.solver.getStats().ledger.injectedM);
+
+	// static geometry and the painted wall a driving body must not erode
+	const mask = new Uint8Array(N * N);
+	for (let x = 0; x < N; x++) mask[x] = 1;
+	check(sim.setObstacles(mask, N, N) === true && flagsAt(10, 1) === 255 && flagsAt(10, 2) === 0,
+		"setObstacles uploads a static mask as walls");
+	check(sim.setObstacles(mask, N - 1, N) === false,
+		"a mask of the wrong size is refused instead of resampled");
+	const wallAt = (x, y) => flagsAt(x, y);
+	check(sim.paintObstacle(60, 60, 4, "wall") === true && wallAt(60, 60) === 255 &&
+		sim.paintObstacle(60, 60, 4, "erase") === true && wallAt(60, 60) === 0 &&
+		sim.paintObstacle(60, 60, 4, "solid") === false,
+		"paintObstacle paints and erases a disc, and refuses a kind the EOS owns");
+	check(sim.paintObstacle(48, 48, 3, "wall") === true && wallAt(48, 48) === 255,
+		"paintObstacle paints where the game asked, not where the pointer is");
+	const wallBody = sim.addCollider({ shape: "circle", x: 48, y: 48, radius: 3, vx: 0, vy: 0 });
+	sim.moveCollider(wallBody, 56, 40, 0, 0);
+	sim.step(1 / 60);
+	check(wallAt(48, 48) === 255 && wallAt(56, 40) === 255,
+		"a body leaving a painted wall restores the wall instead of erasing it");
+	sim.destroy();
+
+	// reset keeps the bodies and drops the painted mask, like it drops the scenario's
+	const r = await makeSim({ substepsAuto: false });
+	r.sim.addCollider({ shape: "circle", x: 20, y: 20, radius: 3 });
+	r.sim.setGrid(128);
+	check(r.sim.colliderCount() === 1 && r.sim.solver.flagsMirror[(20 + 20 * r.sim.params.texW) * 4] === 255,
+		"setGrid rebuilds the mask arrays and re-paints the bodies");
+	r.sim.reset("dam");
+	const flagsAfterReset = r.sim.solver.flagsMirror[(20 + 20 * r.sim.params.texW) * 4];
+	check(r.sim.colliderCount() === 1 && flagsAfterReset === 255,
+		"reset keeps the bodies and paints them onto the fresh field");
+	r.sim.destroy();
+}
+
+// a2: a body driven through water has to push it. the device here is the cpu oracle,
+// which is the only thing that can show a wake without a gpu: it sees exactly the
+// three writes the gpu path makes - the wall channel, rest inside the body, and the
+// body's velocity on the fluid it is about to move into.
+async function testColliderFlow() {
+	const S = Fluid.core.solver, C = Fluid.core.colliders, acc = Fluid.core.stats;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {
+		N: 32, scenario: "dam", useMultigrid: false, dt: 1 / 60
+	});
+	cfg.texW = cfg.N + 2; cfg.texH = cfg.N + 2;
+	const sim = S.create(cfg);
+	const table = C.create();
+	const id = C.add(table, cfg, { shape: "circle", x: 10, y: 16, radius: 4, vx: 14, vy: 0 });
+	const body = table.slots[id];
+	const tw = cfg.texW, th = cfg.texH, N = cfg.N;
+	const cols = () => {
+		const f = Fluid.core.grid.curBuf(sim.mass), out = new Float64Array(tw);
+		for (let x = 1; x <= N; x++) {
+			let sum = 0;
+			for (let y = 1; y <= N; y++) sum += f[(x + y * tw) * 4 + 3];
+			out[x] = sum;
+		}
+		return out;
+	};
+	// one frame of the collider half, in the order the gpu path runs it: rasterize,
+	// push the contents of the newly taken cells out, imprint the body's velocity,
+	// then the substep itself
+	const owner = new Uint8Array(tw * th), prev = new Uint8Array(tw * th);
+	const geo = new Float32Array(128 * 128 * 4);
+	const scratch = C.makeScratch();
+	const rect = {};
+	const massF = Fluid.core.grid.curBuf(sim.mass), thermF = Fluid.core.grid.curBuf(sim.therm);
+	const drive = (imprint) => {
+		body.x += body.vx * cfg.dt; body.y += body.vy * cfg.dt;
+		owner.fill(0);
+		C.rasterize(table, cfg, owner, rect);
+		const x0 = Math.max(1, rect.x0 - 1), x1 = Math.min(tw - 2, rect.x1 + 1);
+		const y0 = Math.max(1, rect.y0 - 1), y1 = Math.min(th - 2, rect.y1 + 1);
+		if (imprint) {
+			const pr = C.padRect(cfg, C.rasterize(table, cfg, owner, {}));
+			rect.x0 = pr.x0; rect.y0 = pr.y0; rect.x1 = pr.x1; rect.y1 = pr.y1;
+			C.geometry(cfg, owner, prev, rect, geo);
+			C.displace(cfg, geo, rect, massF, thermF, scratch);
+		}
+		for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) sim.flags[(x + y * tw) * 4] = owner[x + y * tw] ? 255 : 0;
+		const vel = Fluid.core.grid.curBuf(sim.vel);
+		for (let y = y0; y <= y1; y++) {
+			for (let x = x0; x <= x1; x++) {
+				const k = x + y * tw;
+				if (owner[k]) {
+					vel[k * 2] = 0; vel[k * 2 + 1] = 0;
+				} else if (imprint && !prev[k] && (owner[k - 1] || owner[k + 1] || owner[k - tw] || owner[k + tw])) {
+					vel[k * 2] = body.vx; vel[k * 2 + 1] = body.vy;
+				}
+			}
+		}
+		prev.set(owner);
+		sim.step(cfg.dt);
+	};
+	const before = cols();
+	for (let s = 0; s < 60; s++) drive(true);
+	const after = cols();
+	let ahead = 0, behind = 0, rise = 0, hollow = 0;
+	for (let x = 1; x <= N; x++) {
+		const d = after[x] - before[x];
+		if (x > body.x + 2) { ahead += d; rise = Math.max(rise, d); }
+		if (x < body.x - 2) { behind += d; hollow = Math.min(hollow, d); }
+	}
+	check(ahead > 0 && behind < 0 && rise > 2 && hollow < -2,
+		"a body driven through water piles it up ahead and leaves a hollow behind",
+		"ahead=" + ahead.toFixed(1) + " behind=" + behind.toFixed(1) + " rise=" + rise.toFixed(1) + " hollow=" + hollow.toFixed(1));
+	const st = acc.totalsFromFields(Fluid.core.grid.curBuf(sim.mass), Fluid.core.grid.curBuf(sim.therm), tw, th);
+	check(Math.abs(acc.driftRel(st.sumM, acc.expectedTotal(sim.ledger, "m"))) < 1e-6,
+		"the wake moves water without creating any: drift_rel stays at roundoff",
+		"drift_rel=" + Math.abs(acc.driftRel(st.sumM, acc.expectedTotal(sim.ledger, "m"))).toExponential(2));
+	// a teleport is a mask change with no imprint: the fluid it skipped over is not
+	// dragged along, and above all no substance is booked
+	body.x = 8; body.y = 8; body.vx = 0; body.vy = 0;
+	const massBefore = st.sumM;
+	drive(false);
+	const st2 = acc.totalsFromFields(Fluid.core.grid.curBuf(sim.mass), Fluid.core.grid.curBuf(sim.therm), tw, th);
+	const teleDrift = Math.abs(acc.driftRel(st2.sumM, acc.expectedTotal(sim.ledger, "m")));
+	check(Math.abs(st2.sumM - acc.expectedTotal(sim.ledger, "m")) < 1e-3 && teleDrift < 1e-6,
+		"a teleport books no mass and leaves the ledger's injected total alone",
+		"sumM=" + st2.sumM.toFixed(3) + " drift_rel=" + teleDrift.toExponential(2));
+	check(Math.abs(st2.sumM - massBefore) / massBefore < 1e-6,
+		"the teleport frame moves less water than the drift floor allows",
+		"delta=" + (st2.sumM - massBefore).toExponential(2));
+	// a wall is a boundary, not a drain: the fluid already inside the cells a body
+	// covers stays put, which is exactly why a teleport cannot invent substance
+	const still = Object.assign({}, Fluid.core.config.defaults, { N: 24, scenario: "still", useMultigrid: false, dt: 1 / 60 });
+	still.texW = still.N + 2; still.texH = still.N + 2;
+	const s2 = S.create(still);
+	const table2 = C.create();
+	C.add(table2, still, { shape: "circle", x: 12, y: 12, radius: 4 });
+	const owner2 = new Uint8Array(still.texW * still.texH), rect2 = {};
+	C.rasterize(table2, still, owner2, rect2);
+	const sm = Fluid.core.grid.curBuf(s2.mass);
+	const k = 12 + 12 * still.texW;
+	const cell = k * 4;
+	const held = sm[cell + 3];
+	for (let y = 1; y <= still.N; y++) for (let x = 1; x <= still.N; x++) if (owner2[x + y * still.texW]) s2.flags[(x + y * still.texW) * 4] = 255;
+	for (let i = 0; i < 5; i++) s2.step(still.dt);
+	const sm2 = Fluid.core.grid.curBuf(s2.mass);
+	const sv = Fluid.core.grid.curBuf(s2.vel);
+	const st3 = acc.totalsFromFields(sm2, Fluid.core.grid.curBuf(s2.therm), still.texW, still.texH);
+	check(held > 0.5 && Math.abs(sm2[cell + 3] - held) < 1e-6 && sv[k * 2] === 0 && sv[k * 2 + 1] === 0,
+		"a wall is a boundary, not a drain: the core solver leaves the fluid it covers alone",
+		"m " + held.toFixed(3) + "->" + sm2[cell + 3].toFixed(3) + " v=" + sv[k * 2].toFixed(3) +
+		" drift=" + Math.abs(acc.driftRel(st3.sumM, acc.expectedTotal(s2.ledger, "m"))).toExponential(2));
+}
+
+// a2's visible half: a body driven across a dye patch must move the dye, not leave it
+// frozen under a hole. one run with the push passes, one without (the t4 behaviour):
+// the dye total has to come out the same either way, and the dye left in the cells the
+// body crossed has to be gone.
+async function testColliderDye() {
+	const S = Fluid.core.solver, C = Fluid.core.colliders, acc = Fluid.core.stats, grid = Fluid.core.grid;
+	function run(push) {
+		const cfg = Object.assign({}, Fluid.core.config.defaults, {
+			N: 32, scenario: "still", useMultigrid: false, dt: 1 / 60
+		});
+		cfg.texW = cfg.N + 2; cfg.texH = cfg.N + 2;
+		const sim = S.create(cfg);
+		const tw = cfg.texW, N = cfg.N;
+		const mass = grid.curBuf(sim.mass);
+		for (let y = 1; y <= N; y++) {
+			for (let x = 1; x <= N; x++) {
+				if ((x - 10) * (x - 10) + (y - 16) * (y - 16) < 36) mass[(x + y * tw) * 4] = 0.6;
+			}
+		}
+		const table = C.create();
+		const body = table.slots[C.add(table, cfg, { shape: "box", x: 5, y: 16, hw: 2, hh: 5, vx: 20, vy: 0 })];
+		const owner = new Uint8Array(tw * cfg.texH), prev = new Uint8Array(tw * cfg.texH);
+		const swept = new Uint8Array(tw * cfg.texH);
+		const geo = new Float32Array(128 * 128 * 4), scratch = C.makeScratch();
+		for (let s = 0; s < 45; s++) {
+			body.x += body.vx * cfg.dt;
+			owner.fill(0);
+			const rect = C.padRect(cfg, C.rasterize(table, cfg, owner, {}));
+			if (push) {
+				C.geometry(cfg, owner, prev, rect, geo, 128);
+				C.displace(cfg, geo, rect, grid.curBuf(sim.mass), grid.curBuf(sim.therm), scratch, 128);
+			}
+			for (let y = 1; y < cfg.texH - 1; y++) for (let x = 1; x < tw - 1; x++) sim.flags[(x + y * tw) * 4] = owner[x + y * tw] ? 255 : 0;
+			const vel = grid.curBuf(sim.vel);
+			for (let y = 1; y < cfg.texH - 1; y++) {
+				for (let x = 1; x < tw - 1; x++) {
+					const k = x + y * tw;
+					if (owner[k]) {
+						vel[k * 2] = 0; vel[k * 2 + 1] = 0;
+					} else if (!prev[k] && (owner[k - 1] || owner[k + 1] || owner[k - tw] || owner[k + tw])) {
+						vel[k * 2] = body.vx; vel[k * 2 + 1] = 0;
+					}
+				}
+			}
+			for (let k = 0; k < swept.length; k++) if (owner[k]) swept[k] = 1;
+			prev.set(owner);
+			sim.step(cfg.dt);
+		}
+		const m = grid.curBuf(sim.mass);
+		let total = 0, inside = 0;
+		for (let y = 1; y <= N; y++) {
+			for (let x = 1; x <= N; x++) {
+				const dye = m[(x + y * tw) * 4];
+				total += dye;
+				if (swept[x + y * tw]) inside += dye;
+			}
+		}
+		const t = acc.totalsFromFields(m, grid.curBuf(sim.therm), tw, cfg.texH);
+		return { total, inside, mass: t.sumM, ledger: acc.expectedTotal(sim.ledger, "m") };
+	}
+	const pushed = run(true), frozen = run(false);
+	check(pushed.total > 0 && Math.abs(pushed.total - frozen.total) / frozen.total < 1e-6,
+		"pushing the dye around keeps the same dye: none is created or lost",
+		"push=" + pushed.total.toFixed(2) + " frozen=" + frozen.total.toFixed(2));
+	// the pushed dye can flow back into the swept cells afterwards, so the bound is a
+	// contrast (most of it stays vs most of it has left), not an absolute zero
+	check(frozen.inside / frozen.total > 0.7 && pushed.inside / pushed.total < 0.25,
+		"the dye a body crosses moves out of the cells it left instead of staying put",
+		"in the swept cells: frozen " + (100 * frozen.inside / frozen.total).toFixed(1) + "% -> pushed " +
+		(100 * pushed.inside / pushed.total).toFixed(1) + "%");
+	check(Math.abs(pushed.mass - pushed.ledger) < 1e-3,
+		"the frame that pushes dye still balances against the ledger", "sumM=" + pushed.mass.toFixed(3));
+}
+
 // examples/demo.html is the API by example. Boot the real demo script over the
 // real engine and the recording device: the page's own handlers drive probes,
 // pause, view and scenario, and the numbers on the page come from the same
@@ -408,7 +940,7 @@ async function testDemoPage() {
 	const origWindow = globalThis.window, origDocument = globalThis.document;
 	const origRaf = globalThis.requestAnimationFrame, origCancel = globalThis.cancelAnimationFrame;
 	const els = {};
-	for (const id of ["c", "status", "error-panel", "scenario", "pause", "step", "reset", "clear-probes", "views", "probe-body", "meters"]) {
+	for (const id of ["c", "status", "error-panel", "scenario", "pause", "step", "reset", "clear-probes", "views", "probe-body", "meters", "emitters", "body"]) {
 		els[id] = new El(id === "c" ? "canvas" : "div");
 	}
 	const win = new El("window");
@@ -426,7 +958,7 @@ async function testDemoPage() {
 	// the mock never executes a shader: these arrays stand in for what the
 	// probe and stats kernels would have written, and the page must read them
 	const m = mock.create({ stats: statsPattern(), probes: probePattern() });
-	m.device.queue = stubQueue();
+	m.device.queue = stubQueue(m.sink);
 	const origInit = Fluid.gpu.device.init;
 	const origCreate = Fluid.engine.create;
 	Fluid.gpu.device.init = async () => ({ device: m.device, context: mock.mockContext(), format: "bgra8unorm" });
@@ -459,6 +991,11 @@ async function testDemoPage() {
 		check(sim.solver !== null && els.scenario.children.length === Fluid.core.config.scenarioNames.length,
 			"demo: fills the scenario select from the config's own scenario list",
 			"options=" + els.scenario.children.length);
+		const pool = new Float32Array(sim.solver.pool.emitters._buf);
+		check(sim.emitterCount() === 6 && pool[0] === 6 && els.emitters.textContent === "Emitters (6)" &&
+			sim.params.scenario === "still",
+			"demo: the playground installs its heaters, cold plates and dye jet through addEmitter",
+			"live=" + pool[0] + " label=" + els.emitters.textContent);
 		await frames(6);
 		els.c.fire("contextmenu", { clientX: 50, clientY: 50 });
 		check(sim.probeCount() === 1 && sim.solver.probes.slots[0].x === 128 && sim.solver.probes.slots[0].y === 128,
@@ -476,6 +1013,28 @@ async function testDemoPage() {
 		check(/mass [\+\-]/.test(els.meters.children[0].textContent) && els.meters.children[2].textContent.indexOf("neg=") === 0,
 			"demo: the conservation meters come from stats(), not from the solver's internals",
 			els.meters.children[0].textContent + " · " + els.meters.children[2].textContent);
+		// the moving body: the button adds one collider, the frame loop drives it, and a
+		// second click removes it (the page keeps its own position, the engine the slot)
+		check(sim.colliderCount() === 0, "demo: the playground starts without a body", "live=" + sim.colliderCount());
+		els.body.fire("click");
+		const bodyId = sim.colliderCount() === 1 ? 0 : -1;
+		const bodyX = bodyId >= 0 ? sim.solver.colliders.slots[bodyId].x : 0;
+		check(bodyId === 0 && els.body.textContent === "Body (on)",
+			"demo: the Body button adds one collider through addCollider", els.body.textContent);
+		const frameBefore = sim.solver.getStats().frame;
+		await frames(3);
+		const bodyMoved = bodyId >= 0 ? sim.solver.colliders.slots[bodyId].x : 0;
+		check(sim.solver.getStats().frame > frameBefore && bodyMoved > bodyX,
+			"demo: the frame loop steps and moves the body through moveCollider",
+			bodyX + " -> " + bodyMoved + " frames " + frameBefore + " -> " + sim.solver.getStats().frame);
+		const bodyY = Math.round(0.42 * sim.params.N);
+		const wallAtBody = sim.solver.flagsMirror[(bodyMoved + bodyY * sim.params.texW) * 4];
+		check(wallAtBody === 255,
+			"demo: the body's cells are walls in the mask the solver holds",
+			"at " + bodyMoved + "," + bodyY + " flag=" + wallAtBody + " frame=" + sim.solver.getStats().frame);
+		els.body.fire("click");
+		check(sim.colliderCount() === 0 && els.body.textContent === "Body (off)",
+			"demo: a second click removes the body and its mask", els.body.textContent);
 		els.pause.fire("click");
 		await frames(3);
 		check(sim.paused === true && els.pause.textContent === "Resume",
@@ -486,6 +1045,21 @@ async function testDemoPage() {
 		els.scenario.fire("change");
 		check(sim.params.scenario === "cycle" && sim.solver.getStats().frame === 0,
 			"demo: the scenario select resets through the engine", sim.params.scenario);
+		const emittersBefore = m.sink.pipeOrder.length;
+		await frames(4);
+		check(m.sink.pipeOrder.slice(emittersBefore).indexOf("emitterMass") >= 0,
+			"demo: a frame with the playground's sources stages the emitter passes");
+		els.emitters.fire("click");
+		check(sim.emitterCount() === 0 && els.emitters.textContent === "Emitters (off)",
+			"demo: the Emitters button removes every slot through the engine");
+		await frames(3);
+		const emittersOff = m.sink.pipeOrder.length;
+		await frames(3);
+		check(m.sink.pipeOrder.slice(emittersOff).every(p => p.indexOf("emitter") !== 0),
+			"demo: with the sources off the frame stages no emitter pass");
+		els.emitters.fire("click");
+		check(sim.emitterCount() === 6 && els.emitters.textContent === "Emitters (6)",
+			"demo: the button installs them again in the same slots");
 		els["clear-probes"].fire("click");
 		check(sim.probeCount() === 0 && els["probe-body"].children[0].hidden === true,
 			"demo: clear drops every probe slot and hides the rows");
@@ -508,6 +1082,10 @@ async function testDemoPage() {
 	await testEngineCreate();
 	await testPacing();
 	await testStatsAndProbes();
+	await testEmitters();
+	await testColliders();
+	await testColliderFlow();
+	await testColliderDye();
 	await testViewAndGrid();
 	await testInputLifecycle();
 	await testTeardown();

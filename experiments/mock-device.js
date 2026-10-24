@@ -9,13 +9,14 @@ globalThis.GPUShaderStage = globalThis.GPUShaderStage || { VERTEX: 1, FRAGMENT: 
 globalThis.GPUMapMode = globalThis.GPUMapMode || { READ: 1, WRITE: 2 };
 
 function newSink() {
-	return { modules: [], writes: [], pipeOrder: [], bindings: [], copies: [], destroyed: [] };
+	return { modules: [], writes: [], pipeOrder: [], bindings: [], copies: [], destroyed: [], textureWrites: [] };
 }
 const labelOf = o => (o && o.label) || "";
 // patterns: source label -> Float32Array stamped into the copy destination, standing
 // in for what a real kernel would have written.
 function create(patterns) {
 	const sink = newSink();
+	sink.textureWrites = [];
 	const pat = patterns || {};
 	const counts = { buffers: 0, textures: 0, dispatches: 0, copies: 0, buffersAlive: 0, texturesAlive: 0 };
 	function makeBuffer(desc) {
@@ -36,11 +37,26 @@ function create(patterns) {
 		};
 		return b;
 	}
+	// the encoder is the one place that can catch the mistake a recording mock used
+	// to hide: a dispatch with no bind group at group 0 (on a device that is a
+	// validation error, and the pass then never runs - "nothing moves" with no number
+	// to point at). setBindGroup(0, undefined) unbinds, which is what a group that was
+	// never created looks like at the call site.
 	function makeEncoder() {
+		let group0 = null, pipeline = "(none)";
 		const pass = {
-			setPipeline(p) { sink.pipeOrder.push(p.label); },
-			setBindGroup(i, g) { sink.bindings.push(g && g._entries ? g._entries.length : 0); },
-			dispatchWorkgroups() { counts.dispatches++; },
+			setPipeline(p) { pipeline = p.label; sink.pipeOrder.push(p.label); },
+			setBindGroup(i, g) {
+				if (i === 0) group0 = g || null;
+				sink.bindings.push(g && g._entries ? g._entries.length : 0);
+			},
+			dispatchWorkgroups(x, y, z) {
+				if (!group0) {
+					throw new Error("mock: dispatch on pipeline \"" + pipeline + "\" with no bind group at group 0"
+						+ " (x" + (x || 1) + "y" + (y || 1) + "z" + (z || 1) + ") - a real device rejects the whole command buffer");
+				}
+				counts.dispatches++;
+			},
 			end() {}
 		};
 		return {
@@ -87,7 +103,14 @@ function create(patterns) {
 				new Float32Array(buf._buf, offset, src.length).set(src);
 				sink.writes.push(labelOf(buf));
 			},
-			writeTexture() {},
+			// recorded, not applied: the harnesses that need the uploaded bytes
+			// (collider imprints, paint patches) read them back from here
+			writeTexture(dst, data, layout, size) {
+				sink.textureWrites.push({
+					label: labelOf(dst.texture), data, layout, size,
+					origin: dst.origin ? [dst.origin.x || 0, dst.origin.y || 0] : [0, 0]
+				});
+			},
 			submit() {},
 			// resolved immediately: the harnesses that observe backpressure swap this
 			// for a queue they complete by hand

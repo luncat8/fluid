@@ -40,6 +40,8 @@
 	<script defer src="../src/core/multigrid.js"></script>
 	<script defer src="../src/core/solver.js"></script>
 	<script defer src="../src/core/probes.js"></script>
+	<script defer src="../src/core/emitters.js"></script>
+	<script defer src="../src/core/colliders.js"></script>
 	<script defer src="../src/core/buoy.js"></script>
 	<script defer src="../src/core/pacing.js"></script>
 	<script defer src="../src/gpu/device.js"></script>
@@ -73,6 +75,8 @@
 					<button id="pause" type="button">Pause</button>
 					<button id="step" type="button">Step</button>
 					<button id="reset" type="button">Reset</button>
+					<button id="emitters" type="button">Emitters</button>
+					<button id="body" type="button">Body</button>
 				</div>
 				<div class="row" id="views"></div>
 			</div>
@@ -95,7 +99,8 @@
 		</section>
 	</main>
 	<footer>
-		Drag to stir and paint. Keys: <code>space</code> pause · <code>r</code> reset · <code>0-7</code> view.
+		Drag to stir and paint · right-click to probe · <em>Emitters</em> installs three heaters, two cold
+		plates and a dye jet. Keys: <code>space</code> pause · <code>r</code> reset · <code>0-7</code> view.
 		Every number here comes from the public engine API (<code>Fluid.engine</code>), not from the page's own access to the solver.
 	</footer>
 </body>

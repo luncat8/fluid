@@ -907,3 +907,27 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 - pitfall: a 20-cycle create/destroy loop is the only cheap leak test available
   without a GPU. The shared recording mock (`experiments/mock-device.js`) tracks
   live buffers/textures, so "pool destroyed" is an assertion rather than a comment.
+
+## 2026-10-24 storage-texture textureLoad levels, and a mock that ignored bind state
+
+Two device-only failures in the same increment, both invisible to the recording mock.
+
+`textureLoad(texture_storage_2d<...>, coords, level)` does not exist: a storage texture has
+one mip level, so the call takes the coordinate only. the overload with a level is
+`textureLoad(texture_2d<...>, coords, level)`. a level argument on a storage read is a
+shader-validation error, and with a validating device the *whole* submit can be dropped
+while the node mock (which counts braces) and the wgsl interpreter (which is lenient)
+both accept it. sweep for it when adding a kernel: every `textureLoad` whose binding is
+declared `texture_storage_2d<..., read>` must pass exactly one coordinate argument.
+
+A dispatch with no bind group at group 0 is the same shape of failure from the other side:
+`setBindGroup(0, undefined)` unbinds, so a bind group that was never created looks like
+"nothing bound". the device then rejects the entire command buffer - the pass is encoded,
+`pipeOrder` in the mock says it ran, and the fields never change. [verified: seen as
+`No bind group set at group index 0 - while encoding ComputePassEncoder "collider"`]
+the recording mock now throws from `dispatchWorkgroups` when group 0 is unset, naming the
+pipeline, so this class of bug fails headlessly instead of costing a device round trip.
+[verified in experiments/mock-device.js]
+
+Rule of thumb: a new pipeline needs its bind group created in the same edit, and "the mock
+saw the pass" only proves encoding, never validity.

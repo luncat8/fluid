@@ -8,6 +8,8 @@
 		const stats=Fluid.core.stats;
 		const coreSolver=Fluid.core.solver;
 		const coreProbes=Fluid.core.probes;
+		const coreEmitters=Fluid.core.emitters;
+		const coreColliders=Fluid.core.colliders;
 		let pool=fields.createPool(device,cfg.N,cfg.mgCoarsen);
 		const pipes=passes.createPipelines(device,format);
 		let groups=passes.makeBindGroups(device,pipes,pool);
@@ -29,8 +31,34 @@
 		let probeInFlight=false;
 		let probeGeneration=0;
 		let probeFrame=0;
+		// continuous sources (0.7.0 t3): one table, three passes at the top of the
+		// frame. the cpu sums the same cells into the ledger, so the drift meters
+		// stay meaningful while a game leaves a heater on.
+		const emitterTable=coreEmitters.create();
 		const state={m:0,t:0,v:0,pw:0,ph:0};
 		let flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
+		// colliders (0.7.0 t4): an analytic geometry, a per-cell owner index and the
+		// static mask a painted wall owns. flags.r is the wall channel, so the whole
+		// body path is "diff two cpu masks and upload the cells that changed".
+		const colliderTable=coreColliders.create();
+		let staticMask=null,colliderOwner=null,colliderPrev=null;
+		const colliderRect={x0:1,y0:1,x1:0,y1:0};
+		const colliderPrevRect={x0:1,y0:1,x1:0,y1:0};
+		const flagsPatch=new Uint8Array(fields.PATCH*fields.PATCH*4);
+		const velPatch=new Float32Array(fields.PATCH*fields.PATCH*4);
+		// (0, 0, code, 0): what a body took and how it splits. see core/colliders.geometry
+		const geoPatch=new Float32Array(fields.PATCH*fields.PATCH*4);
+		const pushRect={x0:1,y0:1,x1:0,y1:0};
+		let patchX=0,patchY=0,patchW=0,patchH=0;
+		function allocMasks(){
+			const cells=cfg.texW*cfg.texH;
+			staticMask=new Uint8Array(cells);
+			colliderOwner=new Uint8Array(cells);
+			colliderPrev=new Uint8Array(cells);
+			coreColliders.emptyRect(colliderRect);
+			coreColliders.emptyRect(colliderPrevRect);
+		}
+		allocMasks();
 		let ledger=null;
 		const readbackArray=new Float32Array(stats.STATS_LEN);
 		let readbackInFlight=false;
@@ -93,8 +121,7 @@
 			fields.clearTexture(device,pool.macTmp,cfg.texW,cfg.texH,"rg32float");
 			fields.clearTexture(device,pool.press.tex[0],cfg.texW,cfg.texH,"r32float");
 			fields.clearTexture(device,pool.press.tex[1],cfg.texW,cfg.texH,"r32float");
-			fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",sc.flagsA);
-			fields.writeTextureRect(device,pool.flagsTmp,cfg.texW,cfg.texH,"rgba8uint",sc.flagsA);
+
 			fields.clearTexture(device,pool.sfield,cfg.texW,cfg.texH,"rgba32float");
 			fields.clearTexture(device,pool.sfieldTmp,cfg.texW,cfg.texH,"rgba32float");
 			fields.clearTexture(device,pool.accum,cfg.texW,cfg.texH,"rg32float");
@@ -102,6 +129,12 @@
 			fields.clearTexture(device,pool.flux,cfg.texW,cfg.texH,"rg32float");
 			fields.clearTexture(device,pool.divsrc,cfg.texW,cfg.texH,"r32float");
 			flagsMirror.set(sc.flagsA);
+			// the scenario reloads its mask; the painted static mask goes with it, but
+			// bodies are game objects and are painted onto the fresh field again
+			staticMask.fill(0);
+			rebuildColliderMask();
+			fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+			fields.writeTextureRect(device,pool.flagsTmp,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
 			state.m=0;state.t=0;state.v=0;
 			heatNetKnown=0;pendingHeatNet=0;
 			pSpanSmooth=100;
@@ -134,9 +167,11 @@
 			writeMgParams();
 			runPrimePhase(false);
 			writeParams();
-			// a resize rebuilds the pool: the new probe buffer starts zeroed, so the
-			// live table has to be pushed again or every query silently stops
+			// a resize rebuilds the pool: the new probe and source buffers start
+			// zeroed, so the live tables have to be pushed again or every query and
+			// every emitter silently stops
 			uploadProbes();
+			uploadEmitters();
 		}
 		function uploadProbes(){
 			device.queue.writeBuffer(pool.probes,0,probeTable.upload);
@@ -160,6 +195,231 @@
 		function sampleProbe(id,out){
 			return coreProbes.sample(probeTable,cfg,frameCount,id,out);
 		}
+		function uploadEmitters(){
+			coreEmitters.header(emitterTable,cfg);
+			device.queue.writeBuffer(pool.emitters,0,emitterTable.upload);
+		}
+		function addEmitter(spec){
+			const id=coreEmitters.add(emitterTable,cfg,spec);
+			if(id<0)return -1;
+			uploadEmitters();
+			return id;
+		}
+		function moveEmitter(id,x,y){
+			if(!coreEmitters.move(emitterTable,cfg,id,x,y))return false;
+			uploadEmitters();
+			return true;
+		}
+		function setEmitter(id,patch){
+			if(!coreEmitters.set(emitterTable,cfg,id,patch))return false;
+			uploadEmitters();
+			return true;
+		}
+		function removeEmitter(id){
+			if(!coreEmitters.remove(emitterTable,id))return false;
+			uploadEmitters();
+			return true;
+		}
+		// rasterize the bodies and write their wall flag into the cpu mirror; the caller
+		// uploads the flags afterwards (reset and setObstacles in full, a moved body only
+		// over the rect it touched)
+		function rebuildColliderMask(){
+			colliderOwner.fill(0);
+			coreColliders.rasterize(colliderTable,cfg,colliderOwner,colliderRect);
+			colliderPrev.set(colliderOwner);
+			colliderPrevRect.x0=colliderRect.x0;
+			colliderPrevRect.y0=colliderRect.y0;
+			colliderPrevRect.x1=colliderRect.x1;
+			colliderPrevRect.y1=colliderRect.y1;
+			const tw=cfg.texW;
+			for(let y=colliderRect.y0;y<=colliderRect.y1;y++){
+				for(let x=colliderRect.x0;x<=colliderRect.x1;x++){
+					const i=x+y*tw;
+					if(colliderOwner[i])flagsMirror[i*4]=255;
+				}
+			}
+		}
+		function applyMaskToFlags(){
+			const tw=cfg.texW,th=cfg.texH;
+			for(let y=1;y<th-1;y++){
+				for(let x=1;x<tw-1;x++){
+					const i=x+y*tw;
+					flagsMirror[i*4]=(staticMask[i]||colliderOwner[i])?255:0;
+				}
+			}
+		}
+		// a set, not an add: the fluid next to a newly occupied cell takes the body's
+		// velocity and the body's own cells go to zero. mass is never touched.
+		function setPatchVel(px,py,u,v){
+			if(px<0||py<0||px>=patchW||py>=patchH)return;
+			const i=(px+py*patchW)*4;
+			velPatch[i]=u;
+			velPatch[i+1]=v;
+			velPatch[i+2]=1;
+			velPatch[i+3]=0;
+		}
+		function imprintNeighbour(x,y,u,v){
+			if(x<1||x>cfg.texW-2||y<1||y>cfg.texH-2)return;
+			// free before this frame: the fluid the body moved into, not the body
+			if(colliderOwner[x+y*cfg.texW]||colliderPrev[x+y*cfg.texW])return;
+			setPatchVel(x-patchX,y-patchY,u,v);
+		}
+		// run the two push passes beside the imprint and the prime: one submit, so no
+		// substep can see a half-moved body
+		function runPrime(push){
+			cfg.chargeLatent=0;
+			writeParams();
+			const encoder=device.createCommandEncoder({label:"collider"});
+			const cpass=encoder.beginComputePass({label:"collider"});
+			if(push&&patchW>0)passes.encodeColliderPush(cpass,pool,pipes,groups,state);
+			if(patchW>0)passes.encodeColliderVel(cpass,pool,pipes,groups,state);
+			passes.encodePrimePhase(cpass,pool,pipes,groups,state);
+			cpass.end();
+			device.queue.submit([encoder.finish()]);
+			cfg.chargeLatent=1;
+		}
+		// the per-frame body update: rasterize, diff against the image that is on the
+		// gpu, upload only the changed cells and imprint only the newly occupied ones
+		function updateColliders(){
+			const tw=cfg.texW;
+			const owner=colliderOwner,prev=colliderPrev;
+			const pr=colliderPrevRect;
+			patchW=0;patchH=0;
+			for(let y=pr.y0;y<=pr.y1;y++)owner.fill(0,y*tw+pr.x0,y*tw+pr.x1+1);
+			coreColliders.rasterize(colliderTable,cfg,owner,colliderRect);
+			const nr=colliderRect;
+			const prEmpty=pr.x1<pr.x0,nrEmpty=nr.x1<nr.x0;
+			if(prEmpty&&nrEmpty)return;
+			// one cell of margin: the imprint lands on the fluid just outside the body,
+			// so the cells it writes are neighbours of the cells that changed
+			const x0=Math.max(1,(prEmpty?nr.x0:Math.min(pr.x0,nr.x0))-1);
+			const y0=Math.max(1,(prEmpty?nr.y0:Math.min(pr.y0,nr.y0))-1);
+			const x1=Math.min(tw-2,(nrEmpty?pr.x1:Math.max(pr.x1,nr.x1))+1);
+			const y1=Math.min(cfg.texH-2,(nrEmpty?pr.y1:Math.max(pr.y1,nr.y1))+1);
+			if(x1<x0||y1<y0)return;
+			const w=x1-x0+1,h=y1-y0+1;
+			const patchOk=w<=fields.PATCH&&h<=fields.PATCH&&h>0;
+			pushRect.x0=x0;pushRect.y0=y0;pushRect.x1=x1;pushRect.y1=y1;
+			if(patchOk){
+				patchX=x0;patchY=y0;patchW=w;patchH=h;
+				flagsPatch.fill(0,0,w*h*4);
+				velPatch.fill(0,0,w*h*4);
+			}
+			let changed=false,imprinted=false,pushed=0;
+			for(let y=y0;y<=y1;y++){
+				for(let x=x0;x<=x1;x++){
+					const i=x+y*tw;
+					const now=owner[i],was=prev[i];
+					if(now===was)continue;
+					changed=true;
+					if(now){
+						flagsMirror[i*4]=255;
+						if(patchOk){
+							const s=colliderTable.slots[now-1];
+							setPatchVel(x-x0,y-y0,0,0);
+							imprintNeighbour(x-1,y,s.vx,s.vy);
+							imprintNeighbour(x+1,y,s.vx,s.vy);
+							imprintNeighbour(x,y-1,s.vx,s.vy);
+							imprintNeighbour(x,y+1,s.vx,s.vy);
+							imprinted=true;
+						}
+					}else{
+						// released: only a painted static wall may keep this cell solid
+						flagsMirror[i*4]=staticMask[i]?255:0;
+					}
+				}
+			}
+			if(!changed)return;
+			// the push first: it reads the mask diff, so it has to run before the rect
+			// bookkeeping below turns `prev` into the new image
+			if(patchOk)pushed=coreColliders.geometry(cfg,owner,prev,pushRect,geoPatch,fields.PATCH);
+			if(patchOk){
+				// the flags patch carries every byte of the rect, so the static wall and
+				// the other channels travel with the body's tiles
+				for(let y=0;y<h;y++){
+					for(let x=0;x<w;x++){
+						const si=((x0+x)+(y0+y)*tw)*4,pi=(x+y*w)*4;
+						flagsPatch[pi]=flagsMirror[si];
+						flagsPatch[pi+1]=flagsMirror[si+1];
+						flagsPatch[pi+2]=flagsMirror[si+2];
+						flagsPatch[pi+3]=flagsMirror[si+3];
+					}
+				}
+				fields.writePatchAt(device,pool.flags,x0,y0,w,h,"rgba8uint",flagsPatch);
+				fields.writePatchAt(device,pool.flagsTmp,x0,y0,w,h,"rgba8uint",flagsPatch);
+			}else{
+				// a teleport wider than a patch: full upload, and no imprint (a jump
+				// should not smear the body's velocity across the field)
+				fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+				fields.writeTextureRect(device,pool.flagsTmp,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+			}
+			if(pushed!==0){
+				fields.writePatchAt(device,pool.patchGeo,0,0,w,h,"rgba32float",geoPatch,fields.PATCH);
+			}
+			if(patchOk&&imprinted){
+				fields.writePatchAt(device,pool.patchVel,0,0,w,h,"rgba32float",velPatch);
+				cfg.paintX=x0;cfg.paintY=y0;cfg.paintW=w;cfg.paintH=h;
+			}else{
+				// no imprint and no push: leave no stale patch rect in the uniform block
+				patchW=0;patchH=0;
+				cfg.paintX=0;cfg.paintY=0;cfg.paintW=0;cfg.paintH=0;
+			}
+			for(let y=y0;y<=y1;y++){
+				const base=y*tw;
+				for(let x=x0;x<=x1;x++)prev[base+x]=owner[base+x];
+			}
+			colliderPrevRect.x0=x0;
+			colliderPrevRect.y0=y0;
+			colliderPrevRect.x1=x1;
+			colliderPrevRect.y1=y1;
+			runPrime(pushed);
+		}
+		function addCollider(spec){
+			const id=coreColliders.add(colliderTable,cfg,spec);
+			if(id<0)return -1;
+			rebuildColliderMask();
+			applyMaskToFlags();
+			fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+			fields.writeTextureRect(device,pool.flagsTmp,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+			patchW=0;patchH=0;
+			runPrime();
+			return id;
+		}
+		function moveCollider(id,x,y,vx,vy){
+			return coreColliders.move(colliderTable,cfg,id,x,y,vx,vy);
+		}
+		function setCollider(id,patch){
+			return coreColliders.set(colliderTable,cfg,id,patch);
+		}
+		function removeCollider(id){
+			if(!coreColliders.remove(colliderTable,id))return false;
+			// the next frame's diff clears the cells it owned
+			return true;
+		}
+		function setObstacles(mask,w,h){
+			if(!mask||w!==cfg.N||h!==cfg.N)return false;
+			staticMask.fill(0);
+			for(let y=1;y<=h;y++){
+				for(let x=1;x<=w;x++){
+					if(!mask[(y-1)*w+(x-1)])continue;
+					staticMask[x+y*cfg.texW]=1;
+				}
+			}
+			applyMaskToFlags();
+			fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+			fields.writeTextureRect(device,pool.flagsTmp,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+			patchW=0;patchH=0;
+			runPrime();
+			return true;
+		}
+		function paintObstacle(cx,cy,radius,kind){
+			const erase=kind==="erase";
+			if(!erase&&kind!==undefined&&kind!=="wall")return false;
+			const patch=coreSolver.buildWallPatch(cfg,(cx-0.5)/cfg.N,(cy-0.5)/cfg.N,erase,radius);
+			if(!patch)return false;
+			applyWallPatch(patch,erase);
+			return true;
+		}
 		function paintDye(u,v,rgb){
 			const patch=coreSolver.buildDyePatch(cfg,u,v,rgb);
 			if(!patch)return;
@@ -182,21 +442,43 @@
 		function paintWall(u,v,erase){
 			const patch=coreSolver.buildWallPatch(cfg,u,v,erase);
 			if(!patch)return;
+			applyWallPatch(patch,erase);
+		}
+		// shared by the pointer and paintObstacle: the patch owns the wall byte, the
+		// static mirror records the intent so a body driving over the cell cannot erase
+		// a painted wall on its way out
+		function applyWallPatch(patch,erase){
+			const tw=cfg.texW;
 			for(let y=0;y<patch.h;y++){
 				for(let x=0;x<patch.w;x++){
-					const gi=((patch.x0+x)+(patch.y0+y)*cfg.texW)*4;
+					const ci=(patch.x0+x)+(patch.y0+y)*tw;
 					const pi=(x+y*patch.w)*4;
-					flagsMirror[gi]=patch.flagsPatch[pi];
+					staticMask[ci]=patch.flagsPatch[pi]?1:0;
+					flagsMirror[ci*4]=(staticMask[ci]||colliderOwner[ci])?255:0;
 				}
 			}
 			fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
 			fields.writeTextureRect(device,pool.flagsTmp,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+			patchW=0;patchH=0;
 			runPrimePhase(false);
 		}
 		function frame(dts,substeps,needStats){
 			buoy.march(dts*substeps);
 			const needBuoy=buoy.state.active&&(frameCount%Math.max(1,cfg.buoySampleEvery)===0);
 			const needProbe=probeTable.live>0&&(frameCount%Math.max(1,cfg.probeEvery)===0);
+			updateColliders();
+			// sources next: what they add is carried, projected and advected by this
+			// same frame, and the ledger already knows the exact amount they added
+			const emit=emitterTable.live>0?coreEmitters.prepare(emitterTable,cfg,dts*substeps):null;
+			if(emit&&emit.any){
+				uploadEmitters();
+				ledger.injectedM+=emit.inM;
+				ledger.injectedDr+=emit.inDr;
+				ledger.injectedDg+=emit.inDg;
+				ledger.injectedDb+=emit.inDb;
+				ledger.injectedE+=emit.inE;
+				ledger.removedE+=emit.outE;
+			}
 			cfg.dt=dts;
 			cfg.substeps=substeps;
 			cfg.frame=frameCount;
@@ -211,6 +493,7 @@
 			const encoder=device.createCommandEncoder({label:"frame"});
 			if(profiling){
 				prof.beginFrame(substeps,frameCount+1);
+				if(emit&&emit.any)passes.encodeEmitters(prof.pass(encoder,PROFILE_GROUP.vel,"emit"),pool,pipes,groups,state,emit);
 				for(let s=0;s<substeps;s++){
 					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
@@ -226,6 +509,7 @@
 				prof.closePass();
 			}else{
 				const cpass=encoder.beginComputePass({label:"sim"});
+				if(emit&&emit.any)passes.encodeEmitters(cpass,pool,pipes,groups,state,emit);
 				for(let s=0;s<substeps;s++){
 					passes.encodeStep(cpass,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
@@ -437,9 +721,11 @@
 			pool=fields.createPool(device,newN,cfg.mgCoarsen);
 			groups=passes.makeBindGroups(device,pipes,pool);
 			flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
+			allocMasks();
 			canvas.width=newN;
 			canvas.height=newN;
 			api.pool=pool;
+			api.groups=groups;
 			api.flagsMirror=flagsMirror;
 			reset();
 			renderOnly();
@@ -449,8 +735,11 @@
 			if(prof)prof.destroy();
 		}
 		reset();
-		const api={pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollReadback,getStats,getProfile,buoy,resize,destroy,flagsMirror,
-			probes:probeTable,addProbe,moveProbe,removeProbe,sampleProbe};
+		const api={pool,groups,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollReadback,getStats,getProfile,buoy,resize,destroy,flagsMirror,
+			probes:probeTable,addProbe,moveProbe,removeProbe,sampleProbe,
+			emitters:emitterTable,addEmitter,moveEmitter,setEmitter,removeEmitter,
+			colliders:colliderTable,addCollider,moveCollider,setCollider,removeCollider,
+			setObstacles,paintObstacle};
 		return api;
 	}
 	Fluid.gpu.solver={create:createSolver};

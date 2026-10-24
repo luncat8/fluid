@@ -92,6 +92,12 @@
 			statsB:comp("statsB",PS+sh.statsReduceB),
 			buoySample:comp("buoySample",PS+sh.buoySample),
 			probeSample:comp("probeSample",PS+sh.probeSample),
+			emitterMass:comp("emitterMass",PS+sh.emitterMass),
+			emitterTherm:comp("emitterTherm",PS+sh.emitterTherm),
+			emitterVel:comp("emitterVel",PS+sh.emitterVel),
+			colliderVel:comp("colliderVel",PS+sh.colliderVel),
+			colliderPushMass:comp("colliderPushMass",PS+sh.colliderPushMass),
+			colliderPushTherm:comp("colliderPushTherm",PS+sh.colliderPushTherm),
 			toDisplay:comp("toDisplay",PS+sh.toDisplay),
 			renderPipe:device.createRenderPipeline({
 				label:"render",
@@ -127,6 +133,7 @@
 			forces:[],advectVel:[],macFwd:[],advectVelMac:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],advectScalar:[],
 			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],heatSources:[],
 		limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
+		emitterMass:[],emitterTherm:[],emitterVel:[],colliderVel:[],pushMass:[],pushTherm:[],
 		poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],probeSample:[],render:null
 		};
 		for(let mm=0;mm<3;mm++){
@@ -241,6 +248,20 @@
 				{binding:2,resource:viewRes(ml)},
 				{binding:3,resource:viewRes(pool.patchMass)}
 			]);
+			// the push reads the mass parity it writes: same src/dst pair as paintMass,
+			// so state.m advances by one exactly like a paint frame does
+			groups.pushMass[m]=bg(device,"pushMass"+m,pipes.colliderPushMass.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(mm)},
+				{binding:2,resource:viewRes(ml)},
+				{binding:3,resource:viewRes(pool.patchGeo)}
+			]);
+			groups.emitterMass[m]=bg(device,"emitterMass"+m,pipes.emitterMass.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(mm)},
+				{binding:2,resource:viewRes(ml)},
+				{binding:3,resource:{buffer:pool.emitters}}
+			]);
 			groups.advectScalar[m]=[];
 			groups.applyGrad[m]=[];
 			groups.buoySample[m]=[];
@@ -256,6 +277,12 @@
 					{binding:3,resource:viewRes(tt)},
 					{binding:4,resource:viewRes(ml)},
 					{binding:5,resource:viewRes(tn)}
+				]);
+				groups.pushTherm[t]=bg(device,"pushTherm"+t,pipes.colliderPushTherm.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:viewRes(tt)},
+					{binding:2,resource:viewRes(tn)},
+					{binding:3,resource:viewRes(pool.patchGeo)}
 				]);
 				groups.statsA[m][t]=[];
 				groups.toDisplay[m][t]=[];
@@ -335,6 +362,12 @@
 				{binding:2,resource:viewRes(tn)},
 				{binding:3,resource:viewRes(pool.patchE)}
 			]);
+			groups.emitterTherm[t]=bg(device,"emitterTherm"+t,pipes.emitterTherm.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(tt)},
+				{binding:2,resource:viewRes(tn)},
+				{binding:3,resource:{buffer:pool.emitters}}
+			]);
 		}
 		for(let v=0;v<2;v++){
 			const vv=pool.vel.tex[v],vn=pool.vel.tex[1-v];
@@ -372,6 +405,18 @@
 				{binding:1,resource:viewRes(vv)},
 				{binding:2,resource:flagsView},
 				{binding:3,resource:fluxView}
+			]);
+			groups.emitterVel[v]=bg(device,"emitterVel"+v,pipes.emitterVel.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(vv)},
+				{binding:2,resource:viewRes(vn)},
+				{binding:3,resource:{buffer:pool.emitters}}
+			]);
+			groups.colliderVel[v]=bg(device,"colliderVel"+v,pipes.colliderVel.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(vv)},
+				{binding:2,resource:viewRes(vn)},
+				{binding:3,resource:viewRes(pool.patchVel)}
 			]);
 			groups.freezeTmp[v]=bg(device,"freezeTmp"+v,pipes.freezeVel.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
@@ -690,6 +735,50 @@
 		cpass.setBindGroup(0,groups.toDisplay[state.m][state.t][state.v]);
 		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
 	}
+	// one pass per field the active sources touch, at the top of the frame: the
+	// parities move exactly like encodePaint, so every later pass reads the new field
+	function encodeEmitters(cpass,pool,pipes,groups,state,need){
+		const wx=pool.workgroupX,wy=pool.workgroupY;
+		if(need.needMass){
+			cpass.setPipeline(pipes.emitterMass);
+			cpass.setBindGroup(0,groups.emitterMass[state.m]);
+			cpass.dispatchWorkgroups(wx,wy);
+			state.m=(state.m+1)%3;
+		}
+		if(need.needTherm){
+			cpass.setPipeline(pipes.emitterTherm);
+			cpass.setBindGroup(0,groups.emitterTherm[state.t]);
+			cpass.dispatchWorkgroups(wx,wy);
+			state.t=1-state.t;
+		}
+		if(need.needVel){
+			cpass.setPipeline(pipes.emitterVel);
+			cpass.setBindGroup(0,groups.emitterVel[state.v]);
+			cpass.dispatchWorkgroups(wx,wy);
+			state.v=1-state.v;
+		}
+	}
+	// the contents of the cells a body takes go to the fluid around them. parities move
+	// exactly like encodePaint, so the prime that follows reads what was just written
+	function encodeColliderPush(cpass,pool,pipes,groups,state){
+		const wx=pool.workgroupX,wy=pool.workgroupY;
+		cpass.setPipeline(pipes.colliderPushMass);
+		cpass.setBindGroup(0,groups.pushMass[state.m]);
+		cpass.dispatchWorkgroups(wx,wy);
+		cpass.setPipeline(pipes.colliderPushTherm);
+		cpass.setBindGroup(0,groups.pushTherm[state.t]);
+		cpass.dispatchWorkgroups(wx,wy);
+		state.m=(state.m+1)%3;
+		state.t=1-state.t;
+	}
+	// the body's velocity on the fluid it just displaced; callers set the patch rect
+	// params and upload patchVel first
+	function encodeColliderVel(cpass,pool,pipes,groups,state){
+		cpass.setPipeline(pipes.colliderVel);
+		cpass.setBindGroup(0,groups.colliderVel[state.v]);
+		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
+		state.v=1-state.v;
+	}
 	function encodePaint(cpass,pool,pipes,groups,state){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
 		cpass.setPipeline(pipes.paintMass);
@@ -706,6 +795,6 @@
 		rpass.setBindGroup(0,groups.render);
 		rpass.draw(3);
 	}
-	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeStep,encodeStepProfiled,encodeStats,encodeBuoySample,encodeProbeSample,encodeDisplay,encodePaint,encodeRender};
+	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeStep,encodeStepProfiled,encodeEmitters,encodeColliderPush,encodeColliderVel,encodeStats,encodeBuoySample,encodeProbeSample,encodeDisplay,encodePaint,encodeRender};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.passes;
 })(globalThis);

@@ -19,7 +19,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 for (const file of [
 	"src/core/config.js", "src/core/grid.js", "src/core/stats.js",
-	"src/core/multigrid.js", "src/core/solver.js", "src/core/probes.js", "src/gpu/shaders.js"
+	"src/core/multigrid.js", "src/core/solver.js", "src/core/probes.js", "src/core/emitters.js", "src/core/colliders.js",
+	"src/gpu/fields.js", "src/gpu/shaders.js"
 ]) require(path.join(root, file));
 
 let reflectLib;
@@ -363,7 +364,271 @@ function runProbeCase() {
 		"m=" + movedRaw[movedBase + P.P_M].toFixed(4) + " u=" + movedRaw[movedBase + P.P_U].toFixed(4));
 }
 
+
+// ---- 4. execute the emitter kernels (0.7.0 t3) against the cpu oracle ----
+// the three passes are full-field copies with cell-local additions. the check that
+// matters is not just "same numbers": the total the gpu injected must equal the
+// total the cpu wrote into the ledger, or the drift meters would lie while a game
+// leaves a heater on.
+function runEmitterCase() {
+	const E = Fluid.core.emitters;
+	const dtFrame = 1 / 15;
+	cfg.dt = dtFrame / 4;
+	cfg.substeps = 4;
+	const table = E.create();
+	E.add(table, cfg, { kind: "dye", x: 10, y: 12, radius: 6, value: 2.5, dye: [1, 0.3, 0] });
+	E.add(table, cfg, { kind: "dye", x: 30, y: 5.5, radius: 7.25, value: 1.2, dye: [0.1, 0.9, 0.2] });
+	E.add(table, cfg, { kind: "heat", x: 16, y: 16, radius: 9, value: 300 });
+	E.add(table, cfg, { kind: "cold", x: 16, y: 25, radius: 5.5, value: 220 });
+	E.add(table, cfg, { kind: "momentum", x: 8, y: 20, radius: 4.5, value: 150, dir: [0.6, -0.8] });
+	E.remove(table, E.add(table, cfg, { kind: "dye", x: 2, y: 2, radius: 20, value: 5 }));
+	const size = texW * texH;
+	const baseM = new Float32Array(size * 4);
+	const baseT = new Float32Array(size * 4);
+	const baseV = new Float32Array(size * 2);
+	for (let y = 0; y < texH; y++) {
+		for (let x = 0; x < texW; x++) {
+			const i4 = (x + y * texW) * 4, i2 = (x + y * texW) * 2;
+			const m = 0.5 + 0.25 * Math.sin(x * 0.4) * Math.cos(y * 0.3);
+			baseM[i4] = 0.2 * m; baseM[i4 + 1] = 0.3 * m; baseM[i4 + 2] = 0.5 * m; baseM[i4 + 3] = m;
+			baseT[i4] = 800 * m;
+			baseV[i2] = 0.5 * x;
+			baseV[i2 + 1] = -0.25 * y;
+		}
+	}
+	const cpuM = Float32Array.from(baseM), cpuT = Float32Array.from(baseT), cpuV = Float32Array.from(baseV);
+	E.header(table, cfg);
+	const out = {};
+	E.sweep(table, cfg, dtFrame, { mass: cpuM, therm: cpuT, vel: cpuV, texW: texW, texH: texH }, out);
+	const pa = Fluid.core.config.makeParamsArray();
+	Fluid.core.config.writeParams(pa, cfg);
+	const uniform = { uniform: pa.buffer.slice(0) };
+	const tableBuf = table.upload.buffer.slice(0);
+	const rgba = a => ({ texture: [a.buffer], descriptor: { size: [texW, texH], format: "rgba32float" } });
+	const rg = a => ({ texture: [a.buffer], descriptor: { size: [texW, texH], format: "rg32float" } });
+	const wx = Math.ceil(texW / 8), wy = Math.ceil(texH / 8);
+	const dstM = new Float32Array(baseM.length);
+	const dstT = new Float32Array(baseT.length);
+	const dstV = new Float32Array(baseV.length);
+	new WgslExec(WgslParser.Parse(PS + sh.emitterMass))
+		.dispatchWorkgroups("main", [wx, wy], { 0: { 0: uniform, 1: rgba(baseM), 2: rgba(dstM), 3: tableBuf } });
+	new WgslExec(WgslParser.Parse(PS + sh.emitterTherm))
+		.dispatchWorkgroups("main", [wx, wy], { 0: { 0: uniform, 1: rgba(baseT), 2: rgba(dstT), 3: tableBuf } });
+	new WgslExec(WgslParser.Parse(PS + sh.emitterVel))
+		.dispatchWorkgroups("main", [wx, wy], { 0: { 0: uniform, 1: rg(baseV), 2: rg(dstV), 3: tableBuf } });
+	const maxDiff = (a, b) => {
+		let d = 0;
+		for (let i = 0; i < a.length; i++) d = Math.max(d, Math.abs(a[i] - b[i]));
+		return d;
+	};
+	const relDiff = (a, b) => {
+		let d = 0, scale = 0;
+		for (let i = 0; i < a.length; i++) {
+			d = Math.max(d, Math.abs(a[i] - b[i]));
+			scale = Math.max(scale, Math.abs(b[i]));
+		}
+		return scale > 0 ? d / scale : d;
+	};
+	const dm = maxDiff(dstM, cpuM), dt = maxDiff(dstT, cpuT), dv = maxDiff(dstV, cpuV);
+	check("emitter exec: mass/therm/vel passes match the cpu oracle",
+		relDiff(dstM, cpuM) < 1e-5 && relDiff(dstT, cpuT) < 1e-5 && relDiff(dstV, cpuV) < 1e-5,
+		"mass=" + dm.toExponential(2) + " therm=" + dt.toExponential(2) + " vel=" + dv.toExponential(2));
+	// what the gpu actually added, summed the same way the stats reduction sums
+	let gpuIn = 0, gpuDr = 0, gpuE = 0;
+	for (let i = 0; i < size; i++) {
+		gpuIn += dstM[i * 4 + 3] - baseM[i * 4 + 3];
+		gpuDr += dstM[i * 4] - baseM[i * 4];
+		gpuE += dstT[i * 4] - baseT[i * 4];
+	}
+	const rel = (a, b) => Math.abs(a - b) / Math.max(Math.abs(b), 1e-12);
+	// energy is booked on two sides (dye/heat in, cold out), so the field change is
+	// the difference; mass only ever comes in, and must match the injection alone
+	check("emitter exec: the ledger totals are the mass and energy the gpu added",
+		rel(gpuIn, out.inM) < 1e-6 && rel(gpuDr, out.inDr) < 1e-6 && rel(gpuE, out.inE - out.outE) < 1e-6,
+		"m " + gpuIn.toFixed(6) + "/" + out.inM.toFixed(6) + " E " + gpuE.toFixed(1) + "/" +
+		(out.inE - out.outE).toFixed(1));
+	check("emitter exec: passes staged by kind, and the removed slot adds nothing",
+		out.needMass && out.needTherm && out.needVel && table.live === 5,
+		"mass=" + out.needMass + " therm=" + out.needTherm + " vel=" + out.needVel + " live=" + table.live);
+	// the ghost ring must be copied through untouched: the interior clamp is what
+	// keeps a source from writing into a border a stencil reads as zero
+	let ghost = 0;
+	for (let y = 0; y < texH; y++) for (let x = 0; x < texW; x++) {
+		if (x >= 1 && x <= texW - 2 && y >= 1 && y <= texH - 2) continue;
+		const i4 = (x + y * texW) * 4, i2 = (x + y * texW) * 2;
+		ghost = Math.max(ghost, Math.abs(dstM[i4 + 3] - baseM[i4 + 3]), Math.abs(dstT[i4] - baseT[i4]),
+			Math.abs(dstV[i2] - baseV[i2]));
+	}
+	check("emitter exec: ghost cells are copied, never sourced", ghost === 0, "maxDiff=" + ghost);
+	// the cold sink is a removal, not a negative injection: the two ledgers differ
+	check("emitter exec: a cold slot books removed energy, not injected",
+		out.outE > 0 && out.inE > 0, "inE=" + out.inE.toFixed(0) + " outE=" + out.outE.toFixed(0));
+}
+
+
+// ---- 5. execute the collider velocity imprint (0.7.0 t4) against the cpu oracle ----
+// the imprint is a set, not an add: running it twice must leave the same field, and
+// the cells outside the patch rect must come through the copy untouched. that is what
+// keeps a pushed body from compounding its own velocity every frame.
+function runColliderCase() {
+	const PATCH = Fluid.gpu.fields.PATCH;
+	const patch = new Float32Array(PATCH * PATCH * 4);
+	const ox = 12, oy = 9, pw = 7, ph = 5;
+	for (let y = 0; y < PATCH; y++) for (let x = 0; x < PATCH; x++) {
+		const i = (x + y * PATCH) * 4;
+		patch[i] = 111; patch[i + 1] = -222; patch[i + 2] = 0;
+		if (x < pw && y < ph) patch[i + 3] = (x + y) % 3 === 0 ? 1 : 0;
+	}
+	// the solver writes rest for the body's own cells and the body velocity for the
+	// fluid next to it; the alpha channel is what selects a cell
+	const bodyX = ox + 2, bodyY = oy + 2;
+	{
+		const i = (2 + 2 * PATCH) * 4;
+		patch[i] = 0; patch[i + 1] = 0; patch[i + 3] = 1;
+	}
+	{
+		const i = (3 + 2 * PATCH) * 4;
+		patch[i] = 120; patch[i + 1] = -30; patch[i + 3] = 1;
+	}
+	cfg.paintX = ox; cfg.paintY = oy; cfg.paintW = pw; cfg.paintH = ph;
+	const size = texW * texH;
+	const src = new Float32Array(size * 2);
+	for (let y = 0; y < texH; y++) for (let x = 0; x < texW; x++) {
+		const i = (x + y * texW) * 2;
+		src[i] = 0.25 * x; src[i + 1] = -0.5 * y;
+	}
+	const want = Float32Array.from(src);
+	for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) {
+		const a = (x + (y * PATCH)) * 4 + 3;
+		if (patch[a] <= 0.5) continue;
+		const gi = ((ox + x) + (oy + y) * texW) * 2;
+		want[gi] = patch[(x + y * PATCH) * 4];
+		want[gi + 1] = patch[(x + y * PATCH) * 4 + 1];
+	}
+	const pa = Fluid.core.config.makeParamsArray();
+	Fluid.core.config.writeParams(pa, cfg);
+	const uniform = { uniform: pa.buffer.slice(0) };
+	const rg = a => ({ texture: [a.buffer], descriptor: { size: [texW, texH], format: "rg32float" } });
+	const rgbaPatch = { texture: [patch.buffer], descriptor: { size: [PATCH, PATCH], format: "rgba32float" } };
+	const out = new Float32Array(src.length);
+	const wx = Math.ceil(texW / 8), wy = Math.ceil(texH / 8);
+	new WgslExec(WgslParser.Parse(PS + sh.colliderVel))
+		.dispatchWorkgroups("main", [wx, wy],
+			{ 0: { 0: uniform, 1: rg(src), 2: rg(out), 3: rgbaPatch } });
+	let diff = 0;
+	for (let i = 0; i < out.length; i++) diff = Math.max(diff, Math.abs(out[i] - want[i]));
+	check("collider exec: the imprint matches the cpu oracle cell for cell", diff === 0, "maxDiff=" + diff);
+	const bi = (bodyX + bodyY * texW) * 2;
+	const ai = ((bodyX + 1) + bodyY * texW) * 2;
+	check("collider exec: the body's own cell is at rest and its neighbour has its velocity",
+		out[bi] === 0 && out[bi + 1] === 0 && out[ai] === 120 && out[ai + 1] === -30,
+		"body=" + out[bi] + "," + out[bi + 1] + " ahead=" + out[ai] + "," + out[ai + 1]);
+	// a second dispatch from the first result: identical, so the write is a set
+	const again = new Float32Array(src.length);
+	new WgslExec(WgslParser.Parse(PS + sh.colliderVel))
+		.dispatchWorkgroups("main", [wx, wy],
+			{ 0: { 0: uniform, 1: rg(out), 2: rg(again), 3: rgbaPatch } });
+	let twice = 0;
+	for (let i = 0; i < again.length; i++) twice = Math.max(twice, Math.abs(again[i] - out[i]));
+	check("collider exec: re-running the imprint is idempotent (set, not add)", twice === 0, "maxDiff=" + twice);
+	// cells outside the rect keep the source velocity, which is the copy half
+	const far = ((texW - 5) + (texH - 5) * texW) * 2;
+	const farOk = out[far] === src[far] && out[far + 1] === src[far + 1];
+	check("collider exec: cells outside the patch rect are copied through", farOk,
+		"far=" + out[far] + "," + out[far + 1]);
+	// and a body cell whose alpha is 0 stays fluid: the neighbours are painted, not the hole
+	let skipped = 0;
+	for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) {
+		const a = (x + y * PATCH) * 4 + 3;
+		if (patch[a] > 0.5) continue;
+		const gi = ((ox + x) + (oy + y) * texW) * 2;
+		if (out[gi] !== src[gi] || out[gi + 1] !== src[gi + 1]) skipped++;
+	}
+	check("collider exec: cells the paint did not mark keep their velocity", skipped === 0, "changed=" + skipped);
+}
+
+
+// ---- 6. execute the body push (0.7.0 t4b) against the cpu oracle ----
+// a body takes cells; the taken cells give their dye and heat to the free neighbours.
+// the check is not only "same numbers": the totals must not move, because this is the
+// pass that makes a body look like it pushes water instead of sliding over a picture.
+function runColliderPushCase() {
+	const PATCH = Fluid.gpu.fields.PATCH;
+	const C = Fluid.core.colliders;
+	const cfg2 = Object.assign({}, cfg, { TRef: 293 });
+	const table = C.create();
+	// a small body mid-field: it takes 4 cells, each with free neighbours on both sides
+	C.add(table, cfg2, { shape: "box", x: 20.5, y: 14.5, hw: 1.5, hh: 1.5 });
+	const cells = texW * texH;
+	const owner = new Uint8Array(cells), prev = new Uint8Array(cells);
+	const rect = C.padRect(cfg2, C.rasterize(table, cfg2, owner, {}));
+	// one cell of the body was already solid last frame, so it must not push again
+	prev[(20) + 14 * texW] = 1;
+	const geo = new Float32Array(PATCH * PATCH * 4);
+	const taken = C.geometry(cfg2, owner, prev, rect, geo, PATCH);
+	const pw = rect.x1 - rect.x0 + 1, ph = rect.y1 - rect.y0 + 1;
+	cfg.paintX = rect.x0; cfg.paintY = rect.y0; cfg.paintW = pw; cfg.paintH = ph;
+	// a field shaped so every branch is live: dye and heat, a body cell holding some,
+	// free cells next to nothing
+	const srcM = new Float32Array(cells * 4), srcT = new Float32Array(cells * 4);
+	for (let y = 1; y < texH - 1; y++) for (let x = 1; x < texW - 1; x++) {
+		const i = (x + y * texW) * 4;
+		const m = 0.5 + 0.25 * Math.sin(x * 0.7) * Math.cos(y * 0.4);
+		srcM[i] = 0.2 * m; srcM[i + 1] = 0.3 * m; srcM[i + 2] = 0.5 * m; srcM[i + 3] = m;
+		srcT[i] = 800 * m; srcT[i + 1] = 300 + 20 * Math.sin(x * 0.2);
+	}
+	const cpuM = Float32Array.from(srcM), cpuT = Float32Array.from(srcT);
+	const scratch = C.makeScratch(cells);
+	C.displace(cfg2, geo, rect, cpuM, cpuT, scratch, PATCH);
+	const pa = Fluid.core.config.makeParamsArray();
+	Fluid.core.config.writeParams(pa, cfg);
+	const uniform = { uniform: pa.buffer.slice(0) };
+	const rgba = a => ({ texture: [a.buffer], descriptor: { size: [texW, texH], format: "rgba32float" } });
+	const patchTex = { texture: [geo.buffer], descriptor: { size: [PATCH, PATCH], format: "rgba32float" } };
+	const dstM = new Float32Array(srcM.length), dstT = new Float32Array(srcT.length);
+	const wx = Math.ceil(texW / 8), wy = Math.ceil(texH / 8);
+	new WgslExec(WgslParser.Parse(PS + sh.colliderPushMass))
+		.dispatchWorkgroups("main", [wx, wy], { 0: { 0: uniform, 1: rgba(srcM), 2: rgba(dstM), 3: patchTex } });
+	new WgslExec(WgslParser.Parse(PS + sh.colliderPushTherm))
+		.dispatchWorkgroups("main", [wx, wy], { 0: { 0: uniform, 1: rgba(srcT), 2: rgba(dstT), 3: patchTex } });
+	const maxDiff = (a, b) => {
+		let d = 0;
+		for (let i = 0; i < a.length; i++) d = Math.max(d, Math.abs(a[i] - b[i]));
+		return d;
+	};
+	const dm = maxDiff(dstM, cpuM), dt = maxDiff(dstT, cpuT);
+	check("push exec: dye and heat match the cpu oracle cell for cell",
+		dm < 1e-5 && dt < 1e-5 && taken > 0, "mass=" + dm.toExponential(2) + " E=" + dt.toExponential(2) + " taken=" + taken);
+	const sum = (f, stride) => {
+		let t = 0;
+		for (let i = 0; i < f.length; i += 4) t += f[i + stride];
+		return t;
+	};
+	const rel = (a, b) => Math.abs(a - b) / Math.max(Math.abs(b), 1e-9);
+	check("push exec: the dye total and the energy total are unchanged",
+		rel(sum(dstM, 3), sum(srcM, 3)) < 1e-6 && rel(sum(dstT, 0), sum(srcT, 0)) < 1e-6,
+		"m " + rel(sum(dstM, 3), sum(srcM, 3)).toExponential(2) + " E " + rel(sum(dstT, 0), sum(srcT, 0)).toExponential(2));
+	// the taken cells are empty and read the reference temperature; the ghost ring is
+	// copied, not sourced
+	let body = 0, ghost = 0;
+	for (let y = rect.y0; y <= rect.y1; y++) for (let x = rect.x0; x <= rect.x1; x++) {
+		if (geo[((x - rect.x0) + (y - rect.y0) * PATCH) * 4 + 2] < 0.5) continue;
+		const i = (x + y * texW) * 4;
+		body = Math.max(body, Math.abs(dstM[i + 3]), Math.abs(dstT[i]), Math.abs(dstT[i + 1] - cfg.TRef));
+	}
+	for (let y = 0; y < texH; y++) for (let x = 0; x < texW; x++) {
+		if (x >= 1 && x <= texW - 2 && y >= 1 && y <= texH - 2) continue;
+		const i = (x + y * texW) * 4;
+		ghost = Math.max(ghost, Math.abs(dstM[i + 3] - srcM[i + 3]), Math.abs(dstT[i] - srcT[i]));
+	}
+	check("push exec: a taken cell is emptied and reads the reference temperature",
+		body === 0 && ghost === 0, "body=" + body + " ghost=" + ghost);
+}
+
 runProbeCase();
+runEmitterCase();
+runColliderCase();
+runColliderPushCase();
 
 console.log(failures ? "FAILURES: " + failures : "ALL WGSL-EXEC CHECKS PASSED");
 process.exit(failures ? 1 : 0);

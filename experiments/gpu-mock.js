@@ -13,6 +13,8 @@ require(path.join(root, "src/core/grid.js"));
 require(path.join(root, "src/core/stats.js"));
 require(path.join(root, "src/core/solver.js"));
 require(path.join(root, "src/core/probes.js"));
+require(path.join(root, "src/core/emitters.js"));
+require(path.join(root, "src/core/colliders.js"));
 require(path.join(root, "src/core/buoy.js"));
 require(path.join(root, "src/gpu/shaders.js"));
 require(path.join(root, "src/gpu/fields.js"));

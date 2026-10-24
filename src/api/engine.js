@@ -207,6 +207,41 @@
 			if(!active())return false;
 			return solver.sampleProbe(id,dst);
 		}
+		// sources (0.7.0 t3): the spec object is copied into a preallocated slot at add
+		// time, so a caller may reuse its own object every call and nothing allocates
+		function addEmitter(spec){
+			return active()?solver.addEmitter(spec):-1;
+		}
+		function moveEmitter(id,x,y){
+			return active()?solver.moveEmitter(id,x,y):false;
+		}
+		function setEmitter(id,patch){
+			return active()?solver.setEmitter(id,patch):false;
+		}
+		function removeEmitter(id){
+			return active()?solver.removeEmitter(id):false;
+		}
+		// geometry (0.7.0 t4): static masks and moving bodies. a body's mask is applied
+		// on the next step, because that is the frame the fluid is pushed in; the call
+		// itself only writes the game's intent into the table.
+		function setObstacles(mask,w,h){
+			return active()?solver.setObstacles(mask,w,h):false;
+		}
+		function paintObstacle(x,y,radius,kind){
+			return active()?solver.paintObstacle(x,y,radius,kind):false;
+		}
+		function addCollider(spec){
+			return active()?solver.addCollider(spec):-1;
+		}
+		function moveCollider(id,x,y,vx,vy){
+			return active()?solver.moveCollider(id,x,y,vx,vy):false;
+		}
+		function setCollider(id,patch){
+			return active()?solver.setCollider(id,patch):false;
+		}
+		function removeCollider(id){
+			return active()?solver.removeCollider(id):false;
+		}
 		function stats(out){
 			const dst=out||statsScratch;
 			if(active())copyStats(dst,solver.getStats());
@@ -249,7 +284,11 @@
 			step,update,render,reset,setGrid,setViewMode,setOverlay,
 			bindViewMode(fn){viewWriter=typeof fn==="function"?fn:null;return !!viewWriter;},
 			addProbe,moveProbe,removeProbe,sample:sampleProbe,stats,attachInput,detachInput,pollReadback,
+			addEmitter,moveEmitter,setEmitter,removeEmitter,
+			setObstacles,paintObstacle,addCollider,moveCollider,setCollider,removeCollider,
 			probeCount(){return active()?solver.probes.live:0;},
+			emitterCount(){return active()?solver.emitters.live:0;},
+			colliderCount(){return active()?solver.colliders.live:0;},
 			singleStep(){cfg._stepOnce=true;},
 			pause(){cfg._paused=true;},
 			resume(){cfg._paused=false;},

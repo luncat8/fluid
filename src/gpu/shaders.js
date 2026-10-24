@@ -1460,6 +1460,266 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	probes[base + 9u] = textureLoad(pressTex, at, 0).r;
 }
 `;
+	// ---------- continuous sources (0.7.0 t3): one pass per field, one frame of dt ----------
+	// the table layout and the exact totals are owned by src/core/emitters.js. every
+	// kind is a cell-local addition the cpu sums over the same cells with the same
+	// falloff, so the ledger's injected/removed totals are the numbers the gpu adds.
+	// drain/freeze are not here yet: they need the cell's own state to decide how much
+	// to take, which the cpu cannot mirror without a readback (plan t3b).
+	const EMITTER_LIB=`
+const EMIT_MAX = 8u;
+const EMIT_HEADER = 16u;
+const EMIT_STRIDE = 16u;
+const EMIT_ACTIVE = 15u;
+const EMIT_KIND = 3u;
+const EMIT_VALUE = 4u;
+const EMIT_DX = 8u;
+const EMIT_DY = 9u;
+
+fn emitFalloff(dx: f32, dy: f32, r: f32) -> f32 {
+	let d2 = dx * dx + dy * dy;
+	if (d2 >= r * r) { return 0.0; }
+	let f = 1.0 - sqrt(d2) / r;
+	return f * f;
+}
+`;
+	shaders.emitterMass=EMITTER_LIB+`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var massSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(2) var massDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(3) var<storage,read> emitters: array<f32>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	var q = textureLoad(massSrc, vec2<i32>(x, y));
+	// one frame of source: the substep dt times the substep count, so a source is
+	// the same rate whether the frame ran 1 step or 12
+	let dt = params.values[4] * params.values[5];
+	let inside = x >= 1 && x <= w - 2 && y >= 1 && y <= h - 2;
+	if (inside && dt > 0.0) {
+		for (var i = 0u; i < EMIT_MAX; i = i + 1u) {
+			let b = EMIT_HEADER + i * EMIT_STRIDE;
+			if (emitters[b + EMIT_ACTIVE] < 0.5) { continue; }
+			if (emitters[b + EMIT_KIND] > 0.5) { continue; }
+			let fall = emitFalloff(f32(x) - emitters[b], f32(y) - emitters[b + 1u], emitters[b + 2u]);
+			if (fall <= 0.0) { continue; }
+			let dm = emitters[b + EMIT_VALUE] * fall * dt;
+			q = q + vec4<f32>(emitters[b + 5u] * dm, emitters[b + 6u] * dm, emitters[b + 7u] * dm, dm);
+		}
+	}
+	textureStore(massDst, vec2<i32>(x, y), q);
+}
+`;
+	shaders.emitterTherm=EMITTER_LIB+`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var thermSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(2) var thermDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(3) var<storage,read> emitters: array<f32>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	var q = textureLoad(thermSrc, vec2<i32>(x, y));
+	let dt = params.values[4] * params.values[5];
+	let inside = x >= 1 && x <= w - 2 && y >= 1 && y <= h - 2;
+	if (inside && dt > 0.0) {
+		for (var i = 0u; i < EMIT_MAX; i = i + 1u) {
+			let b = EMIT_HEADER + i * EMIT_STRIDE;
+			if (emitters[b + EMIT_ACTIVE] < 0.5) { continue; }
+			let kind = emitters[b + EMIT_KIND];
+			if (kind > 2.5) { continue; }
+			let fall = emitFalloff(f32(x) - emitters[b], f32(y) - emitters[b + 1u], emitters[b + 2u]);
+			if (fall <= 0.0) { continue; }
+			let scale = emitters[b + EMIT_VALUE] * fall * dt;
+			if (kind < 0.5) {
+				// dye mass arrives at the ambient energy the EOS uses (header slot 1)
+				q = vec4<f32>(q.r + scale * emitters[1u], q.g, q.b, q.a);
+			} else if (kind < 1.5) {
+				q = vec4<f32>(q.r + scale, q.g, q.b, q.a);
+			} else {
+				q = vec4<f32>(q.r - scale, q.g, q.b, q.a);
+			}
+		}
+	}
+	textureStore(thermDst, vec2<i32>(x, y), q);
+}
+`;
+	shaders.emitterVel=EMITTER_LIB+`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var velSrc: texture_storage_2d<rg32float,read>;
+@group(0) @binding(2) var velDst: texture_storage_2d<rg32float,write>;
+@group(0) @binding(3) var<storage,read> emitters: array<f32>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	var q = textureLoad(velSrc, vec2<i32>(x, y));
+	// a momentum emitter is an acceleration: dv = dir * value * falloff * dt
+	let dt = params.values[4] * params.values[5];
+	let inside = x >= 1 && x <= w - 2 && y >= 1 && y <= h - 2;
+	if (inside && dt > 0.0) {
+		for (var i = 0u; i < EMIT_MAX; i = i + 1u) {
+			let b = EMIT_HEADER + i * EMIT_STRIDE;
+			if (emitters[b + EMIT_ACTIVE] < 0.5) { continue; }
+			if (emitters[b + EMIT_KIND] < 2.5) { continue; }
+			let fall = emitFalloff(f32(x) - emitters[b], f32(y) - emitters[b + 1u], emitters[b + 2u]);
+			if (fall <= 0.0) { continue; }
+			let dv = emitters[b + EMIT_VALUE] * fall * dt;
+			q = q + vec4<f32>(emitters[b + EMIT_DX] * dv, emitters[b + EMIT_DY] * dv, 0.0, 0.0);
+		}
+	}
+	textureStore(velDst, vec2<i32>(x, y), q);
+}
+`;
+	// ---------- collider velocity imprint (0.7.0 t4) ----------
+	// the cells a body newly occupies are written by the cpu patch: the fluid cells
+	// next to them take the body's velocity, the body's own cells go to zero. a set,
+	// not an add, because the body displaces what was there. mass is untouched.
+	shaders.colliderVel=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var velSrc: texture_storage_2d<rg32float,read>;
+@group(0) @binding(2) var velDst: texture_storage_2d<rg32float,write>;
+@group(0) @binding(3) var patchTex: texture_storage_2d<rgba32float,read>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let ox = i32(params.values[8]);
+	let oy = i32(params.values[9]);
+	let pw = i32(params.values[10]);
+	let ph = i32(params.values[11]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	var q = textureLoad(velSrc, vec2<i32>(x, y));
+	if (x >= ox && x < ox + pw && y >= oy && y < oy + ph) {
+		let p = textureLoad(patchTex, vec2<i32>(x - ox, y - oy));
+		if (p.a > 0.5) { q = vec4<f32>(p.r, p.g, 0.0, 0.0); }
+	}
+	textureStore(velDst, vec2<i32>(x, y), q);
+}
+`;
+	// ---------- the body displaces what it takes (0.7.0 t4b) ----------
+	// a wall is a boundary: the advection clamps at it, so fluid the body covers keeps
+	// its dye and its heat and is released unchanged when the body moves on - which
+	// looks like the object sliding over a picture of water. so a cell the body takes
+	// gives its contents to the fluid around it: the taken cell is emptied and each
+	// free neighbour gathers its 1/deg share. gather, not scatter, so no atomics and no
+	// order dependence, and the totals are preserved by construction (mass never
+	// appears, a2). geometry rides in the patch's third channel, see
+	// core/colliders.geometry: > 0 a taken cell with that many free neighbours, -1 a
+	// cell that was already solid, 0 free.
+	shaders.colliderPushMass=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var massSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(2) var massDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(3) var geoPatch: texture_storage_2d<rgba32float,read>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let ox = i32(params.values[8]);
+	let oy = i32(params.values[9]);
+	let pw = i32(params.values[10]);
+	let ph = i32(params.values[11]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	var q = textureLoad(massSrc, vec2<i32>(x, y));
+	if (x >= ox && x < ox + pw && y >= oy && y < oy + ph) {
+		let lx = x - ox;
+		let ly = y - oy;
+		let c = textureLoad(geoPatch, vec2<i32>(lx, ly)).b;
+		if (c >= 0.5) {
+			// taken: the contents leave with the fluid that was here
+			q = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+		} else if (c > -0.5) {
+			// free: gather the share of every neighbour the body just took
+			if (lx >= 1) {
+				let g = textureLoad(geoPatch, vec2<i32>(lx - 1, ly)).b;
+				if (g >= 0.5) { q = q + textureLoad(massSrc, vec2<i32>(x - 1, y)) * (1.0 / g); }
+			}
+			if (lx + 1 < pw) {
+				let g = textureLoad(geoPatch, vec2<i32>(lx + 1, ly)).b;
+				if (g >= 0.5) { q = q + textureLoad(massSrc, vec2<i32>(x + 1, y)) * (1.0 / g); }
+			}
+			if (ly >= 1) {
+				let g = textureLoad(geoPatch, vec2<i32>(lx, ly - 1)).b;
+				if (g >= 0.5) { q = q + textureLoad(massSrc, vec2<i32>(x, y - 1)) * (1.0 / g); }
+			}
+			if (ly + 1 < ph) {
+				let g = textureLoad(geoPatch, vec2<i32>(lx, ly + 1)).b;
+				if (g >= 0.5) { q = q + textureLoad(massSrc, vec2<i32>(x, y + 1)) * (1.0 / g); }
+			}
+		}
+	}
+	textureStore(massDst, vec2<i32>(x, y), q);
+}
+`;
+	// the same walk over the thermal field: E moves with the mass it belongs to, and an
+	// emptied cell reads the ambient temperature the EOS gives a vacuum
+	shaders.colliderPushTherm=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var thermSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(2) var thermDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(3) var geoPatch: texture_storage_2d<rgba32float,read>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let ox = i32(params.values[8]);
+	let oy = i32(params.values[9]);
+	let pw = i32(params.values[10]);
+	let ph = i32(params.values[11]);
+	let tAmb = params.values[20];
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	var q = textureLoad(thermSrc, vec2<i32>(x, y));
+	if (x >= ox && x < ox + pw && y >= oy && y < oy + ph) {
+		let lx = x - ox;
+		let ly = y - oy;
+		let c = textureLoad(geoPatch, vec2<i32>(lx, ly)).b;
+		if (c >= 0.5) {
+			q = vec4<f32>(0.0, tAmb, 0.0, 0.0);
+		} else if (c > -0.5) {
+			if (lx >= 1) {
+				let g = textureLoad(geoPatch, vec2<i32>(lx - 1, ly)).b;
+				if (g >= 0.5) { q = q + textureLoad(thermSrc, vec2<i32>(x - 1, y)) * (1.0 / g); }
+			}
+			if (lx + 1 < pw) {
+				let g = textureLoad(geoPatch, vec2<i32>(lx + 1, ly)).b;
+				if (g >= 0.5) { q = q + textureLoad(thermSrc, vec2<i32>(x + 1, y)) * (1.0 / g); }
+			}
+			if (ly >= 1) {
+				let g = textureLoad(geoPatch, vec2<i32>(lx, ly - 1)).b;
+				if (g >= 0.5) { q = q + textureLoad(thermSrc, vec2<i32>(x, y - 1)) * (1.0 / g); }
+			}
+			if (ly + 1 < ph) {
+				let g = textureLoad(geoPatch, vec2<i32>(lx, ly + 1)).b;
+				if (g >= 0.5) { q = q + textureLoad(thermSrc, vec2<i32>(x, y + 1)) * (1.0 / g); }
+			}
+		}
+	}
+	textureStore(thermDst, vec2<i32>(x, y), q);
+}
+`;
 	// ---------- view modes (0..7 + composable solid overlay + buoy overlay) ----------
 	shaders.toDisplay=`
 @group(0) @binding(0) var<uniform> params: Params;
