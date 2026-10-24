@@ -11,6 +11,7 @@ require(path.join(root, "src/core/config.js"));
 require(path.join(root, "src/core/grid.js"));
 require(path.join(root, "src/core/stats.js"));
 require(path.join(root, "src/core/emitters.js"));
+require(path.join(root, "src/core/colliders.js"));
 const solverMod = require(path.join(root, "src/core/solver.js"));
 const buoyMod = require(path.join(root, "src/core/buoy.js"));
 const sharpness = require(path.join(root, "experiments/sharpness.js"));
@@ -711,6 +712,190 @@ function testEmitterSlots() {
 	}
 }
 
+function testCollidersAndObstacles() {
+	// 13a. Review regression: setEmitter re-derives default value when dirMode changes without explicit value
+	{
+		const E = Fluid.core.emitters;
+		const cfg = makeCfg({ N: 32, scenario: "still" });
+		const tbl = E.create();
+		const idA = E.add(tbl, cfg, { kind: "momentum", x: 10, y: 10 });
+		E.set(tbl, cfg, idA, { vx: 80, vy: 40 });
+		const bA = E.slotBase(idA);
+		const idB = E.add(tbl, cfg, { kind: "momentum", x: 10, y: 10, vx: 80, vy: 40 });
+		E.set(tbl, cfg, idB, { angle: 0 });
+		const bB = E.slotBase(idB);
+		const idC = E.add(tbl, cfg, { kind: "momentum", x: 10, y: 10, value: 3.5 });
+		E.set(tbl, cfg, idC, { vx: 10, vy: 20 });
+		const bC = E.slotBase(idC);
+		check("emitter set(): switching angle <-> vector without explicit value re-derives defaultValue",
+			Math.abs(tbl.upload[bA + E.E_VX] - 80) < 1e-6 && Math.abs(tbl.upload[bA + E.E_VY] - 40) < 1e-6 &&
+			Math.abs(tbl.upload[bB + E.E_VX] - 200) < 1e-6 && Math.abs(tbl.upload[bB + E.E_VY]) < 1e-6 &&
+			Math.abs(tbl.upload[bC + E.E_VX] - 35) < 1e-6 && Math.abs(tbl.upload[bC + E.E_VY] - 70) < 1e-6,
+			"vec=(" + tbl.upload[bA + E.E_VX] + "," + tbl.upload[bA + E.E_VY] + ") ang=(" + tbl.upload[bB + E.E_VX] + "," + tbl.upload[bB + E.E_VY] + ")");
+	}
+	// 13b. setObstacles(maskArray, w, h): nearest-neighbor tilemap seals a full-height dam barrier
+	{
+		const cfg = makeCfg({ N: 64, scenario: "dam", gravityY: 300, pressureIters: 36, dt: 1 / 120 });
+		const sim = solverMod.create(cfg);
+		const mask = new Uint8Array(16 * 16);
+		// column mx = 8 maps to cells x in 33..36, sealing the left dam column from the right half
+		for (let my = 0; my < 16; my++) mask[8 + my * 16] = 1;
+		const ok = sim.setObstacles(mask, 16, 16);
+		function rightHalfMass() {
+			const mc = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
+			let sum = 0;
+			for (let y = 1; y <= sim.N; y++) {
+				for (let x = 37; x <= sim.N; x++) sum += mc[(x + y * sim.texW) * 4 + 3];
+			}
+			return sum;
+		}
+		const r0 = rightHalfMass();
+		for (let s = 0; s < 120; s++) sim.step(cfg.dt);
+		const r1 = rightHalfMass();
+		const st = sim.stats();
+		const driftM = Math.abs(stats.driftRel(st.tot.sumM, stats.expectedTotal(st.ledger, "m")));
+		const driftE = Math.abs(stats.driftRel(st.tot.sumE, stats.expectedTotal(st.ledger, "E")));
+		check("setObstacles: 16x16 tilemap barrier holds dam column with zero right-half leakage and <1e-6 drift",
+			ok && Math.abs(r1 - r0) < 1e-4 && driftM < 1e-6 && driftE < 1e-6 && st.tot.cntNeg === 0,
+			"rightDelta=" + (r1 - r0).toExponential(2) + " driftM=" + driftM.toExponential(2) + " driftE=" + driftE.toExponential(2));
+	}
+	// 13c. paintObstacle(x, y, radius, kind): wall, solid, and erase preserve conservation & ledger
+	{
+		const cfg = makeCfg({ N: 48, scenario: "still", gravityY: 200, pressureIters: 32, dt: 1 / 120 });
+		const sim = solverMod.create(cfg);
+		const okWall = sim.paintObstacle(14, 14, 4, "wall");
+		const okSolid = sim.paintObstacle(32, 16, 5, "solid");
+		const iWall = (14 + 14 * sim.texW) * 4;
+		const iSolid = (32 + 16 * sim.texW) * 4;
+		const wasWall = (sim.flags[iWall] & 1) === 1;
+		const wasFrozen = sim.flags[iSolid + 2] === 1 && sim.flags[iSolid + 1] === solverMod.PHASE_SOLID;
+		for (let s = 0; s < 30; s++) sim.step(cfg.dt);
+		const okEraseW = sim.paintObstacle(14, 14, 5, "erase");
+		const okEraseS = sim.paintObstacle(32, 16, 6, "erase");
+		const wallCleared = (sim.flags[iWall] & 1) === 0;
+		const thawed = sim.flags[iSolid + 2] === 0 && sim.flags[iSolid + 1] === solverMod.PHASE_LIQUID;
+		for (let s = 0; s < 30; s++) sim.step(cfg.dt);
+		const st = sim.stats();
+		const driftM = Math.abs(stats.driftRel(st.tot.sumM, stats.expectedTotal(st.ledger, "m")));
+		const driftE = Math.abs(stats.driftRel(st.tot.sumE, stats.expectedTotal(st.ledger, "E")));
+		check("paintObstacle: wall, solid freeze, and erase thaw update phase/flags cleanly with <1e-6 drift",
+			okWall && okSolid && okEraseW && okEraseS && wasWall && wasFrozen && wallCleared && thawed &&
+			driftM < 1e-6 && driftE < 1e-6 && st.tot.cntNeg === 0 &&
+			st.ledger.heatOutE > 0 && st.ledger.heatInE > 0,
+			"driftM=" + driftM.toExponential(2) + " driftE=" + driftE.toExponential(2) +
+			" heatOut=" + st.ledger.heatOutE.toFixed(1) + " heatIn=" + st.ledger.heatInE.toFixed(1));
+	}
+	// 13d. Collider teleportation (vx = 0, vy = 0): zero mass creation/deletion and static walls preserved
+	{
+		const cfg = makeCfg({ N: 64, scenario: "still", gravityY: 0, pressureIters: 32, dt: 1 / 120 });
+		const sim = solverMod.create(cfg);
+		sim.paintObstacle(20, 20, 3, "wall");
+		const wallIdx = (20 + 20 * sim.texW) * 4;
+		const cId = sim.addCollider({ shape: "circle", x: 16, y: 16, radius: 6, vx: 0, vy: 0 });
+		const rId = sim.addCollider({ shape: "rect", x: 44, y: 44, w: 10, h: 8, vx: 0, vy: 0 });
+		const hops = [[20, 20], [36, 22], [48, 18], [26, 44], [18, 32], [50, 50], [32, 32], [14, 48]];
+		for (let h = 0; h < hops.length; h++) {
+			sim.moveCollider(cId, hops[h][0], hops[h][1], 0, 0);
+			sim.moveCollider(rId, 64 - hops[h][0], 64 - hops[h][1], 0, 0);
+			sim.step(cfg.dt);
+		}
+		sim.removeCollider(cId);
+		sim.removeCollider(rId);
+		sim.step(cfg.dt);
+		const st = sim.stats();
+		const driftM = Math.abs(stats.driftRel(st.tot.sumM, stats.expectedTotal(st.ledger, "m")));
+		const driftE = Math.abs(stats.driftRel(st.tot.sumE, stats.expectedTotal(st.ledger, "E")));
+		check("collider teleport: hopping circle + rect colliders with vx=vy=0 creates zero mass and preserves static walls",
+			cId === 0 && rId === 1 && sim.colliderCount() === 0 &&
+			(sim.flags[wallIdx] & 1) === 1 && (sim.flags[wallIdx] & 6) === 0 &&
+			driftM < 1e-7 && driftE < 1e-7 && st.tot.cntNeg === 0 && st.mot.maxVel < 1e-4,
+			"driftM=" + driftM.toExponential(2) + " maxVel=" + st.mot.maxVel.toExponential(2));
+	}
+	// 13e. Acceptance a2: dragging a circle collider through a water pool sheds a wake,
+	// raises the far-side water level, and conserves mass & energy to < 1e-6
+	{
+		function makePoolSim() {
+			const cfg = makeCfg({ N: 64, scenario: "still", gravityY: 260, pressureIters: 40, dt: 1 / 240, vorticityEps: 1.5 });
+			const sim = solverMod.create(cfg);
+			const mc = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
+			const tc = sim.therm.cur === 0 ? sim.therm.a : sim.therm.b;
+			const T0 = cfg.TAmb;
+			for (let y = 1; y <= sim.N; y++) {
+				const isWater = y <= 26;
+				const m = isWater ? 1.0 : 0.05;
+				const db = isWater ? 0.85 : 0.0;
+				const E = solverMod.energyFromT(m, T0, cfg);
+				for (let x = 1; x <= sim.N; x++) {
+					const i = (x + y * sim.texW) * 4;
+					mc[i] = 0; mc[i + 1] = 0; mc[i + 2] = db; mc[i + 3] = m;
+					tc[i] = E; tc[i + 1] = T0; tc[i + 2] = 0; tc[i + 3] = 0;
+				}
+			}
+			sim.phaseEos();
+			const tot = sim.stats().tot;
+			Object.assign(sim.ledger, stats.createLedger(tot));
+			cfg.rhoBase = tot.sumM / (sim.N * sim.N);
+			cfg.rhoMean = cfg.rhoBase;
+			return { cfg, sim };
+		}
+		function farSideUpperMass(sim) {
+			const mc = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
+			let sum = 0;
+			// cells above the initial y=26 waterline on the right end (x in 50..64)
+			for (let y = 27; y <= 48; y++) {
+				for (let x = 50; x <= sim.N; x++) sum += mc[(x + y * sim.texW) * 4 + 3];
+			}
+			return sum;
+		}
+		function wakeMetrics(sim, xMax) {
+			const v = sim.vel.cur === 0 ? sim.vel.a : sim.vel.b;
+			const tw = sim.texW;
+			let ke = 0, enstrophy = 0;
+			for (let y = 4; y <= 24; y++) {
+				for (let x = 6; x <= xMax; x++) {
+					const fi = (x + y * tw) * 4;
+					if (sim.flags[fi] > 0) continue;
+					const vi = (x + y * tw) * 2;
+					const ux = 0.5 * (v[vi] + v[vi + 2]);
+					const uy = 0.5 * (v[vi + 1] + v[vi + tw * 2 + 1]);
+					ke += 0.5 * (ux * ux + uy * uy);
+					const dvdx = v[vi + 2 + 1] - v[vi - 2 + 1];
+					const dudy = v[vi + tw * 2] - v[vi - tw * 2];
+					const w = 0.5 * (dvdx - dudy);
+					enstrophy += w * w;
+				}
+			}
+			return { ke, enstrophy };
+		}
+		const base = makePoolSim();
+		base.sim.addCollider({ shape: "circle", x: 14, y: 13, radius: 6, vx: 0, vy: 0 });
+		for (let s = 0; s < 160; s++) base.sim.step(base.cfg.dt);
+		const baseFar = farSideUpperMass(base.sim);
+
+		const drag = makePoolSim();
+		let cx = 14;
+		const cy = 13, vx = 48;
+		const cid = drag.sim.addCollider({ shape: "circle", x: cx, y: cy, radius: 6, vx, vy: 0 });
+		for (let s = 0; s < 160; s++) {
+			cx += vx * drag.cfg.dt;
+			drag.sim.moveCollider(cid, cx, cy, vx, 0);
+			drag.sim.step(drag.cfg.dt);
+		}
+		const dragFar = farSideUpperMass(drag.sim);
+		const wake = wakeMetrics(drag.sim, Math.floor(cx - 8));
+		const st = drag.sim.stats();
+		const driftM = Math.abs(stats.driftRel(st.tot.sumM, stats.expectedTotal(st.ledger, "m")));
+		const driftE = Math.abs(stats.driftRel(st.tot.sumE, stats.expectedTotal(st.ledger, "E")));
+		check("collider drag (a2): moving disc sheds a wake, raises far-side water level, and holds m/E drift < 1e-6",
+			dragFar > baseFar + 8.0 && wake.ke > 25 && wake.enstrophy > 10 &&
+			driftM < 1e-6 && driftE < 1e-6 && st.tot.cntNeg === 0 && drag.sim.diag.velClamp === 0,
+			"farRise=" + (dragFar - baseFar).toFixed(2) +
+			" wakeKE=" + wake.ke.toFixed(1) +
+			" wakeVort=" + wake.enstrophy.toFixed(1) +
+			" driftM=" + driftM.toExponential(2) +
+			" driftE=" + driftE.toExponential(2));
+	}
+}
 testPressureColoring();
 testLedgerSnapshot();
 testReduction();
@@ -727,5 +912,6 @@ testEmitter();
 testDraw();
 testLimiter();
 testEmitterSlots();
+testCollidersAndObstacles();
 console.log(failures === 0 ? "ALL CONFORMANCE TESTS PASSED" : failures + " FAILURES");
 process.exitCode = failures === 0 ? 0 : 1;

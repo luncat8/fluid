@@ -41,6 +41,7 @@
 	<script defer src="../src/core/solver.js"></script>
 	<script defer src="../src/core/probes.js"></script>
 	<script defer src="../src/core/emitters.js"></script>
+	<script defer src="../src/core/colliders.js"></script>
 	<script defer src="../src/core/buoy.js"></script>
 	<script defer src="../src/core/pacing.js"></script>
 	<script defer src="../src/gpu/device.js"></script>
@@ -76,6 +77,13 @@
 					<button id="reset" type="button">Reset</button>
 				</div>
 				<div class="row" id="views"></div>
+			</div>
+			<div class="block">
+				<h2>Collider</h2>
+				<div class="row">
+					<button id="toggle-collider" type="button">Remove circle collider</button>
+					<span id="collider-status" class="muted">drag amber disc on canvas</span>
+				</div>
 			</div>
 			<div class="block">
 				<h2>Emitters</h2>

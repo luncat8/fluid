@@ -14,6 +14,7 @@ require(path.join(root, "src/core/stats.js"));
 require(path.join(root, "src/core/solver.js"));
 require(path.join(root, "src/core/probes.js"));
 require(path.join(root, "src/core/emitters.js"));
+require(path.join(root, "src/core/colliders.js"));
 require(path.join(root, "src/core/buoy.js"));
 require(path.join(root, "src/gpu/shaders.js"));
 require(path.join(root, "src/gpu/fields.js"));
@@ -638,6 +639,95 @@ async function testEmitterPlumbing() {
 		m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0);
 }
 
+async function testColliderPlumbing() {
+	const C = Fluid.core.colliders;
+	const S = Fluid.core.stats;
+	const m = mock.create({ stats: new Float32Array(S.STATS_LEN), probes: new Float32Array(Fluid.core.probes.LEN) });
+	const sink = m.sink;
+	const N = 64;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {
+		N, texW: N + 2, texH: N + 2, scenario: "still", buoyEnabled: 0
+	});
+	const canvas = { width: N, height: N };
+	const solver = Fluid.gpu.solver.create(m.device, canvas, mock.mockContext(), "bgra8unorm", cfg);
+	check("collider pool: 2112B storage table allocated",
+		solver.pool.colliders.size === C.LEN * 4,
+		"colliders=" + solver.pool.colliders.size + "B");
+
+	// 0 colliders: zero colliderMask/copyFlags/colliderVel dispatches
+	let p0 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	let slice = sink.pipeOrder.slice(p0);
+	check("collider dispatch gating: idle table adds zero dispatches",
+		!slice.includes("colliderMask") && !slice.includes("copyFlags") && !slice.includes("colliderVel"));
+
+	// stationary collider (vx=0, vy=0): runs colliderMask + copyFlags once on dirty frame, zero colliderVel,
+	// then zero dispatches on next stationary frame
+	const cid = solver.addCollider({ shape: "circle", x: 32, y: 32, radius: 6, vx: 0, vy: 0 });
+	p0 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	slice = sink.pipeOrder.slice(p0);
+	const p1 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	const sliceIdle = sink.pipeOrder.slice(p1);
+	check("collider dispatch gating: stationary collider stamps mask once and adds zero dispatches afterward",
+		cid === 0 &&
+		slice.filter(n => n === "colliderMask").length === 1 &&
+		slice.filter(n => n === "copyFlags").length === 1 &&
+		!slice.includes("colliderVel") &&
+		!sliceIdle.includes("colliderMask") && !sliceIdle.includes("colliderVel"));
+
+	// moving collider (vx != 0): runs colliderMask + copyFlags once per moved frame and colliderVel once per substep before rhs
+	solver.moveCollider(cid, 34, 32, 85, -15);
+	p0 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 3, 3, false);
+	slice = sink.pipeOrder.slice(p0);
+	check("collider dispatch gating: moving collider runs colliderMask once and colliderVel each substep before rhs",
+		slice.filter(n => n === "colliderMask").length === 1 &&
+		slice.filter(n => n === "colliderVel").length === 3 &&
+		slice.indexOf("colliderMask") < slice.indexOf("forces") &&
+		slice.indexOf("colliderVel") < slice.indexOf("rhs"));
+
+	// setObstacles + paintObstacle ("wall", "solid", "erase") preserve active moving collider mask and therm/vel parity
+	const mask = new Uint8Array(8 * 8);
+	mask[0] = 1;
+	const okMask = solver.setObstacles(mask, 8, 8);
+	p0 = sink.pipeOrder.length;
+	const okSolid = solver.paintObstacle(16, 16, 4, "solid");
+	const okErase = solver.paintObstacle(16, 16, 4, "erase");
+	slice = sink.pipeOrder.slice(p0);
+	check("obstacle GPU ops: setObstacles and paintObstacle(solid/erase) run paintSolid + colliderMask + phase priming",
+		okMask && okSolid && okErase &&
+		slice.filter(n => n === "paintSolid").length === 2 &&
+		slice.includes("colliderMask") && slice.includes("phaseEos") && slice.includes("freezeVel"));
+
+	// removing last collider clears GPU mask once, then returns to 0 dispatches
+	solver.removeCollider(cid);
+	p0 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	slice = sink.pipeOrder.slice(p0);
+	const p2 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	const sliceAfterClear = sink.pipeOrder.slice(p2);
+	check("collider removal: clears GPU mask once and returns to zero dispatches",
+		solver.colliderCount() === 0 &&
+		slice.filter(n => n === "colliderMask").length === 1 &&
+		!slice.includes("colliderVel") &&
+		!sliceAfterClear.includes("colliderMask") && !sliceAfterClear.includes("colliderVel"));
+
+	// resize preserves live colliders and re-uploads clamped slots
+	const rid = solver.addCollider({ shape: "rect", x: 60, y: 61, w: 10, h: 8, vx: 10, vy: 0 });
+	solver.resize(128);
+	const uploaded = new Float32Array(solver.pool.colliders._buf);
+	check("collider resize: live slots survive pool rebuild and re-upload to new buffer",
+		rid === 0 && solver.colliderCount() === 1 && uploaded[0] === 1 &&
+		uploaded[C.slotBase(rid) + C.C_X] === 60,
+		"live=" + uploaded[0]);
+	solver.destroy();
+	check("collider pool buffer destroyed cleanly with zero leaks",
+		m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0);
+}
+
 (async function main() {
 	testParams();
 	testWgsl();
@@ -647,6 +737,7 @@ async function testEmitterPlumbing() {
 	await testProbePlumbing();
 	await testPhasePlumbing();
 	await testEmitterPlumbing();
+	await testColliderPlumbing();
 	console.log(failures === 0 ? "ALL GPU-MOCK CHECKS PASSED" : failures + " FAILURES");
 	process.exitCode = failures === 0 ? 0 : 1;
 })();

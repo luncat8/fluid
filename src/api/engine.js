@@ -111,9 +111,10 @@
 			const frameDt=dt>0?dt:cfg.frameDt;
 			cfg.frameDt=frameDt;
 			const st=solver.getStats();
-			// the auto policy reads the last readback plus the live drag speed, which
-			// is known now and must not wait for the readback (draw blowup trigger)
-			const maxVel=Math.max(st.motion.maxVel,Math.abs(cfg.mouseVX),Math.abs(cfg.mouseVY));
+			// the auto policy reads the last readback plus live pointer and collider
+			// speeds, which are known now and must not wait for the readback
+			const collSpeed=solver.colliders?solver.colliders.peakSpeed:0;
+			const maxVel=Math.max(st.motion.maxVel,Math.abs(cfg.mouseVX),Math.abs(cfg.mouseVY),collSpeed);
 			const ns=config.substepCount(cfg,maxVel);
 			cfg.vClamp=config.velocityCap(cfg,ns);
 			const t0=now();
@@ -192,6 +193,45 @@
 			cfg.overlay=on?1:0;
 			cfg._dirty=true;
 			return cfg.overlay;
+		}
+		function setObstacles(maskArray,w,h){
+			if(!active()||!solver.setObstacles)return false;
+			const ok=solver.setObstacles(maskArray,w,h);
+			if(ok)cfg._dirty=true;
+			return ok;
+		}
+		function paintObstacle(x,y,radius,kind){
+			if(!active()||!solver.paintObstacle)return false;
+			const ok=solver.paintObstacle(x,y,radius,kind);
+			if(ok)cfg._dirty=true;
+			return ok;
+		}
+		function addCollider(spec){
+			if(!active()||!solver.addCollider)return -1;
+			const id=solver.addCollider(spec);
+			if(id>=0)cfg._dirty=true;
+			return id;
+		}
+		function moveCollider(id,x,y,vx,vy){
+			if(!active()||!solver.moveCollider)return false;
+			const ok=solver.moveCollider(id,x,y,vx,vy);
+			if(ok)cfg._dirty=true;
+			return ok;
+		}
+		function setCollider(id,patch){
+			if(!active()||!solver.setCollider)return false;
+			const ok=solver.setCollider(id,patch);
+			if(ok)cfg._dirty=true;
+			return ok;
+		}
+		function removeCollider(id){
+			if(!active()||!solver.removeCollider)return false;
+			const ok=solver.removeCollider(id);
+			if(ok)cfg._dirty=true;
+			return ok;
+		}
+		function colliderCount(){
+			return active()&&solver.colliderCount?solver.colliderCount():0;
 		}
 		function addEmitter(spec){
 			if(!active()||!solver.addEmitter)return -1;
@@ -287,6 +327,7 @@
 			makeProbeSample:Fluid.core.probes.makeSample,
 			step,update,render,reset,setGrid,setViewMode,setOverlay,
 			bindViewMode(fn){viewWriter=typeof fn==="function"?fn:null;return !!viewWriter;},
+			setObstacles,paintObstacle,addCollider,moveCollider,setCollider,removeCollider,colliderCount,
 			addEmitter,moveEmitter,setEmitter,removeEmitter,emitterCount,
 			addProbe,moveProbe,removeProbe,sample:sampleProbe,stats,attachInput,detachInput,bindKeys,detachKeys,pollReadback,
 			probeCount(){return active()?solver.probes.live:0;},

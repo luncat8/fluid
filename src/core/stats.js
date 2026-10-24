@@ -61,7 +61,7 @@
 		if(maxM===-Infinity)maxM=0;
 		return {sumM,sumDr,sumDg,sumDb,sumE,minM,minDr,minDg,minDb,minE,maxM,cntNeg,cntOver};
 	}
-	function motionTotals(vel,press,texW,texH,dt){
+	function motionTotals(vel,press,texW,texH,dt,flags){
 		// vel: rg per texel, r = u left face, g = v bottom face; press: r per texel
 		let maxVel=0,pMin=Infinity,pMax=-Infinity,maxDiv=0;
 		let invDt=1/Math.max(dt,1e-9);
@@ -73,8 +73,15 @@
 				let uL=vel[i],uR=vel[iR],vB=vel[i+1],vT=vel[iT+1];
 				let f=Math.max(Math.abs(uL),Math.abs(uR),Math.abs(vB),Math.abs(vT));
 				if(f>maxVel)maxVel=f;
-				let div=Math.abs(uR-uL+vT-vB)*invDt;
-				if(div>maxDiv)maxDiv=div;
+				let blocked=false;
+				if(flags){
+					let fi=(x+y*texW)*4;
+					blocked=flags[fi]>0||flags[fi+2]>0;
+				}
+				if(!blocked){
+					let div=Math.abs(uR-uL+vT-vB)*invDt;
+					if(div>maxDiv)maxDiv=div;
+				}
 				let p=press[x+y*texW];
 				if(p<pMin)pMin=p;
 				if(p>pMax)pMax=p;

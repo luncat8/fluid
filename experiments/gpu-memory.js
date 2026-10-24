@@ -18,6 +18,7 @@ require(path.join(root, "src/core/config.js"));
 require(path.join(root, "src/core/stats.js"));
 require(path.join(root, "src/core/probes.js"));
 require(path.join(root, "src/core/emitters.js"));
+require(path.join(root, "src/core/colliders.js"));
 require(path.join(root, "src/gpu/fields.js"));
 
 const MB = 1024 * 1024;

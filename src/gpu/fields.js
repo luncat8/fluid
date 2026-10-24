@@ -73,6 +73,9 @@
 			buoyRead:null,
 			probes:null,
 			probesRead:null,
+			emitters:null,
+			emitterLedger:null,
+			colliders:null,
 			dims:null,
 			numWorkgroups:0,
 			workgroupX:0,workgroupY:0
@@ -139,6 +142,8 @@
 		pool.emitters=device.createBuffer({label:"emitters",size:emitBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
 		const emitLedgerBytes=(STATS.EMIT_LEDGER_LEN||20)*4;
 		pool.emitterLedger=device.createBuffer({label:"emitterLedger",size:emitLedgerBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
+		const collBytes=(Fluid.core.colliders?Fluid.core.colliders.LEN:528)*4;
+		pool.colliders=device.createBuffer({label:"colliders",size:collBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
 		pool.dims=device.createBuffer({label:"dims",size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
 		const dimsArr=new Uint32Array([pool.numWorkgroups*PARTIAL_STRIDE,0,0,0]);
 		device.queue.writeBuffer(pool.dims,0,dimsArr);
@@ -155,7 +160,7 @@
 			pool.mgMass,pool.mgFlags,pool.mgDiv,pool.mgPress.tex[0],pool.mgPress.tex[1]];
 	}
 	function poolBuffers(pool){
-		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.probes,pool.probesRead,pool.emitters,pool.emitterLedger,pool.dims,pool.mgParams];
+		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.probes,pool.probesRead,pool.emitters,pool.emitterLedger,pool.colliders,pool.dims,pool.mgParams];
 	}
 	function textureBytes(t){
 		if(!t||!t.fluidSize)return 0;

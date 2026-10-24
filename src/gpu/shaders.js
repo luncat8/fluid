@@ -820,8 +820,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		momAcc = momAcc + m * sqrt(uc * uc + vc * vc);
 	}
 	let sat = abs(s.S) >= SMax;
+	let rClean = select(prevFl.r & 3u, 255u, prevFl.r == 255u);
 	textureStore(thermDst, at, vec4<f32>(q.r, s.T, q.b, q.a));
-	textureStore(flagsDst, at, vec4<u32>(prevFl.r, s.phase, select(0u, 1u, frozen), select(0u, 1u, sat)));
+	textureStore(flagsDst, at, vec4<u32>(rClean, s.phase, select(0u, 1u, frozen), select(0u, 1u, sat)));
 	textureStore(sfieldDst, at, vec4<f32>(s.S, s.phiL, s.phiG, 0.0));
 	textureStore(accumDst, at, vec4<f32>(latAcc, momAcc, 0.0, 0.0));
 }
@@ -860,6 +861,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 fn isWallAt(x: i32, y: i32, w: i32, h: i32) -> bool {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
 	return textureLoad(flagsTex, vec2<i32>(x, y), 0).r > 0u;
+}
+fn isStaticWallAt(x: i32, y: i32, w: i32, h: i32) -> bool {
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
+	return (textureLoad(flagsTex, vec2<i32>(x, y), 0).r & 1u) > 0u;
 }
 fn faceExchange(own: PhaseState, nx: i32, ny: i32, w: i32, h: i32, mL: f32, EL: f32, dt: f32) -> f32 {
 	if (nx < 1 || nx > w - 2 || ny < 1 || ny > h - 2) { return 0.0; }
@@ -903,7 +908,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		E = E + faceExchange(own, x, y - 1, w, h, m, E0, dt);
 		E = E + faceExchange(own, x, y + 1, w, h, m, E0, dt);
 		let wallCool = params.values[41];
-		if (wallCool > 0.0 && (isWallAt(x - 1, y, w, h) || isWallAt(x + 1, y, w, h) || isWallAt(x, y - 1, w, h) || isWallAt(x, y + 1, w, h))) {
+		if (wallCool > 0.0 && (isStaticWallAt(x - 1, y, w, h) || isStaticWallAt(x + 1, y, w, h) || isStaticWallAt(x, y - 1, w, h) || isStaticWallAt(x, y + 1, w, h))) {
 			let dE = (((-wallCool) * (q.g - params.values[20])) * (m * own.c)) * dt;
 			E = E + dE;
 			q.b = q.b + max(dE, 0.0);
@@ -1116,6 +1121,217 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		q = vec4<f32>(q.r + dE, q.g, q.b, q.a);
 	}
 	textureStore(thermDst, vec2<i32>(x, y), q);
+}
+`;
+	// ---------- 0.7.0 t4 obstacles & moving colliders ----------
+	shaders.paintSolid=EOS_HELPERS+`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var massTex: texture_2d<f32>;
+@group(0) @binding(2) var thermSrc: texture_2d<f32>;
+@group(0) @binding(3) var flagsTex: texture_2d<u32>;
+@group(0) @binding(4) var thermDst: texture_storage_2d<rgba32float,write>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	let at = vec2<i32>(x, y);
+	let q = textureLoad(thermSrc, at, 0);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) {
+		textureStore(thermDst, at, q);
+		return;
+	}
+	let cx = params.values[8];
+	let cy = params.values[9];
+	let r2 = params.values[10];
+	let mode = params.values[11];
+	let dx = (f32(x) - 0.5) - cx;
+	let dy = (f32(y) - 0.5) - cy;
+	let fl = textureLoad(flagsTex, at, 0);
+	let m = textureLoad(massTex, at, 0).a;
+	let mEps = params.values[58];
+	var E = q.r;
+	var T = q.g;
+	var hIn = q.b;
+	var hOut = q.a;
+	var changed = false;
+	if (dx * dx + dy * dy < r2 && (fl.r & 1u) == 0u && m >= mEps) {
+		let tEps = params.values[47];
+		let cSol = params.values[48];
+		let cLiq = params.values[49];
+		let Lf = params.values[51];
+		let tMelt = params.values[53];
+		if (mode > 0.0) {
+			let tFreeze = max(tEps, tMelt - 15.0);
+			let eTarget = m * (cSol * tFreeze);
+			if (E > eTarget) {
+				let dReal = E - eTarget;
+				E = eTarget;
+				hOut = hOut + dReal;
+				changed = true;
+			}
+		} else if (fl.b > 0u) {
+			let tThaw = max(tEps, tMelt + 2.0);
+			let hLiq = ((cSol * tMelt) + Lf) + cLiq * (tThaw - tMelt);
+			let eTarget = m * hLiq;
+			if (E < eTarget) {
+				let dReal = eTarget - E;
+				E = eTarget;
+				hIn = hIn + dReal;
+				changed = true;
+			}
+		}
+	}
+	if (changed) {
+		T = evalPhase(m, E).T;
+	}
+	textureStore(thermDst, at, vec4<f32>(E, T, hIn, hOut));
+}
+`;
+	shaders.colliderMask=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage,read> colliders: array<f32>;
+@group(0) @binding(2) var flagsSrc: texture_2d<u32>;
+@group(0) @binding(3) var flagsDst: texture_storage_2d<rgba8uint,write>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	let at = vec2<i32>(x, y);
+	let oldFl = textureLoad(flagsSrc, at, 0);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) {
+		textureStore(flagsDst, at, vec4<u32>(0u, oldFl.g, oldFl.b, oldFl.a));
+		return;
+	}
+	let nSlots = min(u32(colliders[1u]), 32u);
+	let px = f32(x) - 0.5;
+	let py = f32(y) - 0.5;
+	var curColl = false;
+	for (var s: u32 = 0u; s < nSlots; s = s + 1u) {
+		let b = 16u + s * 16u;
+		let shape = i32(colliders[b + 2u]);
+		if (shape == 1) {
+			let dx = px - colliders[b];
+			let dy = py - colliders[b + 1u];
+			if (dx * dx + dy * dy < colliders[b + 3u]) { curColl = true; }
+		} else if (shape == 2) {
+			if (abs(px - colliders[b]) <= colliders[b + 3u] && abs(py - colliders[b + 1u]) <= colliders[b + 4u]) {
+				curColl = true;
+			}
+		}
+	}
+	let legacyWall = oldFl.r == 255u;
+	let staticBit = oldFl.r & 1u;
+	let wasStepped = !legacyWall && ((oldFl.r & 2u) != 0u) && ((oldFl.r & 4u) == 0u);
+	let newlyOcc = curColl && !wasStepped;
+	let newR = select(staticBit | select(0u, 2u, curColl) | select(0u, 4u, newlyOcc), 255u, legacyWall);
+	textureStore(flagsDst, at, vec4<u32>(newR, oldFl.g, oldFl.b, oldFl.a));
+}
+`;
+	shaders.copyFlags=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var flagsSrc: texture_2d<u32>;
+@group(0) @binding(2) var flagsDst: texture_storage_2d<rgba8uint,write>;
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	let at = vec2<i32>(x, y);
+	textureStore(flagsDst, at, textureLoad(flagsSrc, at, 0));
+}
+`;
+	shaders.colliderVel=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage,read> colliders: array<f32>;
+@group(0) @binding(2) var velSrc: texture_2d<f32>;
+@group(0) @binding(3) var flagsTex: texture_2d<u32>;
+@group(0) @binding(4) var velDst: texture_storage_2d<rg32float,write>;
+
+fn hardCell(cx: i32, cy: i32, w: i32, h: i32) -> bool {
+	if (cx < 1 || cx > w - 2 || cy < 1 || cy > h - 2) { return true; }
+	let fl = textureLoad(flagsTex, vec2<i32>(cx, cy), 0);
+	return (fl.r & 1u) != 0u || fl.b > 0u;
+}
+fn sampleCollCell(cx: i32, cy: i32, w: i32, h: i32, nSlots: u32) -> vec3<f32> {
+	if (cx < 1 || cx > w - 2 || cy < 1 || cy > h - 2) { return vec3<f32>(0.0, 0.0, 0.0); }
+	let px = f32(cx) - 0.5;
+	let py = f32(cy) - 0.5;
+	var sx = 0.0;
+	var sy = 0.0;
+	var cnt = 0.0;
+	for (var s: u32 = 0u; s < nSlots; s = s + 1u) {
+		let b = 16u + s * 16u;
+		let shape = i32(colliders[b + 2u]);
+		if (shape == 1) {
+			let dx = px - colliders[b];
+			let dy = py - colliders[b + 1u];
+			if (dx * dx + dy * dy < colliders[b + 3u]) {
+				sx = sx + colliders[b + 5u];
+				sy = sy + colliders[b + 6u];
+				cnt = cnt + 1.0;
+			}
+		} else if (shape == 2) {
+			if (abs(px - colliders[b]) <= colliders[b + 3u] && abs(py - colliders[b + 1u]) <= colliders[b + 4u]) {
+				sx = sx + colliders[b + 5u];
+				sy = sy + colliders[b + 6u];
+				cnt = cnt + 1.0;
+			}
+		}
+	}
+	if (cnt > 0.0) {
+		let inv = 1.0 / cnt;
+		return vec3<f32>(sx * inv, sy * inv, 1.0);
+	}
+	return vec3<f32>(0.0, 0.0, 0.0);
+}
+
+@compute @workgroup_size(8,8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let x = i32(gid.x);
+	let y = i32(gid.y);
+	if (x >= w || y >= h) { return; }
+	let at = vec2<i32>(x, y);
+	if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) {
+		textureStore(velDst, at, vec4<f32>(0.0));
+		return;
+	}
+	let src = textureLoad(velSrc, at, 0);
+	var u = src.r;
+	var v = src.g;
+	let vc = params.values[38];
+	let nSlots = min(u32(colliders[1u]), 32u);
+	if (x <= 1 || x >= w - 1 || hardCell(x - 1, y, w, h) || hardCell(x, y, w, h)) {
+		u = 0.0;
+	} else {
+		let cL = sampleCollCell(x - 1, y, w, h, nSlots);
+		let cR = sampleCollCell(x, y, w, h, nSlots);
+		if (cL.z > 0.0 && cR.z > 0.0) { u = clamp(0.5 * (cL.x + cR.x), -vc, vc); }
+		else if (cL.z > 0.0) { u = clamp(cL.x, -vc, vc); }
+		else if (cR.z > 0.0) { u = clamp(cR.x, -vc, vc); }
+	}
+	if (y <= 1 || y >= h - 1 || hardCell(x, y - 1, w, h) || hardCell(x, y, w, h)) {
+		v = 0.0;
+	} else {
+		let cB = sampleCollCell(x, y - 1, w, h, nSlots);
+		let cT = sampleCollCell(x, y, w, h, nSlots);
+		if (cB.z > 0.0 && cT.z > 0.0) { v = clamp(0.5 * (cB.y + cT.y), -vc, vc); }
+		else if (cB.z > 0.0) { v = clamp(cB.y, -vc, vc); }
+		else if (cT.z > 0.0) { v = clamp(cT.y, -vc, vc); }
+	}
+	textureStore(velDst, at, vec4<f32>(u, v, 0.0, 0.0));
 }
 `;
 	// ---------- 0.7.0 t3 emitters: shared realized-delta cell kernel + 1-workgroup Kahan tally ----------
@@ -1486,8 +1702,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 		let uR = textureLoad(velTex, vec2<i32>(x + 1, y), 0).r;
 		let vB = textureLoad(velTex, vec2<i32>(x, y), 0).g;
 		let vT = textureLoad(velTex, vec2<i32>(x, y + 1), 0).g;
+		let fl = textureLoad(flagsTex, vec2<i32>(x, y), 0);
 		maxVel = max(max(abs(uL), abs(uR)), max(abs(vB), abs(vT)));
-		maxDiv = abs(uR - uL + vT - vB) / max(dt, 1e-9);
+		if ((fl.r | fl.b) == 0u) {
+			maxDiv = abs(uR - uL + vT - vB) / max(dt, 1e-9);
+		}
 		let p = textureLoad(pressTex, vec2<i32>(x, y), 0).r;
 		pMin = p; pMax = p;
 		// post-step residual: same pressure and divsrc, but mass and flags after
@@ -1508,7 +1727,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 			let vc = 0.5 * (vB + vT);
 			kin = 0.5 * mass.a * (uc * uc + vc * vc);
 		}
-		let fl = textureLoad(flagsTex, vec2<i32>(x, y), 0);
 		ph = fl.g;
 		if (fl.a > 0u) { sSat = 1.0; }
 		let ac = textureLoad(accumTex, vec2<i32>(x, y), 0);
@@ -1791,6 +2009,11 @@ fn frozenAt(x: i32, y: i32, w: i32, h: i32) -> bool {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return false; }
 	return textureLoad(flagsTex, vec2<i32>(x, y), 0).b > 0u;
 }
+fn colliderAt(x: i32, y: i32, w: i32, h: i32) -> bool {
+	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return false; }
+	let r = textureLoad(flagsTex, vec2<i32>(x, y), 0).r;
+	return (r & 2u) > 0u && (r & 1u) == 0u;
+}
 fn solidOverlay(x: i32, y: i32, w: i32, h: i32, mode: i32, fl: vec4<u32>, base: vec4<f32>) -> vec4<f32> {
 	var rgb = base.rgb;
 	if (params.values[86] > 0.5 && mode != 5 && fl.b > 0u) {
@@ -1802,7 +2025,14 @@ fn solidOverlay(x: i32, y: i32, w: i32, h: i32, mode: i32, fl: vec4<u32>, base: 
 		if (edge) { rgb = mix(rgb, vec3<f32>(0.92, 0.98, 1.0), 0.82); }
 	}
 	if (fl.r > 0u && mode != 5 && mode != 7) {
-		rgb = mix(rgb, vec3<f32>(0.45, 0.35, 0.30), 0.72);
+		if ((fl.r & 1u) > 0u) {
+			rgb = mix(rgb, vec3<f32>(0.45, 0.35, 0.30), 0.72);
+		} else {
+			let rim = !colliderAt(x - 1, y, w, h) || !colliderAt(x + 1, y, w, h)
+				|| !colliderAt(x, y - 1, w, h) || !colliderAt(x, y + 1, w, h);
+			rgb = mix(rgb, vec3<f32>(0.24, 0.30, 0.38), 0.84);
+			if (rim) { rgb = mix(rgb, vec3<f32>(0.96, 0.74, 0.28), 0.90); }
+		}
 	}
 	return vec4<f32>(rgb, 1.0);
 }
@@ -1866,7 +2096,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		let uR = textureLoad(velTex, vec2<i32>(x + 1, y), 0).r;
 		let vB = textureLoad(velTex, vec2<i32>(x, y), 0).g;
 		let vT = textureLoad(velTex, vec2<i32>(x, y + 1), 0).g;
-		let div = abs(uR - uL + vT - vB) / dt;
+		let div = select(0.0, abs(uR - uL + vT - vB) / dt, (fl.r | fl.b) == 0u);
 		let t = clamp(log2(1.0 + div) / 10.0, 0.0, 1.0);
 		out = vec4<f32>(t * t, t, 0.15 + 0.5 * t, 1.0);
 	} else if (mode == 6) {
@@ -1876,14 +2106,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		}
 	} else if (mode == 7) {
 		var pc = phaseColor(fl.g);
-		if (fl.r > 0u) { pc = vec3<f32>(0.55, 0.30, 0.22); }
+		if (fl.r > 0u) {
+			pc = select(vec3<f32>(0.78, 0.60, 0.24), vec3<f32>(0.55, 0.30, 0.22), (fl.r & 1u) > 0u);
+		}
 		out = vec4<f32>(pc, 1.0);
 	} else {
-		// mode 5: painted static walls (red) vs frozen substance (ice blue) over mass greyscale
+		// mode 5: painted static walls (red), moving colliders (amber), frozen substance (ice blue)
 		let g = clamp(m, 0.0, 1.0);
 		out = vec4<f32>(g * 0.6, g * 0.6, g * 0.7, 1.0);
 		if (fl.b > 0u) { out = vec4<f32>(0.55, 0.85, 1.0, 1.0); }
-		if (fl.r > 0u) { out = vec4<f32>(0.9, 0.25, 0.2, 1.0); }
+		if (fl.r > 0u) {
+			out = select(vec4<f32>(0.96, 0.72, 0.24, 1.0), vec4<f32>(0.9, 0.25, 0.2, 1.0), (fl.r & 1u) > 0u);
+		}
 	}
 	let over = solidOverlay(x, y, w, h, mode, fl, out);
 	textureStore(displayTex, vec2<i32>(x, y), buoyOverlay(x, y, over));

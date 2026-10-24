@@ -1,12 +1,12 @@
 (function(){
 	"use strict";
 	// Example game-style integration: this file only touches the public engine API
-	// (create/update/pause/reset/setViewMode/addProbe/sample/stats/attachInput) and
-	// never reaches into the solver's fields. That is the point of the page: if the
-	// API cannot draw this, the API is missing something.
+	// (create/update/pause/reset/setViewMode/addCollider/moveCollider/removeCollider/
+	// addEmitter/addProbe/sample/stats/attachInput) and never reaches into solver fields.
 	const $=id=>document.getElementById(id);
 	const PHASE_NAMES=["vacuum","solid","melting","liquid","boiling","vapor"];
 	const MAX_PROBES=8;
+	const COLLIDER_MAX_SPEED=480;
 	// one UI sweep every 200 ms: the fluid runs at frame rate, the text does not
 	const UI_PERIOD=200;
 	let sim=null;
@@ -15,6 +15,9 @@
 	let lastUi=0;
 	let probeCursor=0;
 	let viewButtons=null;
+	let colliderId=-1;
+	let collX=0,collY=0,collR=14,collPrevX=0,collPrevY=0,collN=256;
+	let collDrag=false,collPtrId=-1;
 	const emitterIds=[];
 	const probes=[];
 	const stats=Fluid.engine.makeStats();
@@ -34,6 +37,105 @@
 		if(a<1e-6)return "ok";
 		if(a<1e-3)return "warn";
 		return "bad";
+	}
+	function clamp(v,lo,hi){
+		return v<lo?lo:(v>hi?hi:v);
+	}
+	function spawnCollider(){
+		if(!sim||colliderId>=0)return;
+		const n=sim.params.N;
+		collN=n;
+		collR=Math.max(4,Math.round(n*0.055));
+		collX=Math.round(n*0.58);
+		collY=Math.round(n*0.14);
+		collPrevX=collX;
+		collPrevY=collY;
+		colliderId=sim.addCollider({shape:"circle",x:collX,y:collY,radius:collR,vx:0,vy:0});
+		syncColliderUi();
+	}
+	function clearCollider(){
+		if(!sim||colliderId<0)return;
+		sim.removeCollider(colliderId);
+		colliderId=-1;
+		collDrag=false;
+		collPtrId=-1;
+		syncColliderUi();
+	}
+	function syncColliderUi(){
+		const btn=$("toggle-collider");
+		if(btn)setText(btn,colliderId>=0?"Remove circle collider":"Spawn circle collider");
+		const st=$("collider-status");
+		if(st){
+			setText(st,colliderId>=0
+				?("r="+Math.round(collR)+" @ "+Math.round(collX)+","+Math.round(collY)+" (drag disc)")
+				:"0 active");
+		}
+	}
+	function attachColliderDrag(canvas){
+		function pointerToCellX(e,rect){
+			const w=rect.width>0?rect.width:1;
+			return clamp(((e.clientX-rect.left)/w)*sim.params.N,collR,sim.params.N-collR);
+		}
+		function pointerToCellY(e,rect){
+			const h=rect.height>0?rect.height:1;
+			return clamp((1-(e.clientY-rect.top)/h)*sim.params.N,collR,sim.params.N-collR);
+		}
+		function stopDrag(){
+			if(!collDrag)return;
+			const pid=collPtrId;
+			collDrag=false;
+			collPtrId=-1;
+			collPrevX=collX;
+			collPrevY=collY;
+			if(colliderId>=0&&sim)sim.moveCollider(colliderId,collX,collY,0,0);
+			if(pid>=0&&canvas.hasPointerCapture&&canvas.hasPointerCapture(pid)){
+				try{canvas.releasePointerCapture(pid);}catch(_){}
+			}
+			syncColliderUi();
+		}
+		canvas.addEventListener("pointerdown",e=>{
+			if(!sim||colliderId<0)return;
+			if(e.button!==undefined&&e.button!==0)return;
+			const rect=canvas.getBoundingClientRect();
+			const w=rect.width>0?rect.width:1,h=rect.height>0?rect.height:1;
+			const px=((e.clientX-rect.left)/w)*sim.params.N;
+			const py=(1-(e.clientY-rect.top)/h)*sim.params.N;
+			const dx=px-collX,dy=py-collY;
+			const hitR=collR+3;
+			if(dx*dx+dy*dy>hitR*hitR)return;
+			e.preventDefault();
+			if(e.stopImmediatePropagation)e.stopImmediatePropagation();
+			collDrag=true;
+			collPtrId=e.pointerId!==undefined?e.pointerId:1;
+			collX=clamp(px,collR,sim.params.N-collR);
+			collY=clamp(py,collR,sim.params.N-collR);
+			collPrevX=collX;
+			collPrevY=collY;
+			sim.moveCollider(colliderId,collX,collY,0,0);
+			if(canvas.setPointerCapture&&e.pointerId!==undefined){
+				try{canvas.setPointerCapture(e.pointerId);}catch(_){}
+			}
+			canvas.focus();
+		});
+		canvas.addEventListener("pointermove",e=>{
+			if(!collDrag||(e.pointerId!==undefined&&e.pointerId!==collPtrId))return;
+			e.preventDefault();
+			if(e.stopImmediatePropagation)e.stopImmediatePropagation();
+			const rect=canvas.getBoundingClientRect();
+			collX=pointerToCellX(e,rect);
+			collY=pointerToCellY(e,rect);
+			if(sim&&sim.paused&&colliderId>=0)sim.moveCollider(colliderId,collX,collY,0,0);
+		});
+		canvas.addEventListener("pointerup",e=>{
+			if(!collDrag||(e.pointerId!==undefined&&e.pointerId!==collPtrId))return;
+			stopDrag();
+		});
+		canvas.addEventListener("pointercancel",e=>{
+			if(!collDrag||(e.pointerId!==undefined&&e.pointerId!==collPtrId))return;
+			stopDrag();
+		});
+		canvas.addEventListener("lostpointercapture",stopDrag);
+		window.addEventListener("blur",stopDrag);
 	}
 	function buildProbeRows(){
 		const body=$("probe-body");
@@ -72,6 +174,7 @@
 		select.addEventListener("change",()=>{
 			sim.reset(select.value);
 			sim.singleStep();
+			setText($("status"),"N="+sim.params.N+" · "+sim.params.scenario+" · right-click to probe");
 		});
 		$("pause").addEventListener("click",()=>{
 			sim.paused=!sim.paused;
@@ -89,6 +192,13 @@
 				p.row.hidden=true;
 			}
 		});
+		const toggleColl=$("toggle-collider");
+		if(toggleColl){
+			toggleColl.addEventListener("click",()=>{
+				if(colliderId>=0)clearCollider();
+				else spawnCollider();
+			});
+		}
 		const toggleEmit=$("toggle-emitters");
 		if(toggleEmit){
 			toggleEmit.addEventListener("click",()=>{
@@ -177,16 +287,41 @@
 		meter.motion.textContent="maxVel="+fmt(stats.motion.maxVel,0)+" maxDiv="+fmt(stats.motion.maxDiv,2);
 		meter.perf.textContent="sim/s="+sim.perf.simHz.toFixed(0)+" · substeps="+sim.substeps+
 			" · queue="+sim.perf.queueMs.toFixed(1)+" ms";
-		// the space key toggles the same flag, so the button follows sim.paused
-		// instead of remembering what it last clicked
+		// keys (space, [, ], n) mutate engine state directly; sync controls at 5 Hz
 		setText($("pause"),sim.paused?"Resume":"Pause");
+		const scenarioSel=$("scenario");
+		if(scenarioSel&&scenarioSel.value!==sim.params.scenario)scenarioSel.value=sim.params.scenario;
+		setText($("status"),"N="+sim.params.N+" · "+sim.params.scenario+" · right-click to probe");
 		setText($("emitter-status"),sim.emitterCount()+" active");
+		syncColliderUi();
 		// the buttons follow cfg.viewMode, the one value every writer (keys, clicks) sets
 		for(let i=0;i<viewButtons.length;i++)viewButtons[i].classList.toggle("active",i===sim.params.viewMode);
+	}
+	function stepColliderDrag(dt){
+		if(!sim||colliderId<0)return;
+		if(sim.params.N!==collN){
+			const scale=sim.params.N/collN;
+			collN=sim.params.N;
+			collR=Math.max(4,Math.round(collR*scale));
+			collX=clamp(collX*scale,collR,collN-collR);
+			collY=clamp(collY*scale,collR,collN-collR);
+			collPrevX=collX;
+			collPrevY=collY;
+			sim.setCollider(colliderId,{x:collX,y:collY,radius:collR,vx:0,vy:0});
+			return;
+		}
+		if(!collDrag)return;
+		const invDt=dt>1e-3?1/Math.min(dt,0.1):60;
+		const vx=clamp((collX-collPrevX)*invDt,-COLLIDER_MAX_SPEED,COLLIDER_MAX_SPEED);
+		const vy=clamp((collY-collPrevY)*invDt,-COLLIDER_MAX_SPEED,COLLIDER_MAX_SPEED);
+		collPrevX=collX;
+		collPrevY=collY;
+		sim.moveCollider(colliderId,collX,collY,vx,vy);
 	}
 	function frame(now){
 		const dt=(now-last)/1000;
 		last=now;
+		stepColliderDrag(dt);
 		sim.update(dt);
 		if(sim.perf.error){
 			const panel=$("error-panel");
@@ -212,10 +347,14 @@
 			status.textContent="WebGPU unavailable - see the error panel";
 			return;
 		}
+		// register collider drag before attachInput so primary drags on the disc
+		// move the rigid body without triggering fluid paint/stir
+		attachColliderDrag(canvas);
 		sim.attachInput(canvas);
 		buildProbeRows();
 		viewButtons=buildControls();
 		metersInit();
+		spawnCollider();
 		canvas.addEventListener("contextmenu",e=>{
 			e.preventDefault();
 			const r=canvas.getBoundingClientRect();

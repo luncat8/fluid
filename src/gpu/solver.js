@@ -9,6 +9,7 @@
 		const coreSolver=Fluid.core.solver;
 		const coreProbes=Fluid.core.probes;
 		const coreEmitters=Fluid.core.emitters;
+		const coreColliders=Fluid.core.colliders;
 		let pool=fields.createPool(device,cfg.N,cfg.mgCoarsen);
 		const pipes=passes.createPipelines(device,format);
 		let groups=passes.makeBindGroups(device,pipes,pool);
@@ -31,6 +32,7 @@
 		let probeGeneration=0;
 		let probeFrame=0;
 		const emitterTable=coreEmitters?coreEmitters.create():null;
+		const colliderTable=coreColliders?coreColliders.create():null;
 		const emitLedgerZero=new Float32Array(stats.EMIT_LEDGER_LEN||20);
 		let paintInjM=0;
 		const emitInjKnown={m:0,dr:0,dg:0,db:0,E:0};
@@ -70,10 +72,17 @@
 			device.queue.writeBuffer(pool.mgParams,0,mgParamsArray);
 		}
 		function runPrimePhase(charge){
+			const needColl=!!(colliderTable&&(colliderTable.maskDirty||colliderTable.live>0||colliderTable.hasGpuMask));
+			if(needColl&&colliderTable.dirty)uploadColliders();
 			cfg.chargeLatent=charge?1:0;
 			writeParams();
 			const encoder=device.createCommandEncoder({label:"primePhase"});
 			const cpass=encoder.beginComputePass({label:"primePhase"});
+			if(needColl){
+				passes.encodeColliderMask(cpass,pool,pipes,groups);
+				colliderTable.maskDirty=false;
+				colliderTable.hasGpuMask=colliderTable.live>0;
+			}
 			passes.encodePrimePhase(cpass,pool,pipes,groups,state);
 			cpass.end();
 			device.queue.submit([encoder.finish()]);
@@ -147,15 +156,21 @@
 				thermal:{TMin:cfg.TAmb,TMax:cfg.TAmb,TMean:cfg.TAmb,kinetic:0,heatIn:0,heatOut:0}
 			};
 			writeMgParams();
-			runPrimePhase(false);
-			writeParams();
-			// a resize rebuilds the pool: the new probe/emitter buffers start zeroed, so
-			// the live tables have to be pushed again or active slots silently stop
+			// a resize rebuilds the pool: the new probe/emitter/collider buffers start zeroed,
+			// so the live tables have to be pushed again before primePhase or active slots stop
 			uploadProbes();
 			if(emitterTable){
 				coreEmitters.syncConfig(emitterTable,cfg,false);
 				uploadEmitters();
 			}
+			if(colliderTable){
+				coreColliders.syncConfig(colliderTable,cfg,false);
+				colliderTable.hasGpuMask=false;
+				colliderTable.maskDirty=colliderTable.live>0;
+				uploadColliders();
+			}
+			runPrimePhase(false);
+			writeParams();
 		}
 		function uploadProbes(){
 			device.queue.writeBuffer(pool.probes,0,probeTable.upload);
@@ -164,6 +179,89 @@
 			if(!emitterTable)return;
 			emitterTable.dirty=false;
 			device.queue.writeBuffer(pool.emitters,0,emitterTable.upload);
+		}
+		function uploadColliders(){
+			if(!colliderTable)return;
+			colliderTable.dirty=false;
+			device.queue.writeBuffer(pool.colliders,0,colliderTable.upload);
+		}
+		function addCollider(spec){
+			if(!colliderTable)return -1;
+			const id=coreColliders.add(colliderTable,cfg,spec);
+			if(id<0)return -1;
+			uploadColliders();
+			return id;
+		}
+		function moveCollider(id,x,y,vx,vy){
+			if(!colliderTable||!coreColliders.move(colliderTable,cfg,id,x,y,vx,vy))return false;
+			uploadColliders();
+			return true;
+		}
+		function setCollider(id,patch){
+			if(!colliderTable||!coreColliders.set(colliderTable,cfg,id,patch))return false;
+			uploadColliders();
+			return true;
+		}
+		function removeCollider(id){
+			if(!colliderTable||!coreColliders.remove(colliderTable,id))return false;
+			uploadColliders();
+			return true;
+		}
+		function colliderCount(){
+			return colliderTable?colliderTable.live:0;
+		}
+		function setObstacles(maskArray,w,h){
+			if(!coreColliders||!coreColliders.applyObstacleMask(flagsMirror,cfg.texW,cfg.texH,maskArray,w,h))return false;
+			fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+			runPrimePhase(false);
+			return true;
+		}
+		function paintObstacle(x,y,radius,kind){
+			if(!coreColliders||!Number.isFinite(x)||!Number.isFinite(y))return false;
+			const k=coreColliders.parsePaintKind(kind);
+			if(!k)return false;
+			const r=Math.min(cfg.N,Math.max(0.5,Number.isFinite(radius)&&radius>0?radius:(cfg.paintR||8)));
+			if(k==="wall"){
+				if(!coreColliders.paintWallDisc(flagsMirror,cfg.texW,cfg.texH,x,y,r,false))return false;
+				fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+				runPrimePhase(false);
+				return true;
+			}
+			if(k==="solid"){
+				cfg.paintX=x;cfg.paintY=y;cfg.paintW=r*r;cfg.paintH=1;
+				cfg.chargeLatent=0;
+				writeParams();
+				const encoder=device.createCommandEncoder({label:"paintSolid"});
+				const cpass=encoder.beginComputePass({label:"paintSolid"});
+				passes.encodePaintSolid(cpass,pool,pipes,groups,state);
+				passes.encodePrimePhase(cpass,pool,pipes,groups,state);
+				cpass.end();
+				device.queue.submit([encoder.finish()]);
+				cfg.paintX=0;cfg.paintY=0;cfg.paintW=0;cfg.paintH=0;
+				cfg.chargeLatent=1;
+				return true;
+			}
+			if(!coreColliders.paintWallDisc(flagsMirror,cfg.texW,cfg.texH,x,y,r,true))return false;
+			fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
+			const needColl=!!(colliderTable&&(colliderTable.maskDirty||colliderTable.live>0||colliderTable.hasGpuMask));
+			if(needColl&&colliderTable.dirty)uploadColliders();
+			cfg.paintX=x;cfg.paintY=y;cfg.paintW=r*r;cfg.paintH=-1;
+			cfg.chargeLatent=0;
+			writeParams();
+			const encoder=device.createCommandEncoder({label:"paintErase"});
+			const cpass=encoder.beginComputePass({label:"paintErase"});
+			if(needColl){
+				passes.encodeColliderMask(cpass,pool,pipes,groups);
+				colliderTable.maskDirty=false;
+				colliderTable.hasGpuMask=colliderTable.live>0;
+			}
+			passes.encodePaintSolid(cpass,pool,pipes,groups,state);
+			passes.encodePrimePhase(cpass,pool,pipes,groups,state);
+			cpass.end();
+			device.queue.submit([encoder.finish()]);
+			cfg.paintX=0;cfg.paintY=0;cfg.paintW=0;cfg.paintH=0;
+			cfg.chargeLatent=1;
+			return true;
 		}
 		function addEmitter(spec){
 			if(!emitterTable)return -1;
@@ -191,7 +289,7 @@
 			return emitterTable?emitterTable.live:0;
 		}
 		function addProbe(x,y){
-			const id=coreProbes.add(probeTable,cfg,x,y);
+			const id=coreProbes.add(probeTable,cfg,x,y,frameCount);
 			if(id<0)return -1;
 			uploadProbes();
 			return id;
@@ -224,6 +322,7 @@
 			passes.encodePrimePhase(cpass,pool,pipes,groups,state);
 			cpass.end();
 			device.queue.submit([encoder.finish()]);
+			cfg.paintX=0;cfg.paintY=0;cfg.paintW=0;cfg.paintH=0;
 			const t=coreSolver.patchTotals(patch);
 			paintInjM+=t.m;
 			ledger.injectedM+=t.m;ledger.injectedDr+=t.dr;ledger.injectedDg+=t.dg;ledger.injectedDb+=t.db;ledger.injectedE+=t.E;
@@ -235,13 +334,13 @@
 			if(!patch)return;
 			for(let y=0;y<patch.h;y++){
 				for(let x=0;x<patch.w;x++){
+					const op=patch.flagsPatch[(x+y*patch.w)*4];
+					if(op===0)continue;
 					const gi=((patch.x0+x)+(patch.y0+y)*cfg.texW)*4;
-					const pi=(x+y*patch.w)*4;
-					flagsMirror[gi]=patch.flagsPatch[pi];
+					flagsMirror[gi]=op===2?0:1;
 				}
 			}
 			fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
-			fields.writeTextureRect(device,pool.flagsTmp,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
 			runPrimePhase(false);
 		}
 		function frame(dts,substeps,needStats){
@@ -249,8 +348,11 @@
 			const needBuoy=buoy.state.active&&(frameCount%Math.max(1,cfg.buoySampleEvery)===0);
 			const needProbe=probeTable.live>0&&(frameCount%Math.max(1,cfg.probeEvery)===0);
 			if(emitterTable&&(coreEmitters.syncConfig(emitterTable,cfg,false)||emitterTable.dirty))uploadEmitters();
+			if(colliderTable&&(coreColliders.syncConfig(colliderTable,cfg,false)||colliderTable.dirty))uploadColliders();
 			const scalarEmit=!!(emitterTable&&emitterTable.scalarCount>0);
 			const massDrainEmit=!!(emitterTable&&emitterTable.massDrainCount>0);
+			const needCollMask=!!(colliderTable&&(colliderTable.maskDirty||(colliderTable.live===0&&colliderTable.hasGpuMask)));
+			const movingColl=!!(colliderTable&&colliderTable.movingCount>0);
 			cfg.dt=dts;
 			cfg.substeps=substeps;
 			cfg.frame=frameCount;
@@ -266,10 +368,15 @@
 			const encoder=device.createCommandEncoder({label:"frame"});
 			if(profiling){
 				prof.beginFrame(substeps,frameCount+1);
+				if(needCollMask){
+					passes.encodeColliderMask(prof.pass(encoder,PROFILE_GROUP.vel,"vel"),pool,pipes,groups);
+					colliderTable.maskDirty=false;
+					colliderTable.hasGpuMask=colliderTable.live>0;
+				}
 				for(let s=0;s<substeps;s++){
 					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
-						needStats&&s===substeps-1,cfg.advectMac>0,cfg.fusePasses>0,scalarEmit,massDrainEmit);
+						needStats&&s===substeps-1,cfg.advectMac>0,cfg.fusePasses>0,scalarEmit,massDrainEmit,movingColl);
 				}
 				if(needStats||needBuoy||needProbe){
 					const cp=prof.pass(encoder,PROFILE_GROUP.stats,"stats");
@@ -281,10 +388,15 @@
 				prof.closePass();
 			}else{
 				const cpass=encoder.beginComputePass({label:"sim"});
+				if(needCollMask){
+					passes.encodeColliderMask(cpass,pool,pipes,groups);
+					colliderTable.maskDirty=false;
+					colliderTable.hasGpuMask=colliderTable.live>0;
+				}
 				for(let s=0;s<substeps;s++){
 					passes.encodeStep(cpass,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
-						needStats&&s===substeps-1,cfg.advectMac>0,cfg.fusePasses>0,scalarEmit,massDrainEmit);
+						needStats&&s===substeps-1,cfg.advectMac>0,cfg.fusePasses>0,scalarEmit,massDrainEmit,movingColl);
 				}
 				if(needStats){
 					passes.encodeStats(cpass,pool,pipes,groups,state);
@@ -335,9 +447,16 @@
 			timeAcc+=dts*substeps;
 		}
 		function renderOnly(){
+			if(colliderTable&&(coreColliders.syncConfig(colliderTable,cfg,false)||colliderTable.dirty))uploadColliders();
+			const needCollMask=!!(colliderTable&&(colliderTable.maskDirty||(colliderTable.live===0&&colliderTable.hasGpuMask)));
 			writeParams();
 			const encoder=device.createCommandEncoder({label:"renderOnly"});
 			const cpass=encoder.beginComputePass({label:"display"});
+			if(needCollMask){
+				passes.encodeColliderMask(cpass,pool,pipes,groups);
+				colliderTable.maskDirty=false;
+				colliderTable.hasGpuMask=colliderTable.live>0;
+			}
 			passes.encodeDisplay(cpass,pool,pipes,groups,state);
 			cpass.end();
 			const view=context.getCurrentTexture().createView();
@@ -521,7 +640,9 @@
 			canvas.height=newN;
 			api.pool=pool;
 			api.flagsMirror=flagsMirror;
+			coreProbes.syncConfig(probeTable,cfg);
 			if(emitterTable)coreEmitters.syncConfig(emitterTable,cfg,true);
+			if(colliderTable)coreColliders.syncConfig(colliderTable,cfg,true);
 			reset();
 			renderOnly();
 		}
@@ -530,9 +651,10 @@
 			if(prof)prof.destroy();
 		}
 		reset();
-		const api={pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollReadback,getStats,getProfile,buoy,resize,destroy,flagsMirror,
+		const api={pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,setObstacles,paintObstacle,pollReadback,getStats,getProfile,buoy,resize,destroy,flagsMirror,
 			probes:probeTable,addProbe,moveProbe,removeProbe,sampleProbe,
-			emitters:emitterTable,addEmitter,moveEmitter,setEmitter,removeEmitter,emitterCount};
+			emitters:emitterTable,addEmitter,moveEmitter,setEmitter,removeEmitter,emitterCount,
+			colliders:colliderTable,addCollider,moveCollider,setCollider,removeCollider,colliderCount};
 		return api;
 	}
 	Fluid.gpu.solver={create:createSolver};

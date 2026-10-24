@@ -19,7 +19,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 for (const file of [
 	"src/core/config.js", "src/core/grid.js", "src/core/stats.js",
-	"src/core/multigrid.js", "src/core/emitters.js", "src/core/solver.js", "src/core/probes.js", "src/gpu/shaders.js"
+	"src/core/multigrid.js", "src/core/emitters.js", "src/core/colliders.js", "src/core/solver.js", "src/core/probes.js", "src/gpu/shaders.js"
 ]) require(path.join(root, file));
 
 let reflectLib;
@@ -498,7 +498,178 @@ function runEmitterExecCases() {
 		"maxVelErr=" + maxVelErr.toExponential(2));
 }
 
+function runColliderExecCases() {
+	const cn = 16, cw = 18, ch = 18, wx = Math.ceil(cw / 8), wy = Math.ceil(ch / 8);
+	const rgba = a => ({ texture: [a.buffer], descriptor: { size: [cw, ch], format: "rgba32float" } });
+	const rg = a => ({ texture: [a.buffer], descriptor: { size: [cw, ch], format: "rg32float" } });
+	const u8x4 = a => ({ texture: [a.buffer], descriptor: { size: [cw, ch], format: "rgba8uint" } });
+	const ccfg = Object.assign({}, Fluid.core.config.defaults, {
+		N: cn, texW: cw, texH: ch, scenario: "still", dt: 1 / 120, frameDt: 1 / 60, vClamp: 120
+	});
+	Fluid.core.config.prepareScenario(ccfg);
+	const cs = Fluid.core.solver.create(ccfg);
+	const pa = Fluid.core.config.makeParamsArray();
+	Fluid.core.config.writeParams(pa, ccfg);
+	const uniform = { uniform: pa.buffer.slice(0) };
+
+	// seed a bit-1 static wall at (4,4) and a legacy 255 wall at (11,11)
+	cs.flags[(4 + 4 * cw) * 4] = 1;
+	cs.flags[(11 + 11 * cw) * 4] = 255;
+	const gpuFlags = Uint8Array.from(cs.flags);
+	const gpuFlagsTmp = new Uint8Array(cs.flags.length);
+
+	const cId = cs.addCollider({ shape: "circle", x: 5.5, y: 5.5, radius: 3.2, vx: 60, vy: -30 });
+	const rId = cs.addCollider({ shape: "rect", x: 9.0, y: 7.0, w: 5.0, h: 4.0, vx: -20, vy: 150 });
+	cs.updateColliderMask();
+
+	new WgslExec(WgslParser.Parse(PS + sh.colliderMask))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: { 0: uniform, 1: cs.colliderTable.upload.buffer.slice(0), 2: u8x4(gpuFlags), 3: u8x4(gpuFlagsTmp) }
+		});
+	new WgslExec(WgslParser.Parse(PS + sh.copyFlags))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: { 0: uniform, 1: u8x4(gpuFlagsTmp), 2: u8x4(gpuFlags) }
+		});
+	let maskDiffs1 = 0, newlyCount = 0;
+	for (let i = 0; i < cs.flags.length; i++) {
+		if (gpuFlags[i] !== cs.flags[i]) maskDiffs1++;
+		if ((i & 3) === 0 && gpuFlags[i] !== 255 && (gpuFlags[i] & 4) !== 0) newlyCount++;
+	}
+
+	// 6b. colliderVel exec with overlapping circle + rect, static wall, frozen cell, and vClamp
+	const frozenIdx = (8 + 7 * cw) * 4;
+	cs.flags[frozenIdx + 2] = 1;
+	gpuFlags[frozenIdx + 2] = 1;
+	const curVel = grid.curBuf(cs.vel);
+	for (let i = 0; i < curVel.length; i += 2) {
+		curVel[i] = ((i * 7) % 19) - 9;
+		curVel[i + 1] = ((i * 11) % 23) - 11;
+	}
+	const velBefore = Float32Array.from(curVel);
+	cs.imprintColliders();
+	const cpuVel = Float32Array.from(grid.curBuf(cs.vel));
+	const gpuVelRg = new Float32Array(velBefore.length);
+	new WgslExec(WgslParser.Parse(PS + sh.colliderVel))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: {
+				0: uniform,
+				1: cs.colliderTable.upload.buffer.slice(0),
+				2: rg(Float32Array.from(velBefore)),
+				3: u8x4(gpuFlags),
+				4: rg(gpuVelRg)
+			}
+		});
+	let maxVelErr = 0;
+	for (let i = 0; i < gpuVelRg.length; i++) {
+		const dv = Math.abs(gpuVelRg[i] - cpuVel[i]);
+		if (dv > maxVelErr) maxVelErr = dv;
+	}
+	check("colliderVel exec: WGSL matches CPU across overlapping circle+rect, vClamp, wall, and frozen guards",
+		maxVelErr < 1e-6, "maxVelErr=" + maxVelErr.toExponential(2));
+
+	// clear frozen test cell, run phaseEos to clear bit 4 -> 2, then move circle & remove rect
+	cs.flags[frozenIdx + 2] = 0;
+	gpuFlags[frozenIdx + 2] = 0;
+	cs.phaseEos();
+	const gpuFlagsAfterEos = new Uint8Array(gpuFlags.length);
+	const gpuS = new Float32Array(cw * ch * 4);
+	const gpuSPrev = new Float32Array(cw * ch * 4);
+	const gpuAccumPrev = new Float32Array(cw * ch * 2);
+	const gpuAccumOut = new Float32Array(cw * ch * 2);
+	const gpuThermOut = new Float32Array(cw * ch * 4);
+	new WgslExec(WgslParser.Parse(PS + sh.phaseEos))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: {
+				0: uniform,
+				1: rgba(Float32Array.from(grid.curBuf(cs.mass))),
+				2: rgba(Float32Array.from(grid.curBuf(cs.therm))),
+				3: rg(Float32Array.from(grid.curBuf(cs.vel))),
+				4: u8x4(gpuFlags),
+				5: rgba(gpuSPrev),
+				6: rg(gpuAccumPrev),
+				7: rgba(gpuThermOut),
+				8: u8x4(gpuFlagsAfterEos),
+				9: rgba(gpuS),
+				10: rg(gpuAccumOut)
+			}
+		}, { constants: { APPLY_SOURCES: 0 } });
+	gpuFlags.set(gpuFlagsAfterEos);
+	cs.moveCollider(cId, 7.5, 6.0, 10, 0);
+	cs.removeCollider(rId);
+	cs.updateColliderMask();
+	new WgslExec(WgslParser.Parse(PS + sh.colliderMask))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: { 0: uniform, 1: cs.colliderTable.upload.buffer.slice(0), 2: u8x4(gpuFlags), 3: u8x4(gpuFlagsTmp) }
+		});
+	new WgslExec(WgslParser.Parse(PS + sh.copyFlags))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: { 0: uniform, 1: u8x4(gpuFlagsTmp), 2: u8x4(gpuFlags) }
+		});
+	let maskDiffs2 = 0;
+	for (let i = 0; i < cs.flags.length; i++) {
+		if (gpuFlags[i] !== cs.flags[i]) maskDiffs2++;
+	}
+	check("colliderMask + copyFlags + phaseEos exec: byte-exact WGSL/CPU flags lifecycle incl. static 1 & 255",
+		maskDiffs1 === 0 && maskDiffs2 === 0 && newlyCount > 0 &&
+		(gpuFlags[(4 + 4 * cw) * 4] & 1) === 1 && gpuFlags[(11 + 11 * cw) * 4] === 255,
+		"diffs=" + maskDiffs1 + "/" + maskDiffs2 + " newlyOcc=" + newlyCount);
+
+	// 6c. paintSolid exec: freeze (+1) and thaw (-1) parity against CPU paintSolid
+	const mCur = grid.curBuf(cs.mass);
+	mCur[(6 + 6 * cw) * 4 + 3] = 0; // vacuum cell guard
+	const thermBeforeFreeze = Float32Array.from(grid.curBuf(cs.therm));
+	cs.paintSolid(6.0, 6.0, 3.5, 1);
+	cs.phaseEos();
+	const cpuThermFreeze = Float32Array.from(grid.curBuf(cs.therm));
+	pa[Fluid.core.config.paramsOff.paintX] = 6.0;
+	pa[Fluid.core.config.paramsOff.paintY] = 6.0;
+	pa[Fluid.core.config.paramsOff.paintW] = 3.5 * 3.5;
+	pa[Fluid.core.config.paramsOff.paintH] = 1.0;
+	const gpuThermFreeze = new Float32Array(thermBeforeFreeze.length);
+	new WgslExec(WgslParser.Parse(PS + sh.paintSolid))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: {
+				0: { uniform: pa.buffer.slice(0) },
+				1: rgba(Float32Array.from(mCur)),
+				2: rgba(thermBeforeFreeze),
+				3: u8x4(Uint8Array.from(cs.flags)),
+				4: rgba(gpuThermFreeze)
+			}
+		});
+	let maxFreezeErr = 0;
+	for (let i = 0; i < cpuThermFreeze.length; i++) {
+		const d = Math.abs(gpuThermFreeze[i] - cpuThermFreeze[i]);
+		if (d > maxFreezeErr) maxFreezeErr = d;
+	}
+	const flagsFrozen = Uint8Array.from(cs.flags);
+	const thermBeforeThaw = Float32Array.from(grid.curBuf(cs.therm));
+	cs.paintSolid(6.0, 6.0, 4.0, -1);
+	const cpuThermThaw = Float32Array.from(grid.curBuf(cs.therm));
+	pa[Fluid.core.config.paramsOff.paintW] = 4.0 * 4.0;
+	pa[Fluid.core.config.paramsOff.paintH] = -1.0;
+	const gpuThermThaw = new Float32Array(thermBeforeThaw.length);
+	new WgslExec(WgslParser.Parse(PS + sh.paintSolid))
+		.dispatchWorkgroups("main", [wx, wy], {
+			0: {
+				0: { uniform: pa.buffer.slice(0) },
+				1: rgba(Float32Array.from(mCur)),
+				2: rgba(thermBeforeThaw),
+				3: u8x4(flagsFrozen),
+				4: rgba(gpuThermThaw)
+			}
+		});
+	let maxThawErr = 0;
+	for (let i = 0; i < cpuThermThaw.length; i++) {
+		const d = Math.abs(gpuThermThaw[i] - cpuThermThaw[i]);
+		if (d > maxThawErr) maxThawErr = d;
+	}
+	check("paintSolid exec: WGSL matches CPU across solid freeze (+1) and erase thaw (-1) + wall/vacuum guards",
+		maxFreezeErr < 1e-3 && maxThawErr < 1e-3,
+		"freezeErr=" + maxFreezeErr.toExponential(2) + " thawErr=" + maxThawErr.toExponential(2));
+}
+
 runEmitterExecCases();
+runColliderExecCases();
 
 console.log(failures ? "FAILURES: " + failures : "ALL WGSL-EXEC CHECKS PASSED");
 process.exit(failures ? 1 : 0);

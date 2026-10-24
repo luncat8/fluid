@@ -230,7 +230,7 @@
 		for(let i=0;i<MAX;i++){
 			slots[i]={
 				active:false,enabled:true,kind:KIND_NONE,
-				x:0,y:0,radius:8,value:0,
+				x:0,y:0,radius:8,value:0,hasValue:false,
 				dr:0.95,dg:0.28,db:0.20,
 				dirMode:DIR_DEFAULT,dirX:0,dirY:1,angle:Math.PI*0.5,
 				target:0
@@ -247,6 +247,7 @@
 	}
 	function resetSlotDefaults(s){
 		s.enabled=true;
+		s.hasValue=false;
 		s.dr=0.95;s.dg=0.28;s.db=0.20;
 		s.dirMode=DIR_DEFAULT;s.dirX=0;s.dirY=1;s.angle=Math.PI*0.5;
 		s.target=0;
@@ -268,7 +269,8 @@
 		s.y=clampCoord(cfg,spec.y);
 		s.radius=clampRadius(cfg,spec.radius);
 		applyDirection(s,spec,true);
-		const rawVal=spec.value!==undefined?spec.value:defaultValue(cfg,kind,s.dirMode);
+		s.hasValue=spec.value!==undefined&&Number.isFinite(spec.value);
+		const rawVal=s.hasValue?spec.value:defaultValue(cfg,kind,s.dirMode);
 		s.value=Number.isFinite(rawVal)?(kind===KIND_MOMENTUM?rawVal:Math.max(0,rawVal)):0;
 		if(spec.enabled!==undefined)s.enabled=Boolean(spec.enabled);
 		if(spec.target!==undefined)s.target=Number.isFinite(spec.target)&&spec.target>0?spec.target:0;
@@ -302,7 +304,10 @@
 		if(patch.radius!==undefined&&Number.isFinite(patch.radius))s.radius=clampRadius(cfg,patch.radius);
 		applyDirection(s,patch,false);
 		if(patch.value!==undefined&&Number.isFinite(patch.value)){
+			s.hasValue=true;
 			s.value=s.kind===KIND_MOMENTUM?patch.value:Math.max(0,patch.value);
+		}else if(!s.hasValue){
+			s.value=defaultValue(cfg,s.kind,s.dirMode);
 		}else if(s.kind!==KIND_MOMENTUM&&s.value<0){
 			s.value=0;
 		}

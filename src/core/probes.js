@@ -39,7 +39,7 @@
 			sampledFrame:-1,
 			samples:0
 		};
-		for(let i=0;i<MAX;i++)table.slots[i]={active:false,x:0,y:0};
+		for(let i=0;i<MAX;i++)table.slots[i]={active:false,x:0,y:0,bornFrame:-1};
 		return table;
 	}
 	// probes live in cell coordinates, the same space as the buoy rectangle; the
@@ -58,11 +58,12 @@
 		table.upload[b+P_ACTIVE]=active?1:0;
 		table.upload[0]=table.live;
 	}
-	function add(table,cfg,x,y){
+	function add(table,cfg,x,y,bornFrame){
 		for(let i=0;i<MAX;i++){
 			if(table.slots[i].active)continue;
 			table.live++;
 			setSlot(table,i,clampCoord(cfg,x),clampCoord(cfg,y),true);
+			table.slots[i].bornFrame=bornFrame!==undefined?Math.max(bornFrame,table.sampledFrame):table.sampledFrame;
 			table.upload[0]=table.live;
 			return i;
 		}
@@ -79,7 +80,17 @@
 		if(!s||!s.active)return false;
 		table.live--;
 		setSlot(table,id,0,0,false);
+		s.bornFrame=-1;
 		table.upload[0]=table.live;
+		return true;
+	}
+	function syncConfig(table,cfg){
+		if(table.live===0)return false;
+		for(let i=0;i<MAX;i++){
+			const s=table.slots[i];
+			if(!s.active)continue;
+			setSlot(table,i,clampCoord(cfg,s.x),clampCoord(cfg,s.y),true);
+		}
 		return true;
 	}
 	// a map is in flight across a reset or resize: the numbers belong to the old
@@ -87,6 +98,7 @@
 	function invalidate(table){
 		table.sampledFrame=-1;
 		table.samples=0;
+		for(let i=0;i<MAX;i++)table.slots[i].bornFrame=-1;
 	}
 	function ingest(table,raw,frame){
 		table.raw.set(raw);
@@ -102,7 +114,7 @@
 	// or has never been read back; a caller that ignores the age is reading stale data.
 	function sample(table,cfg,frame,id,out){
 		const s=table.slots[id];
-		if(!s||!s.active||table.sampledFrame<0){
+		if(!s||!s.active||table.sampledFrame<0||table.sampledFrame<=s.bornFrame){
 			out.valid=false;
 			out.id=id;
 			return false;
@@ -150,7 +162,7 @@
 		out.valid=true;
 		return true;
 	}
-	Fluid.core.probes={create,add,move,remove,invalidate,ingest,sample,sampleCpu,makeSample,
+	Fluid.core.probes={create,add,move,remove,syncConfig,invalidate,ingest,sample,sampleCpu,makeSample,
 		MAX,STRIDE,HEADER,LEN,P_X,P_Y,P_M,P_DR,P_DG,P_DB,P_E,P_U,P_V,P_P,P_ACTIVE,slotBase};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.probes;
 })(globalThis);

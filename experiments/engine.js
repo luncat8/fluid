@@ -14,6 +14,7 @@ require(path.join(root, "src/core/stats.js"));
 require(path.join(root, "src/core/solver.js"));
 require(path.join(root, "src/core/probes.js"));
 require(path.join(root, "src/core/emitters.js"));
+require(path.join(root, "src/core/colliders.js"));
 require(path.join(root, "src/core/buoy.js"));
 require(path.join(root, "src/core/pacing.js"));
 require(path.join(root, "src/gpu/device.js"));
@@ -201,6 +202,19 @@ async function testStatsAndProbes() {
 	sim.moveProbe(id0, 5, 6);
 	check(sim.removeProbe(id0) === true && sim.probeCount() === 1 && sim.sample(id0, sample) === false,
 		"moveProbe/removeProbe maintain the table and invalidate the removed id");
+	const idRecycled = sim.addProbe(12, 14);
+	const idFresh = sim.addProbe(22, 24);
+	check(idRecycled === 0 && idFresh === 2 &&
+		sim.sample(idRecycled, sample) === false && sample.valid === false &&
+		sim.sample(idFresh, sample) === false && sample.valid === false,
+		"a newly added or recycled probe refuses stale samples until a later readback completes");
+	for (let f = 0; f < 5; f++) {
+		sim.step(1 / 60);
+		await sim.pollReadback();
+		q.completeAll(); await flush(2);
+	}
+	check(sim.sample(idRecycled, sample) === true && sample.valid === true,
+		"later probe readback unlocks the newly added probe slot");
 	sim.destroy();
 }
 
@@ -233,6 +247,50 @@ async function testEmitters() {
 		"emitter methods become safe no-ops after destroy()");
 }
 
+async function testColliders() {
+	const { sim, m } = await makeSim({ substepsAuto: true });
+	const q = m.device.queue;
+	const C = Fluid.core.colliders;
+	const c0 = sim.addCollider({ shape: "circle", x: 20, y: 24, radius: 6, vx: 0, vy: 0 });
+	const c1 = sim.addCollider({ shape: "rect", x: 44, y: 36, w: 12, h: 8, vx: 0, vy: 0 });
+	check(c0 === 0 && c1 === 1 && sim.colliderCount() === 2 &&
+		sim.addCollider({ shape: "triangle", x: 10, y: 10, radius: 4 }) === -1 &&
+		sim.addCollider(null) === -1,
+		"addCollider assigns stable slot ids for circle/rect and rejects invalid specs",
+		"count=" + sim.colliderCount());
+	// fast collider drag raises step() substep count immediately via live peakSpeed
+	check(sim.moveCollider(c0, 26, 28, 240, -60) === true &&
+		sim.setCollider(c1, { w: 14, h: 10, vx: -30, vy: 40 }) === true &&
+		sim.moveCollider(99, 1, 1, 0, 0) === false &&
+		sim.setCollider(c1, { shape: "bad" }) === false,
+		"moveCollider/setCollider mutate slots in place and validate arguments");
+	const nsFast = sim.step(1 / 60);
+	q.completeAll();
+	check(nsFast > 1, "step() folds live collider peakSpeed into auto-CFL substeps immediately", "ns=" + nsFast);
+	const mask = new Uint8Array(8 * 8);
+	mask[9] = 1;
+	check(sim.setObstacles(mask, 8, 8) === true && sim.setObstacles(mask, 10, 10) === false &&
+		sim.paintObstacle(16, 16, 4, "wall") === true &&
+		sim.paintObstacle(32, 32, 4, "solid") === true &&
+		sim.paintObstacle(16, 16, 4, "erase") === true &&
+		sim.paintObstacle(16, 16, 4, "unknown") === false,
+		"setObstacles and paintObstacle(wall/solid/erase) validate inputs and update geometry");
+	sim.setGrid(128);
+	q.completeAll();
+	const raw = new Float32Array(sim.solver.pool.colliders._buf);
+	check(raw[0] === 2 && raw[C.slotBase(c0) + C.C_X] === 26 && raw[C.slotBase(c1) + C.C_P0] === 7,
+		"setGrid re-uploads live colliders into the rebuilt pool",
+		"live=" + raw[0] + " x0=" + raw[C.slotBase(c0) + C.C_X]);
+	check(sim.removeCollider(c0) === true && sim.colliderCount() === 1 && sim.removeCollider(c0) === false,
+		"removeCollider frees the slot and drops colliderCount");
+	sim.destroy();
+	check(sim.colliderCount() === 0 && sim.addCollider({ x: 8, y: 8, radius: 4 }) === -1 &&
+		sim.moveCollider(c1, 5, 5, 0, 0) === false && sim.setCollider(c1, { radius: 3 }) === false &&
+		sim.removeCollider(c1) === false && sim.setObstacles(mask, 8, 8) === false &&
+		sim.paintObstacle(8, 8, 3, "wall") === false,
+		"collider and obstacle methods become safe no-ops after destroy()");
+}
+
 async function testViewAndGrid() {
 	const { sim, m, canvas } = await makeSim({ substepsAuto: false });
 	let seen = -1;
@@ -259,7 +317,12 @@ async function testViewAndGrid() {
 	check(probeRaw[0] === 1 && probeRaw[base + Fluid.core.probes.P_X] === 32 && probeRaw[base + Fluid.core.probes.P_ACTIVE] === 1,
 		"setGrid re-uploads the live probe table into the rebuilt pool",
 		"count=" + probeRaw[0] + " x=" + probeRaw[base + Fluid.core.probes.P_X]);
+	const pHi = sim.addProbe(110, 115);
 	check(sim.setGrid(10) === 64, "setGrid clamps below the supported grid", "N=" + sim.params.N);
+	const probeShrunk = new Float32Array(sim.solver.pool.probes._buf);
+	const hiBase = Fluid.core.probes.slotBase(pHi);
+	check(probeShrunk[hiBase + Fluid.core.probes.P_X] === 64 && probeShrunk[hiBase + Fluid.core.probes.P_Y] === 64,
+		"shrinking setGrid clamps existing probe coordinates into [1, newN]");
 	check(sim.reset("cycle") === true && sim.params.scenario === "cycle" && sim.reset("nope") === false,
 		"reset(scenario) validates the name and restarts the solver");
 	sim.destroy();
@@ -458,14 +521,19 @@ class El {
 	}
 	getBoundingClientRect() { return { left: 0, top: 0, width: 100, height: 100 }; }
 	fire(type, props) {
-		for (const fn of (this.listeners[type] || []).slice()) fn(Object.assign({ preventDefault() {} }, props));
+		let stopped = false;
+		const ev = Object.assign({ preventDefault() {}, stopImmediatePropagation() { stopped = true; } }, props);
+		for (const fn of (this.listeners[type] || []).slice()) {
+			fn(ev);
+			if (stopped) break;
+		}
 	}
 }
 async function testDemoPage() {
 	const origWindow = globalThis.window, origDocument = globalThis.document;
 	const origRaf = globalThis.requestAnimationFrame, origCancel = globalThis.cancelAnimationFrame;
 	const els = {};
-	for (const id of ["c", "status", "error-panel", "scenario", "pause", "step", "reset", "clear-probes", "toggle-emitters", "emitter-status", "views", "probe-body", "meters"]) {
+	for (const id of ["c", "status", "error-panel", "scenario", "pause", "step", "reset", "clear-probes", "toggle-collider", "collider-status", "toggle-emitters", "emitter-status", "views", "probe-body", "meters"]) {
 		els[id] = new El(id === "c" ? "canvas" : "div");
 	}
 	const win = new El("window");
@@ -553,6 +621,33 @@ async function testDemoPage() {
 		els["toggle-emitters"].fire("click");
 		check(sim.emitterCount() === 0 && els["emitter-status"].textContent === "0 active",
 			"demo: second click removes all demo emitters cleanly");
+		// collider boot + pointer drag + toggle + hotkey UI sync
+		sim.paused = false;
+		check(sim.colliderCount() === 1, "demo: spawns a draggable circle collider on boot",
+			"colliders=" + sim.colliderCount());
+		const cSlot = sim.solver.colliders.slots[0];
+		const startClientX = (cSlot.x / sim.params.N) * 100;
+		const startClientY = (1 - cSlot.y / sim.params.N) * 100;
+		const paintBefore = sim.solver.getStats().ledger.injectedM;
+		els.c.fire("pointerdown", { button: 0, pointerId: 7, clientX: startClientX, clientY: startClientY });
+		els.c.fire("pointermove", { pointerId: 7, clientX: 72, clientY: 60 });
+		await frames(1);
+		const draggedVx = cSlot.vx;
+		els.c.fire("pointerup", { pointerId: 7 });
+		check(Math.round(cSlot.x) === Math.round(0.72 * sim.params.N) && draggedVx > 0 &&
+			cSlot.vx === 0 && sim.solver.getStats().ledger.injectedM === paintBefore,
+			"demo: dragging the circle collider moves it with live velocity and releases to 0",
+			"x=" + Math.round(cSlot.x) + " dragVx=" + draggedVx.toFixed(1));
+		els["toggle-collider"].fire("click");
+		check(sim.colliderCount() === 0 && els["collider-status"].textContent === "0 active",
+			"demo: toggle-collider removes the circle collider");
+		els["toggle-collider"].fire("click");
+		check(sim.colliderCount() === 1, "demo: toggle-collider respawns the circle collider");
+		win.fire("keydown", { key: "n", target: {}, repeat: false });
+		await frames(3);
+		check(els.scenario.value === sim.params.scenario && els.status.textContent.indexOf(sim.params.scenario) > 0,
+			"demo: refreshMeters syncs #scenario and #status after keyboard shortcuts",
+			els.status.textContent);
 		win.fire("pagehide");
 		check(sim.destroyed === true && m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0,
 			"demo: leaving the page destroys the engine and its pool",
@@ -573,6 +668,7 @@ async function testDemoPage() {
 	await testPacing();
 	await testStatsAndProbes();
 	await testEmitters();
+	await testColliders();
 	await testViewAndGrid();
 	await testInputLifecycle();
 	await testTeardown();

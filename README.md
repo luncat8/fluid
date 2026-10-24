@@ -24,16 +24,17 @@ phase scenarios (ice / cycle / jet / rain / arch). A small engine API (`Fluid.en
 wraps the solver for game loops: fixed-step pacing with one frame in flight, live
 tunables, stats snapshots, a 32-slot probe table for point queries, a 32-slot
 preallocated emitter table (`dye`, `heat`, `cold`, `momentum`, `drain`, `freeze`) with
-exact conservation-ledger closure, view and overlay control, and teardown that
-releases the pool.
+exact conservation-ledger closure, static obstacle masks/brushes plus a 32-slot moving
+collider table (circle and rectangle bodies with GPU mask deltas and face-velocity
+imprinting), view and overlay control, and teardown that releases the pool.
 
 ## Run
 
 - Directly: open `index.html` from disk (`file://`) in a WebGPU browser.
 - API example: open `examples/demo.html` from disk. It draws the whole page through the
-  public engine API only: scenario/view controls, conservation meters, a toggleable
-  6-emitter RGB + thermal + freeze + drain rig, and a probe table fed by right-clicking
-  the canvas.
+  public engine API only: scenario/view controls, conservation meters, a draggable circle
+  collider on the canvas, a toggleable 6-emitter RGB + thermal + freeze + drain rig, and
+  a probe table fed by right-clicking the canvas.
 - Or: `python3 run_index.py` (options: `port`, `--host`, `--no-open`, `--page`) and open
   `http://127.0.0.1:8000/index.html`. The server sends COOP/COEP headers for cross-origin
   isolation and finer browser timers; for the GPU diagnostic page run
@@ -85,8 +86,10 @@ const sample = Fluid.engine.makeProbeSample();
 const stats = Fluid.engine.makeStats();
 const id = sim.addProbe(128, 96);          // cell coordinates, +y up
 const jet = sim.addEmitter({ kind: "dye", x: 64, y: 32, radius: 8, value: 0.4, dye: [0.9, 0.2, 0.2] });
+const puck = sim.addCollider({ shape: "circle", x: 148, y: 36, radius: 14, vx: 0, vy: 0 });
 
 function frame(now) {
+	sim.moveCollider(puck, puckX, puckY, puckVx, puckVy);
 	sim.update((now - last) / 1000);         // accrue -> one fixed step -> render
 	if (sim.sample(id, sample)) {
 		// sample.m, sample.dr/dg/db, sample.T, sample.phase, sample.u/v, sample.p
@@ -106,6 +109,8 @@ function frame(now) {
 | `stats(out)` | fills `out` (or one internal object) with totals, expected totals, minima, motion, thermal, phase histogram and residual diagnostics. |
 | `addProbe(x,y)` / `moveProbe(id,x,y)` / `removeProbe(id)` / `sample(id,out)` | 32 stable slots, sampled on `params.probeEvery` frames and read back through the same one-map-in-flight path as the stats. A sample is stale by design: `out.age` bounds it, a move takes effect on the next sample, and `sample` returns false until the first readback or after a reset/resize. |
 | `addEmitter(spec)` / `moveEmitter(id,x,y)` / `setEmitter(id,patch)` / `removeEmitter(id)` / `emitterCount()` | 32 preallocated slots (`spec` copied at add/set time, zero per-frame allocation) across kinds `dye` (`value` mass/s, `dye: [r,g,b]`), `drain` (`value` mass/s), `heat` (`value` power/cell, optional `target` K cap), `cold` (`value` power/cell, liquid floor `> TMelt`), `freeze` (`value` power/cell, solid-ice floor `< TMelt` forcing `phi_l -> 0`), and `momentum` (`vx, vy` or `angle` + `value` accel). All mass, tracer and enthalpy changes close the conservation ledger. |
+| `setObstacles(maskArray,w,h)` / `paintObstacle(x,y,radius,kind)` | static geometry and obstacle brush in cell coordinates (`+y` up). `setObstacles` resamples `w×h` nonzero entries onto static wall cells in one texture upload while preserving live moving colliders; `paintObstacle` supports `"wall"` (static wall), `"solid"` (freezes open fluid to `PHASE_SOLID` and charges `heatOut`), and `"erase"` (clears static wall and thaws frozen ice back to liquid, charging `heatIn`). |
+| `addCollider(spec)` / `moveCollider(id,x,y,vx,vy)` / `setCollider(id,patch)` / `removeCollider(id)` / `colliderCount()` | 32 preallocated moving-collider slots (`shape: "circle"` with `radius`, or `shape: "rect"` with `w, h`; optional `vx, vy` in cells/s). Stationary colliders stamp their GPU mask once and add zero per-frame dispatches; moving colliders update the GPU mask delta and imprint rigid-body face velocities before projection without creating or deleting mass. Live collider speed feeds the auto-CFL substep policy immediately. |
 | `setViewMode(mode)` / `bindViewMode(fn)` / `setOverlay(flag)` | view mode has one writer per page: bind the DOM control and the engine delegates to it, otherwise it writes `params.viewMode`. |
 | `attachInput(element)` / `detachInput()` | pointer stir/paint and the simulation keys; detach removes every listener. |
 | `bindKeys(element)` / `detachKeys()` | optional keyboard-only binding for games that own pointer input (defaults omitted `element` to `window`); shortcuts attach to the target, route reset/resize through the engine, and detach without affecting pointer listeners. |
@@ -113,8 +118,8 @@ function frame(now) {
 | `destroy()` | detach input, destroy the pool (textures and buffers), drop the device reference. Safe to call twice. |
 
 `examples/demo.html` is the reference integration; `experiments/engine.js` is the headless
-contract for the same calls. Moving colliders, phase events and save/load are the next
-increment of `0.7.0-plan.md`.
+contract for the same calls. Save/load (`serialize`/`deserialize`), `onPhaseChange`
+batching and `experiments/api-test.html` are the remaining items of `0.7.0-plan.md`.
 
 ## Validation
 

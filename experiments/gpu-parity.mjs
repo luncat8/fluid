@@ -17,6 +17,7 @@ const modules = [
 	"src/core/solver.js",
 	"src/core/probes.js",
 	"src/core/emitters.js",
+	"src/core/colliders.js",
 	"src/core/buoy.js",
 	"src/gpu/shaders.js",
 	"src/gpu/fields.js",

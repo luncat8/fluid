@@ -84,6 +84,10 @@
 			limiterApply:comp("limiterApply",PS+sh.limiterApply),
 			paintMass:comp("paintMass",PS+sh.paintMass),
 			paintTherm:comp("paintTherm",PS+sh.paintTherm),
+			paintSolid:comp("paintSolid",PS+sh.paintSolid),
+			colliderMask:comp("colliderMask",PS+sh.colliderMask),
+			copyFlags:comp("copyFlags",PS+sh.copyFlags),
+			colliderVel:comp("colliderVel",PS+sh.colliderVel),
 			mgCoarsen:comp("mgCoarsen",PS+sh.mgCoarsen),
 			mgRestrict:comp("mgRestrict",PS+sh.mgRestrict),
 			mgZero:comp("mgZero",PS+sh.mgZero),
@@ -126,10 +130,11 @@
 		const limiterAView=viewRes(pool.limiterA);
 		const limiterBView=viewRes(pool.limiterB);
 		const groups={
-			forces:[],advectVel:[],macFwd:[],advectVelMac:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],advectScalar:[],
+			forces:[],advectVel:[],macFwd:[],advectVelMac:[],colliderVel:[],colliderMask:null,copyFlags:null,
+			rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],advectScalar:[],
 			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],applyEmitters:[],emitterTally:[],heatSources:[],
-		limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
-		poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],probeSample:[],render:null
+			limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],paintSolid:[],projRed:[],projBlack:[],
+			poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],probeSample:[],render:null
 		};
 		for(let mm=0;mm<3;mm++){
 			groups.phaseA[mm]=[];
@@ -138,6 +143,7 @@
 			groups.applyEmitters[mm]=[];
 			groups.emitterTally[mm]=[];
 			groups.heatSources[mm]=[];
+			groups.paintSolid[mm]=[];
 			const massV=viewRes(pool.mass.tex[mm]);
 			const massNextV=viewRes(pool.mass.tex[(mm+1)%3]);
 			for(let t=0;t<2;t++){
@@ -203,6 +209,13 @@
 					{binding:2,resource:tSrc},
 					{binding:3,resource:tDst},
 					{binding:4,resource:flagsTmpView}
+				]);
+				groups.paintSolid[mm][t]=bg(device,"paintSolid"+mm+t,pipes.paintSolid.getBindGroupLayout(0),[
+					{binding:0,resource:{buffer:pool.params}},
+					{binding:1,resource:massV},
+					{binding:2,resource:tSrc},
+					{binding:3,resource:flagsView},
+					{binding:4,resource:tDst}
 				]);
 			}
 		}
@@ -409,7 +422,25 @@
 				{binding:2,resource:flagsView},
 				{binding:3,resource:viewRes(vn)}
 			]);
+			groups.colliderVel[v]=bg(device,"colliderVel"+v,pipes.colliderVel.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:{buffer:pool.colliders}},
+				{binding:2,resource:viewRes(vv)},
+				{binding:3,resource:flagsView},
+				{binding:4,resource:viewRes(vn)}
+			]);
 		}
+		groups.colliderMask=bg(device,"colliderMask",pipes.colliderMask.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.params}},
+			{binding:1,resource:{buffer:pool.colliders}},
+			{binding:2,resource:flagsView},
+			{binding:3,resource:flagsTmpView}
+		]);
+		groups.copyFlags=bg(device,"copyFlags",pipes.copyFlags.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.params}},
+			{binding:1,resource:flagsTmpView},
+			{binding:2,resource:flagsView}
+		]);
 		const mgMassView=viewRes(pool.mgMass);
 		const mgFlagsView=viewRes(pool.mgFlags);
 		const mgDivView=viewRes(pool.mgDiv);
@@ -502,11 +533,20 @@
 		state.t=t;
 		state.v=1-v;
 	}
+	function encodeColliderMask(cpass,pool,pipes,groups){
+		const wx=pool.workgroupX,wy=pool.workgroupY;
+		cpass.setPipeline(pipes.colliderMask);
+		cpass.setBindGroup(0,groups.colliderMask);
+		cpass.dispatchWorkgroups(wx,wy);
+		cpass.setPipeline(pipes.copyFlags);
+		cpass.setBindGroup(0,groups.copyFlags);
+		cpass.dispatchWorkgroups(wx,wy);
+	}
 	// one substep in five segments; io threads the ping-pong indices through
 	// them so encodeStepProfiled can split passes at the segment boundaries
 	// (0.6.0 t1) without changing the dispatch sequence.
 	const stepIo={m:0,t:0,v:0};
-	function encodeVelAdv(cpass,pool,pipes,groups,io,macOn){
+	function encodeVelAdv(cpass,pool,pipes,groups,io,macOn,movingCollider){
 		const wx=pool.workgroupX,wy=pool.workgroupY;
 		cpass.setPipeline(pipes.forces);
 		cpass.setBindGroup(0,groups.forces[io.m][io.t][io.v]);
@@ -520,12 +560,18 @@
 			cpass.setBindGroup(0,groups.advectVelMac[io.v]);
 			cpass.dispatchWorkgroups(wx,wy);
 			io.v=1-io.v;
-			return;
+		}else{
+			cpass.setPipeline(pipes.advectVel);
+			cpass.setBindGroup(0,groups.advectVel[io.v]);
+			cpass.dispatchWorkgroups(wx,wy);
+			io.v=1-io.v;
 		}
-		cpass.setPipeline(pipes.advectVel);
-		cpass.setBindGroup(0,groups.advectVel[io.v]);
-		cpass.dispatchWorkgroups(wx,wy);
-		io.v=1-io.v;
+		if(movingCollider){
+			cpass.setPipeline(pipes.colliderVel);
+			cpass.setBindGroup(0,groups.colliderVel[io.v]);
+			cpass.dispatchWorkgroups(wx,wy);
+			io.v=1-io.v;
+		}
 	}
 	function encodeRhs(cpass,pool,pipes,groups,io){
 		cpass.setPipeline(pipes.rhs);
@@ -688,18 +734,18 @@
 		io.t=ts;
 		io.v=v;
 	}
-	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn,fuseOn,scalarEmit,massDrainEmit){
+	function encodeStep(cpass,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn,fuseOn,scalarEmit,massDrainEmit,movingCollider){
 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
-		encodeVelAdv(cpass,pool,pipes,groups,stepIo,macOn);
+		encodeVelAdv(cpass,pool,pipes,groups,stepIo,macOn,movingCollider);
 		encodeRhs(cpass,pool,pipes,groups,stepIo);
 		encodePressure(cpass,pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
 		encodeTransport(cpass,pool,pipes,groups,state,stepIo,fctOn,fuseOn);
 		encodePhaseChain(cpass,pool,pipes,groups,state,stepIo,fuseOn,scalarEmit,massDrainEmit);
 	}
-	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn,fuseOn,scalarEmit,massDrainEmit){
+	function encodeStepProfiled(encoder,prof,pool,pipes,groups,state,iters,fctOn,mgOn,mgPre,mgPost,mgCycles,captureResidual,macOn,fuseOn,scalarEmit,massDrainEmit,movingCollider){
 		const G=Fluid.gpu.profiler.GROUP;
 		stepIo.m=state.m;stepIo.t=state.t;stepIo.v=state.v;
-		encodeVelAdv(prof.pass(encoder,G.vel,"vel"),pool,pipes,groups,stepIo,macOn);
+		encodeVelAdv(prof.pass(encoder,G.vel,"vel"),pool,pipes,groups,stepIo,macOn,movingCollider);
 		encodeRhs(prof.pass(encoder,G.rhs,"rhs"),pool,pipes,groups,stepIo);
 		encodePressure(prof.pass(encoder,G.press,"press"),pool,pipes,groups,stepIo,iters,mgOn,mgPre,mgPost,mgCycles,captureResidual);
 		encodeTransport(prof.pass(encoder,G.trans,"trans"),pool,pipes,groups,state,stepIo,fctOn,fuseOn);
@@ -740,11 +786,18 @@
 		state.m=(state.m+1)%3;
 		state.t=1-state.t;
 	}
+	function encodePaintSolid(cpass,pool,pipes,groups,state){
+		const wx=pool.workgroupX,wy=pool.workgroupY;
+		cpass.setPipeline(pipes.paintSolid);
+		cpass.setBindGroup(0,groups.paintSolid[state.m][state.t]);
+		cpass.dispatchWorkgroups(wx,wy);
+		state.t=1-state.t;
+	}
 	function encodeRender(rpass,pipes,groups){
 		rpass.setPipeline(pipes.renderPipe);
 		rpass.setBindGroup(0,groups.render);
 		rpass.draw(3);
 	}
-	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeStep,encodeStepProfiled,encodeStats,encodeBuoySample,encodeProbeSample,encodeDisplay,encodePaint,encodeRender};
+	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeColliderMask,encodeStep,encodeStepProfiled,encodeStats,encodeBuoySample,encodeProbeSample,encodeDisplay,encodePaint,encodePaintSolid,encodeRender};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.passes;
 })(globalThis);

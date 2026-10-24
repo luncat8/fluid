@@ -247,12 +247,11 @@
 		const w=x1-x0+1,h=y1-y0+1;
 		if(w<=0||h<=0)return null;
 		const flagsPatch=new Uint8Array(w*h*4);
-		const v8=erase?0:255;
 		for(let y=0;y<h;y++){
 			for(let x=0;x<w;x++){
 				const dx=(x0+x-0.5)-px,dy=(y0+y-0.5)-py;
 				if(dx*dx+dy*dy>=r*r)continue;
-				flagsPatch[(x+y*w)*4]=v8;
+				flagsPatch[(x+y*w)*4]=erase?2:1;
 			}
 		}
 		return {x0,y0,w,h,flagsPatch};
@@ -292,6 +291,8 @@
 		let confW=null,confS=null,confFx=null,confFy=null;
 		const emitMod=Fluid.core.emitters;
 		const emitterTable=emitMod?emitMod.create():null;
+		const collMod=Fluid.core.colliders;
+		const colliderTable=collMod?collMod.create():null;
 		let mg=null;
 		if(cfg.useMultigrid && Fluid.core.multigrid){
 			mg=Fluid.core.multigrid.create(cfg,texW,texH,{
@@ -303,6 +304,10 @@
 		function isWall(x,y){
 			if(x<1||x>texW-2||y<1||y>texH-2)return true;
 			return flags[(x+y*texW)*4]>0;
+		}
+		function isStaticWall(x,y){
+			if(x<1||x>texW-2||y<1||y>texH-2)return true;
+			return (flags[(x+y*texW)*4]&1)>0;
 		}
 		function isFrozen(x,y){
 			if(x<1||x>texW-2||y<1||y>texH-2)return false;
@@ -316,6 +321,16 @@
 		}
 		function vBlocked(x,y){
 			return y<=1||y>=texH-1||isBlocked(x,y-1)||isBlocked(x,y);
+		}
+		function zeroBlockedVel(){
+			const vs=grid.curBuf(vel);
+			for(let y=1;y<texH-1;y++){
+				for(let x=1;x<texW-1;x++){
+					const vi=(x+y*texW)*2;
+					if(uBlocked(x,y))vs[vi]=0;
+					if(vBlocked(x,y))vs[vi+1]=0;
+				}
+			}
 		}
 		function reset(){
 			Fluid.core.config.prepareScenario(cfg);
@@ -334,6 +349,12 @@
 			diag.macLimit=0;diag.macClamp=0;
 			diag.velClamp=0;
 			if(emitterTable)emitMod.syncConfig(emitterTable,cfg,false);
+			if(colliderTable){
+				collMod.syncConfig(colliderTable,cfg,false);
+				colliderTable.hasGpuMask=false;
+				colliderTable.maskDirty=colliderTable.live>0;
+				if(colliderTable.maskDirty)updateColliderMask();
+			}
 			phaseEos(false);
 		}
 		function captureSolveResidual(){
@@ -872,6 +893,7 @@
 					sfield[i]=s.S;sfield[i+1]=s.phiL;sfield[i+2]=s.phiG;
 					const sat=s.S>=cfg.SMax||s.S<=-cfg.SMax;
 					if(sat)diag.sSaturated++;
+					if(flags[i]!==255)flags[i]=flags[i]&3;
 					flags[i+1]=s.phase;
 					const frozen=s.phiL<0.5&&s.phiG===0&&m>=cfg.mEps;
 					if(frozen&&flags[i+2]===0){
@@ -905,7 +927,7 @@
 						E=f32(E+faceExchange(ms,src,phaseScratch,x,y,x+1,y,m,E0,dt));
 						E=f32(E+faceExchange(ms,src,phaseScratch,x,y,x,y-1,m,E0,dt));
 						E=f32(E+faceExchange(ms,src,phaseScratch,x,y,x,y+1,m,E0,dt));
-						if(cfg.wallCool>0&&(isWall(x-1,y)||isWall(x+1,y)||isWall(x,y-1)||isWall(x,y+1))){
+						if(cfg.wallCool>0&&(isStaticWall(x-1,y)||isStaticWall(x+1,y)||isStaticWall(x,y-1)||isStaticWall(x,y+1))){
 							const dT=f32(src[i+1]-cfg.TAmb);
 							const C=f32(m*phaseScratch.c);
 							const dE=f32(f32(f32(f32(-cfg.wallCool)*dT)*C)*dt);
@@ -1082,6 +1104,208 @@
 				}
 			}
 		}
+		const collSampleA=new Float32Array(3),collSampleB=new Float32Array(3);
+		function hitColliderAt(colU,nSlots,px,py){
+			for(let s=0;s<nSlots;s++){
+				const b=16+s*16;
+				const shape=colU[b+2]|0;
+				if(shape===1){
+					const dx=f32(px-colU[b]),dy=f32(py-colU[b+1]);
+					if(f32(f32(dx*dx)+f32(dy*dy))<colU[b+3])return true;
+				}else if(shape===2){
+					if(Math.abs(f32(px-colU[b]))<=colU[b+3]&&Math.abs(f32(py-colU[b+1]))<=colU[b+4])return true;
+				}
+			}
+			return false;
+		}
+		function sampleColliderCell(colU,nSlots,cx,cy,out){
+			if(cx<1||cx>texW-2||cy<1||cy>texH-2){out[0]=0;out[1]=0;out[2]=0;return;}
+			const px=f32(cx-0.5),py=f32(cy-0.5);
+			let sx=0,sy=0,cnt=0;
+			for(let s=0;s<nSlots;s++){
+				const b=16+s*16;
+				const shape=colU[b+2]|0;
+				if(shape===1){
+					const dx=f32(px-colU[b]),dy=f32(py-colU[b+1]);
+					if(f32(f32(dx*dx)+f32(dy*dy))<colU[b+3]){
+						sx=f32(sx+colU[b+5]);sy=f32(sy+colU[b+6]);cnt++;
+					}
+				}else if(shape===2){
+					if(Math.abs(f32(px-colU[b]))<=colU[b+3]&&Math.abs(f32(py-colU[b+1]))<=colU[b+4]){
+						sx=f32(sx+colU[b+5]);sy=f32(sy+colU[b+6]);cnt++;
+					}
+				}
+			}
+			if(cnt>0){
+				const inv=f32(1/cnt);
+				out[0]=f32(sx*inv);out[1]=f32(sy*inv);out[2]=1;
+			}else{
+				out[0]=0;out[1]=0;out[2]=0;
+			}
+		}
+		function hardBlockedCell(cx,cy){
+			if(cx<1||cx>texW-2||cy<1||cy>texH-2)return true;
+			const fi=(cx+cy*texW)*4;
+			return (flags[fi]&1)!==0||flags[fi+2]>0;
+		}
+		function updateColliderMask(){
+			if(!colliderTable)return;
+			collMod.syncConfig(colliderTable,cfg,false);
+			if(!colliderTable.maskDirty&&!(colliderTable.live===0&&colliderTable.hasGpuMask))return;
+			const colU=colliderTable.upload;
+			const nSlots=colU[1]|0;
+			for(let x=0;x<texW;x++){
+				flags[x*4]=0;
+				flags[(x+(texH-1)*texW)*4]=0;
+			}
+			for(let y=1;y<texH-1;y++){
+				flags[(y*texW)*4]=0;
+				flags[((texW-1)+y*texW)*4]=0;
+				const py=f32(y-0.5);
+				for(let x=1;x<texW-1;x++){
+					const px=f32(x-0.5);
+					const curColl=nSlots>0&&hitColliderAt(colU,nSlots,px,py);
+					const gi=(x+y*texW)*4;
+					const oldR=flags[gi];
+					const legacyWall=oldR===255;
+					const staticBit=oldR&1;
+					const wasStepped=!legacyWall&&((oldR&2)!==0)&&((oldR&4)===0);
+					const newlyOcc=curColl&&!wasStepped;
+					flags[gi]=legacyWall?255:(staticBit|(curColl?2:0)|(newlyOcc?4:0));
+				}
+			}
+			colliderTable.maskDirty=false;
+			colliderTable.hasGpuMask=colliderTable.live>0;
+		}
+		function imprintColliders(){
+			if(!colliderTable)return;
+			collMod.syncConfig(colliderTable,cfg,false);
+			const colU=colliderTable.upload;
+			if(!(colU[2]>0))return;
+			const nSlots=colU[1]|0;
+			const src=grid.curBuf(vel),dst=grid.nxtBuf(vel);
+			const vc=f32(cfg.vClamp);
+			for(let y=0;y<texH;y++){
+				for(let x=0;x<texW;x++){
+					const vi=(x+y*texW)*2;
+					if(x<1||x>=texW-1||y<1||y>=texH-1){
+						dst[vi]=0;dst[vi+1]=0;continue;
+					}
+					let u=src[vi],v=src[vi+1];
+					if(x<=1||x>=texW-1||hardBlockedCell(x-1,y)||hardBlockedCell(x,y)){
+						u=0;
+					}else{
+						sampleColliderCell(colU,nSlots,x-1,y,collSampleA);
+						sampleColliderCell(colU,nSlots,x,y,collSampleB);
+						if(collSampleA[2]>0&&collSampleB[2]>0)u=clampTo(f32(0.5*f32(collSampleA[0]+collSampleB[0])),-vc,vc);
+						else if(collSampleA[2]>0)u=clampTo(collSampleA[0],-vc,vc);
+						else if(collSampleB[2]>0)u=clampTo(collSampleB[0],-vc,vc);
+					}
+					if(y<=1||y>=texH-1||hardBlockedCell(x,y-1)||hardBlockedCell(x,y)){
+						v=0;
+					}else{
+						sampleColliderCell(colU,nSlots,x,y-1,collSampleA);
+						sampleColliderCell(colU,nSlots,x,y,collSampleB);
+						if(collSampleA[2]>0&&collSampleB[2]>0)v=clampTo(f32(0.5*f32(collSampleA[1]+collSampleB[1])),-vc,vc);
+						else if(collSampleA[2]>0)v=clampTo(collSampleA[1],-vc,vc);
+						else if(collSampleB[2]>0)v=clampTo(collSampleB[1],-vc,vc);
+					}
+					dst[vi]=u;dst[vi+1]=v;
+				}
+			}
+			grid.swap(vel);
+		}
+		function paintSolid(cx,cy,radius,mode){
+			const r=Math.min(N,Math.max(0.5,Number.isFinite(radius)&&radius>0?radius:(cfg.paintR||8)));
+			const r2=f32(r*r);
+			const px0=f32(cx),py0=f32(cy);
+			const ms=grid.curBuf(mass),ts=grid.curBuf(therm);
+			const mEps=f32(cfg.mEps);
+			const tEps=f32(cfg.TEps);
+			const tMelt=f32(cfg.TMelt);
+			const cSol=f32(cfg.cSol),cLiq=f32(cfg.cLiq),Lf=f32(cfg.Lf);
+			for(let y=1;y<texH-1;y++){
+				const dy=f32(f32(y-0.5)-py0);
+				const dy2=f32(dy*dy);
+				for(let x=1;x<texW-1;x++){
+					const dx=f32(f32(x-0.5)-px0);
+					if(f32(f32(dx*dx)+dy2)>=r2)continue;
+					const fi=(x+y*texW)*4;
+					if((flags[fi]&1)!==0)continue;
+					const m=ms[fi+3];
+					if(!(m>=mEps))continue;
+					let E=ts[fi],hIn=ts[fi+2],hOut=ts[fi+3];
+					let changed=false;
+					if(mode>0){
+						const tFreeze=Math.max(tEps,f32(tMelt-15));
+						const eTarget=f32(m*f32(cSol*tFreeze));
+						if(E>eTarget){
+							const dReal=f32(E-eTarget);
+							E=eTarget;
+							hOut=f32(hOut+dReal);
+							ledger.heatOutE+=dReal;
+							changed=true;
+						}
+					}else if(flags[fi+2]>0){
+						const tThaw=Math.max(tEps,f32(tMelt+2));
+						const hLiq=f32(f32(f32(cSol*tMelt)+Lf)+f32(cLiq*f32(tThaw-tMelt)));
+						const eTarget=f32(m*hLiq);
+						if(E<eTarget){
+							const dReal=f32(eTarget-E);
+							E=eTarget;
+							hIn=f32(hIn+dReal);
+							ledger.heatInE+=dReal;
+							changed=true;
+						}
+					}
+					if(changed){
+						ts[fi]=E;ts[fi+2]=hIn;ts[fi+3]=hOut;
+						phaseInto(phaseScratch,m,E,cfg);
+						ts[fi+1]=phaseScratch.T;
+					}
+				}
+			}
+		}
+		function setObstacles(maskArray,w,h){
+			if(!collMod||!collMod.applyObstacleMask(flags,texW,texH,maskArray,w,h))return false;
+			zeroBlockedVel();
+			return true;
+		}
+		function paintObstacle(x,y,radius,kind){
+			if(!collMod||!Number.isFinite(x)||!Number.isFinite(y))return false;
+			const k=collMod.parsePaintKind(kind);
+			if(!k)return false;
+			const r=Number.isFinite(radius)&&radius>0?radius:(cfg.paintR||8);
+			if(k==="wall"){
+				if(!collMod.paintWallDisc(flags,texW,texH,x,y,r,false))return false;
+				zeroBlockedVel();
+				return true;
+			}
+			if(k==="solid"){
+				paintSolid(x,y,r,1);
+				phaseEos(false);
+				return true;
+			}
+			if(!collMod.paintWallDisc(flags,texW,texH,x,y,r,true))return false;
+			paintSolid(x,y,r,-1);
+			phaseEos(false);
+			return true;
+		}
+		function addCollider(spec){
+			return colliderTable?collMod.add(colliderTable,cfg,spec):-1;
+		}
+		function moveCollider(id,x,y,vx,vy){
+			return colliderTable?collMod.move(colliderTable,cfg,id,x,y,vx,vy):false;
+		}
+		function setCollider(id,patch){
+			return colliderTable?collMod.set(colliderTable,cfg,id,patch):false;
+		}
+		function removeCollider(id){
+			return colliderTable?collMod.remove(colliderTable,id):false;
+		}
+		function colliderCount(){
+			return colliderTable?colliderTable.live:0;
+		}
 		function addEmitter(spec){
 			return emitterTable?emitMod.add(emitterTable,cfg,spec):-1;
 		}
@@ -1098,12 +1322,14 @@
 			return emitterTable?emitterTable.live:0;
 		}
 		function step(dt){
+			updateColliderMask();
 			forces(dt);
 			advectVelocity(dt);
+			imprintColliders();
 			poissonRhs(dt);
 			project(Fluid.core.config.solverIters(cfg));
 			applyGrad(dt);
-			const motPost=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,dt);
+			const motPost=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,dt,flags);
 			diag.divAfter=motPost.maxDiv;
 			diag.pressureResidual=diag.divBefore>0?motPost.maxDiv/diag.divBefore:0;
 			computeFlux(dt);
@@ -1118,7 +1344,7 @@
 		}
 		function stats(){
 			const tot=acc.totalsFromFields(grid.curBuf(mass),grid.curBuf(therm),texW,texH);
-			const mot=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,cfg.dt);
+			const mot=acc.motionTotals(grid.curBuf(vel),grid.curBuf(press),texW,texH,cfg.dt,flags);
 			// poissonRes is the system just solved (captured in project, before transport).
 			// the recompute here is the post-step operator: coefficient drift, same
 			// number the gpu writes to slots 34/35. the ratio uses the post-step rhs,
@@ -1169,15 +1395,21 @@
 		function applyWallPatch(patch){
 			for(let y=0;y<patch.h;y++){
 				for(let x=0;x<patch.w;x++){
+					const op=patch.flagsPatch[(x+y*patch.w)*4];
+					if(op===0)continue;
 					const i=((patch.x0+x)+(patch.y0+y)*texW)*4;
-					flags[i]=patch.flagsPatch[(x+y*patch.w)*4];
+					const oldR=flags[i];
+					const collBits=oldR===255?0:(oldR&6);
+					flags[i]=collBits|(op===2?0:1);
 				}
 			}
 		}
 		reset();
-		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,sfield,flags,ledger,thermDiag,diag,mg,emitterTable,
-			isWall,isFrozen,isBlocked,uBlocked,vBlocked,reset,step,stats,forces,advectVelocity,poissonRhs,project,applyGrad,computeFlux,advectScalar,
+		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,sfield,flags,ledger,thermDiag,diag,mg,emitterTable,colliderTable,
+			isWall,isStaticWall,isFrozen,isBlocked,uBlocked,vBlocked,reset,step,stats,forces,advectVelocity,poissonRhs,project,applyGrad,computeFlux,advectScalar,
 			phaseEos,conduction,applyEmitters,heatSources,vorticityAt,
+			updateColliderMask,imprintColliders,paintSolid,setObstacles,paintObstacle,
+			addCollider,moveCollider,setCollider,removeCollider,colliderCount,
 			applyDyePatch,applyWallPatch,addEmitter,moveEmitter,setEmitter,removeEmitter,emitterCount};
 	}
 	Fluid.core.solver={create,buildScenario,buildDyePatch,buildWallPatch,patchTotals,paintBlob,
