@@ -553,9 +553,9 @@ async function testColliders() {
 	check(table.live === 1 && at(6, 6) === 0 && at(16, 16) === 1 && C.remove(table, 1) === false,
 		"remove drops the body from the next raster and is safe to repeat");
 
-	// the push (t4b): a body that takes a cell gives its contents to the fluid around
-	// it, so a body crossing a dye patch carries the colour with it instead of sliding
-	// over a picture of one. one cell, four free neighbours, so the split is readable.
+	// the push (t4b): a body that takes a cell gives its contents to the free fluid
+	// within a radius-2 disk, so it carries color instead of sliding over a frozen
+	// picture. One cell has twelve radius-2 receivers in the interior.
 	const small = Object.assign({}, cfg, { N: 8, texW: 10, texH: 10, TRef: 293 });
 	const one = C.create();
 	C.add(one, small, { shape: "box", x: 5, y: 5, hw: 0.5, hh: 0.5 });
@@ -574,18 +574,18 @@ async function testColliders() {
 	const w2 = r2.x1 - r2.x0 + 1;
 	const idx = (x, y) => ((x - r2.x0) + (y - r2.y0) * w2) * 4 + 2;
 	const taken = C.geometry(small, own, prev, r2, g);
-	check(own[kc] === 1 && taken === 1 && g[idx(5, 5)] === 4 && g[idx(5, 4)] === 0 && g[idx(4, 4)] === 0,
-		"the push marks the cells a body takes and counts their free neighbours",
+	const nb = [[5, 3], [4, 4], [5, 4], [6, 4], [3, 5], [4, 5], [6, 5], [7, 5], [4, 6], [5, 6], [6, 6], [5, 7]];
+	check(own[kc] === 1 && taken === 1 && g[idx(5, 5)] === 12 && g[idx(5, 4)] === 0 && g[idx(4, 4)] === 0,
+		"the push marks the cell a body takes and counts all twelve radius-2 receivers",
 		"taken=" + taken + " deg=" + g[idx(5, 5)] + " free=" + g[idx(4, 4)]);
 	const scratch = C.makeScratch();
 	C.displace(small, g, r2, mf, tf, scratch);
-	const nb = [[4, 5], [6, 5], [5, 4], [5, 6]];
 	check(mf[kc * 4 + 3] === 0 && tf[kc * 4] === 0 && tf[kc * 4 + 1] === small.TRef &&
-		nb.every(([x, y]) => Math.abs(mf[(x + y * 10) * 4 + 3] - 1) < 1e-6 &&
-			Math.abs(tf[(x + y * 10) * 4] - 10) < 1e-6),
-		"a taken cell is emptied and every free neighbour gathers its quarter of dye and heat",
-		"m=" + nb.map(([x, y]) => mf[(x + y * 10) * 4 + 3].toFixed(2)).join(",") +
-		" E=" + nb.map(([x, y]) => tf[(x + y * 10) * 4].toFixed(1)).join(","));
+		nb.every(([x, y]) => Math.abs(mf[(x + y * 10) * 4 + 3] - 1 / 3) < 1e-6 &&
+			Math.abs(tf[(x + y * 10) * 4] - 40 / 12) < 1e-6),
+		"a taken cell is emptied and every radius-2 neighbour gathers its equal share of dye and heat",
+		"m=" + nb.map(([x, y]) => mf[(x + y * 10) * 4 + 3].toFixed(3)).join(",") +
+		" E=" + nb.map(([x, y]) => tf[(x + y * 10) * 4].toFixed(2)).join(","));
 	const massAfter = sumOf(mf, 3), eAfter = sumOf(tf);
 	check(Math.abs(massAfter - massBefore) < 1e-6 && Math.abs(eAfter - eBefore) < 1e-4,
 		"the push moves dye and heat to the neighbours without creating either",
@@ -622,20 +622,46 @@ async function testColliders() {
 	check(m.sink.textureWrites.some(w => w.label === "flags") && m.sink.pipeOrder.indexOf("phaseEos") >= 0,
 		"adding a body uploads the mask and re-primes the phase fields");
 
-	// a moving body: the released cells come back, the new ones block, and the fluid
-	// it displaced gets the body's velocity while the body's own cells go to zero
+	// Keep multigrid requested, but automatically use the fine-grid pressure solve
+	// while the conservative scalar push settles after a moving-body mask change.
+	const fallbackWritesBefore = m.sink.textureWrites.length;
+	const fallbackPipesBefore = m.sink.pipeOrder.length;
+	sim.moveCollider(id, 40, 32, 120, -30);
+	sim.step(1 / 60);
+	const fallbackWrites = m.sink.textureWrites.slice(fallbackWritesBefore);
+	const fallbackStaged = m.sink.pipeOrder.slice(fallbackPipesBefore);
+	const fallbackVelWrite = fallbackWrites.filter(w => w.label === "patchVel").pop();
+	const fallbackFlagsWrite = fallbackWrites.filter(w => w.label === "flags").pop();
+	check(flagsAt(32, 32) === 0 && flagsAt(40, 32) === 255 && flagsAt(44, 32) === 255,
+		"a moved body clears the cells it left and blocks the ones it entered",
+		"old=" + flagsAt(32, 32) + " new=" + flagsAt(40, 32));
+	check(fallbackFlagsWrite && fallbackFlagsWrite.size[0] < N && fallbackFlagsWrite.origin[0] > 0,
+		"the mask delta uploads a patch, not the whole grid",
+		fallbackFlagsWrite ? "rect " + fallbackFlagsWrite.size.join("x") + " at " + fallbackFlagsWrite.origin.join(",") : "no write");
+	const pressureParam = new Float32Array(sim.solver.pool.params._buf)[Fluid.core.config.paramsOff.pressureIters];
+	check(sim.params.useMultigrid === true && pressureParam === sim.params.pressureIters &&
+		fallbackVelWrite && fallbackStaged.indexOf("colliderVel") >= 0 &&
+		fallbackStaged.indexOf("colliderPushMass") >= 0 && fallbackStaged.indexOf("colliderPushTherm") >= 0 &&
+		fallbackWrites.some(w => w.label === "patchGeo") && fallbackStaged.indexOf("mgCoarsen") < 0 &&
+		fallbackStaged.indexOf("projRed") >= 0,
+		"a multigrid-configured moving frame pushes dye and heat, then uses fine-grid pressure",
+		"requestedMG=" + sim.params.useMultigrid + " K=" + pressureParam + " passes=" +
+		fallbackStaged.filter(n => n.indexOf("collider") === 0 || n === "mgCoarsen").join(","));
+
+	// Another movement inside the settling window keeps scalar push enabled and
+	// does not mutate the caller's requested multigrid setting.
 	const writesBefore = m.sink.textureWrites.length;
 	const pipesBefore = m.sink.pipeOrder.length;
-	sim.moveCollider(id, 40, 32, 120, -30);
+	sim.moveCollider(id, 48, 32, 120, -30);
 	sim.step(1 / 60);
 	const newWrites = m.sink.textureWrites.slice(writesBefore);
 	const velWrite = newWrites.filter(w => w.label === "patchVel").pop();
 	const flagsWrite = newWrites.filter(w => w.label === "flags").pop();
-	check(flagsAt(32, 32) === 0 && flagsAt(40, 32) === 255 && flagsAt(44, 32) === 255,
-		"a moved body clears the cells it left and blocks the ones it entered",
-		"old=" + flagsAt(32, 32) + " new=" + flagsAt(40, 32));
+	check(flagsAt(40, 32) === 0 && flagsAt(48, 32) === 255 && flagsAt(52, 32) === 255,
+		"the fine-grid push path also releases old cells and blocks new ones",
+		"old=" + flagsAt(40, 32) + " new=" + flagsAt(48, 32));
 	check(flagsWrite && flagsWrite.size[0] < N && flagsWrite.origin[0] > 0,
-		"the mask delta uploads a patch, not the whole grid",
+		"the fine-grid mask delta still uploads a patch, not the whole grid",
 		flagsWrite ? "rect " + flagsWrite.size.join("x") + " at " + flagsWrite.origin.join(",") : "no write");
 	const patch = velWrite ? new Float32Array(velWrite.data.buffer, velWrite.data.byteOffset, velWrite.data.length) : null;
 	// the velocity patch lives at the patch texture's origin, so its grid origin is
@@ -647,15 +673,15 @@ async function testColliders() {
 		const i = (px + py * velWrite.size[0]) * 4;
 		return [patch[i], patch[i + 1], patch[i + 2]];
 	};
-	const bodyCell = patchAt(40, 32);
-	const aheadCell = patchAt(45, 32);
-	const trailingCell = patchAt(35, 32);
+	const bodyCell = patchAt(48, 32);
+	const aheadCell = patchAt(53, 32);
+	const trailingCell = patchAt(43, 32);
 	const staged = m.sink.pipeOrder.slice(pipesBefore);
 	check(staged.indexOf("colliderVel") >= 0,
 		"a moving body stages the velocity imprint pass");
 	check(staged.indexOf("colliderPushMass") >= 0 && staged.indexOf("colliderPushTherm") >= 0 &&
-		newWrites.some(w => w.label === "patchGeo"),
-		"a moving body stages both push passes and uploads the geometry patch",
+		newWrites.some(w => w.label === "patchGeo") && staged.indexOf("mgCoarsen") < 0 && sim.params.useMultigrid,
+		"movement keeps pushing scalars and uses fine-grid pressure without changing config",
 		staged.filter(n => n.indexOf("collider") === 0).join(","));
 	// every pipeline the collider pass binds needs a group for each parity state, or the
 	// device drops the whole command buffer and the body silently does not move
@@ -675,6 +701,16 @@ async function testColliders() {
 		trailingCell && trailingCell[2] === 0,
 		"the imprint sets the body's own cell to rest and the fluid it pushes to the body's velocity",
 		"body=" + (bodyCell && bodyCell.join(",")) + " ahead=" + (aheadCell && aheadCell.join(",")));
+
+	// The cooldown counts frames since the last mask change, not substeps. After the
+	// remaining 59 parked frames, the next frame returns to the requested multigrid path.
+	for (let i = 0; i < 58; i++) sim.step(1 / 60);
+	const resumedBefore = m.sink.pipeOrder.length;
+	sim.step(1 / 60);
+	const resumedPasses = m.sink.pipeOrder.slice(resumedBefore);
+	check(sim.params.useMultigrid && resumedPasses.indexOf("mgCoarsen") >= 0,
+		"multigrid resumes after the 60-frame settling window expires",
+		"mgCoarsen=" + resumedPasses.includes("mgCoarsen"));
 
 	// mass is a pressure boundary question, never a source: a teleport must not add
 	const ledgerBefore = sim.solver.getStats().ledger.injectedM;
@@ -830,6 +866,82 @@ async function testColliderFlow() {
 		" drift=" + Math.abs(acc.driftRel(st3.sumM, acc.expectedTotal(s2.ledger, "m"))).toExponential(2));
 }
 
+// When a moving body changes the mask, production temporarily selects the fine-grid
+// pressure solve while keeping the conservative mass/thermal push. Exercise that
+// numerical path here; the recorder test above verifies the automatic dispatch choice.
+async function testColliderFineFallback() {
+	const S = Fluid.core.solver, C = Fluid.core.colliders, acc = Fluid.core.stats, grid = Fluid.core.grid;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {
+		N: 64, scenario: "still", useMultigrid: false, dt: 1 / 60, gravityY: 0
+	});
+	cfg.texW = cfg.N + 2; cfg.texH = cfg.N + 2;
+	const sim = S.create(cfg), table = C.create();
+	const id = C.add(table, cfg, {
+		shape: "box", x: 32, y: 27, hw: 2, hh: 4, vx: 0, vy: 0
+	});
+	const body = table.slots[id], tw = cfg.texW, N = cfg.N;
+	const owner = new Uint8Array(tw * cfg.texH), prev = new Uint8Array(owner.length), rect = {};
+	const wide = { x0: 1, y0: 1, x1: N, y1: N };
+	const geo = new Float32Array(tw * cfg.texH * 4), scratch = C.makeScratch(tw * cfg.texH);
+	C.rasterize(table, cfg, owner, rect);
+	prev.set(owner);
+	for (let k = 0; k < owner.length; k++) if (owner[k]) sim.flags[k * 4] = 255;
+	let maxM = 0, maxVel = 0, maxDiv = 0, finite = true;
+	for (let frame = 0; frame < 60; frame++) {
+		C.move(table, cfg, id, body.x + 0.235, body.y, 14.1, 0);
+		owner.fill(0);
+		C.rasterize(table, cfg, owner, rect);
+		C.geometry(cfg, owner, prev, wide, geo, tw);
+		C.displace(cfg, geo, wide, grid.curBuf(sim.mass), grid.curBuf(sim.therm), scratch, tw);
+		const vel = grid.curBuf(sim.vel);
+		for (let y = 1; y <= N; y++) {
+			for (let x = 1; x <= N; x++) {
+				const k = x + y * tw, i = k * 4;
+				const now = owner[k] !== 0, was = prev[k] !== 0;
+				sim.flags[i] = now ? 255 : 0;
+				if (!now || was) continue;
+				vel[k * 2] = 0; vel[k * 2 + 1] = 0;
+				for (const nk of [k - 1, k + 1, k - tw, k + tw]) {
+					if (owner[nk] || prev[nk]) continue;
+					vel[nk * 2] = body.vx; vel[nk * 2 + 1] = body.vy;
+				}
+			}
+		}
+		prev.set(owner);
+		sim.phaseEos(false);
+		sim.step(cfg.dt);
+		const st = sim.stats();
+		finite = finite && Number.isFinite(st.tot.sumM) && Number.isFinite(st.tot.maxM) &&
+			Number.isFinite(st.mot.maxVel) && Number.isFinite(st.mot.maxDiv);
+		maxM = Math.max(maxM, st.tot.maxM);
+		maxVel = Math.max(maxVel, st.mot.maxVel);
+		maxDiv = Math.max(maxDiv, st.mot.maxDiv);
+	}
+	// Match production: once the 60-frame fine-grid window expires, the parked
+	// pushed field returns to the requested multigrid solve and must remain finite.
+	cfg.useMultigrid = true;
+	cfg.mgCoarseIters = 20;
+	cfg.mgCycles = 2;
+	for (let frame = 0; frame < 60; frame++) {
+		sim.phaseEos(false);
+		sim.step(cfg.dt);
+		const st = sim.stats();
+		finite = finite && Number.isFinite(st.tot.sumM) && Number.isFinite(st.tot.maxM) &&
+			Number.isFinite(st.mot.maxVel) && Number.isFinite(st.mot.maxDiv);
+		maxM = Math.max(maxM, st.tot.maxM);
+		maxVel = Math.max(maxVel, st.mot.maxVel);
+		maxDiv = Math.max(maxDiv, st.mot.maxDiv);
+	}
+	const st = sim.stats();
+	const drift = Math.abs(acc.driftRel(st.tot.sumM, acc.expectedTotal(sim.ledger, "m")));
+	check(finite && maxVel > 5 && maxVel < 32,
+		"fine-grid settling frames carry a moving collider's velocity into the fluid",
+		"finite=" + finite + " peakVel=" + maxVel.toFixed(2));
+	check(maxM < 25 && maxDiv < 250 && drift < 1e-6,
+		"the pushed field stays finite through the fine-grid window and multigrid resumption",
+		"maxM=" + maxM.toFixed(3) + " maxDiv=" + maxDiv.toFixed(2) + " drift_rel=" + drift.toExponential(2));
+}
+
 // a2's visible half: a body driven across a dye patch must move the dye, not leave it
 // frozen under a hole. one run with the push passes, one without (the t4 behaviour):
 // the dye total has to come out the same either way, and the dye left in the cells the
@@ -838,15 +950,20 @@ async function testColliderDye() {
 	const S = Fluid.core.solver, C = Fluid.core.colliders, acc = Fluid.core.stats, grid = Fluid.core.grid;
 	function run(push) {
 		const cfg = Object.assign({}, Fluid.core.config.defaults, {
-			N: 32, scenario: "still", useMultigrid: false, dt: 1 / 60
+			N: 32, scenario: "still", useMultigrid: false, dt: 1 / 60, gravityX: 0, gravityY: 0
 		});
 		cfg.texW = cfg.N + 2; cfg.texH = cfg.N + 2;
 		const sim = S.create(cfg);
 		const tw = cfg.texW, N = cfg.N;
-		const mass = grid.curBuf(sim.mass);
+		const mass = grid.curBuf(sim.mass), therm = grid.curBuf(sim.therm);
 		for (let y = 1; y <= N; y++) {
 			for (let x = 1; x <= N; x++) {
-				if ((x - 10) * (x - 10) + (y - 16) * (y - 16) < 36) mass[(x + y * tw) * 4] = 0.6;
+				if ((x - 10) * (x - 10) + (y - 16) * (y - 16) < 36) {
+					const i = (x + y * tw) * 4;
+					mass[i] = 0.6;
+					therm[i] = S.energyFromT(mass[i + 3], 420, cfg);
+					therm[i + 1] = 420;
+				}
 			}
 		}
 		const table = C.create();
@@ -887,8 +1004,18 @@ async function testColliderDye() {
 				if (swept[x + y * tw]) inside += dye;
 			}
 		}
-		const t = acc.totalsFromFields(m, grid.curBuf(sim.therm), tw, cfg.texH);
-		return { total, inside, mass: t.sumM, ledger: acc.expectedTotal(sim.ledger, "m") };
+		const finalTherm = grid.curBuf(sim.therm);
+		let heatTotal = 0, heatInside = 0;
+		for (let y = 1; y <= N; y++) {
+			for (let x = 1; x <= N; x++) {
+				const i = (x + y * tw) * 4;
+				const excess = Math.max(0, finalTherm[i] - S.energyFromT(m[i + 3], cfg.TRef, cfg));
+				heatTotal += excess;
+				if (swept[x + y * tw]) heatInside += excess;
+			}
+		}
+		const t = acc.totalsFromFields(m, finalTherm, tw, cfg.texH);
+		return { total, inside, heatTotal, heatInside, mass: t.sumM, ledger: acc.expectedTotal(sim.ledger, "m") };
 	}
 	const pushed = run(true), frozen = run(false);
 	check(pushed.total > 0 && Math.abs(pushed.total - frozen.total) / frozen.total < 1e-6,
@@ -900,6 +1027,10 @@ async function testColliderDye() {
 		"the dye a body crosses moves out of the cells it left instead of staying put",
 		"in the swept cells: frozen " + (100 * frozen.inside / frozen.total).toFixed(1) + "% -> pushed " +
 		(100 * pushed.inside / pushed.total).toFixed(1) + "%");
+	check(frozen.heatInside / frozen.heatTotal > 0.6 && pushed.heatInside / pushed.heatTotal < 0.35,
+		"the same body push carries the hot temperature marker out of the cells it crosses",
+		"excess heat in swept cells: frozen " + (100 * frozen.heatInside / frozen.heatTotal).toFixed(1) +
+		"% -> pushed " + (100 * pushed.heatInside / pushed.heatTotal).toFixed(1) + "%");
 	check(Math.abs(pushed.mass - pushed.ledger) < 1e-3,
 		"the frame that pushes dye still balances against the ledger", "sumM=" + pushed.mass.toFixed(3));
 }
@@ -1085,6 +1216,7 @@ async function testDemoPage() {
 	await testEmitters();
 	await testColliders();
 	await testColliderFlow();
+	await testColliderFineFallback();
 	await testColliderDye();
 	await testViewAndGrid();
 	await testInputLifecycle();

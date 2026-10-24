@@ -50,6 +50,7 @@
 		const geoPatch=new Float32Array(fields.PATCH*fields.PATCH*4);
 		const pushRect={x0:1,y0:1,x1:0,y1:0};
 		let patchX=0,patchY=0,patchW=0,patchH=0;
+		let colliderFineFrames=0;
 		function allocMasks(){
 			const cells=cfg.texW*cfg.texH;
 			staticMask=new Uint8Array(cells);
@@ -76,8 +77,9 @@
 		const diag={sSaturated:0,poissonRes:0,poissonRhs:0,poissonRel:0,poissonDrift:0,poissonDriftRhs:0,poissonDriftRel:0};
 		let statsCache=null;
 		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,thermal:null,phaseCounts,diag,ledger:null};
-		function writeParams(){
+		function writeParams(pressureItersOverride){
 			Fluid.core.config.writeParams(paramsArray,cfg);
+			if(pressureItersOverride!==undefined)paramsArray[Fluid.core.config.paramsOff.pressureIters]=pressureItersOverride;
 			paramsArray[Fluid.core.config.paramsOff.mgS]=pool.mgS;
 			device.queue.writeBuffer(pool.params,0,paramsArray);
 		}
@@ -100,6 +102,7 @@
 			cfg.chargeLatent=1;
 		}
 		function reset(){
+			colliderFineFrames=0;
 			statsGeneration++;
 			if(prof)prof.invalidate();
 			pendingRead=false;
@@ -290,12 +293,12 @@
 			const nr=colliderRect;
 			const prEmpty=pr.x1<pr.x0,nrEmpty=nr.x1<nr.x0;
 			if(prEmpty&&nrEmpty)return;
-			// one cell of margin: the imprint lands on the fluid just outside the body,
-			// so the cells it writes are neighbours of the cells that changed
-			const x0=Math.max(1,(prEmpty?nr.x0:Math.min(pr.x0,nr.x0))-1);
-			const y0=Math.max(1,(prEmpty?nr.y0:Math.min(pr.y0,nr.y0))-1);
-			const x1=Math.min(tw-2,(nrEmpty?pr.x1:Math.max(pr.x1,nr.x1))+1);
-			const y1=Math.min(cfg.texH-2,(nrEmpty?pr.y1:Math.max(pr.y1,nr.y1))+1);
+			// Radius-2 margin for scalar receivers (the velocity imprint only touches
+			// immediate neighbors), so every displacement destination is in the patch.
+			const x0=Math.max(1,(prEmpty?nr.x0:Math.min(pr.x0,nr.x0))-2);
+			const y0=Math.max(1,(prEmpty?nr.y0:Math.min(pr.y0,nr.y0))-2);
+			const x1=Math.min(tw-2,(nrEmpty?pr.x1:Math.max(pr.x1,nr.x1))+2);
+			const y1=Math.min(cfg.texH-2,(nrEmpty?pr.y1:Math.max(pr.y1,nr.y1))+2);
 			if(x1<x0||y1<y0)return;
 			const w=x1-x0+1,h=y1-y0+1;
 			const patchOk=w<=fields.PATCH&&h<=fields.PATCH&&h>0;
@@ -330,8 +333,10 @@
 				}
 			}
 			if(!changed)return;
-			// the push first: it reads the mask diff, so it has to run before the rect
-			// bookkeeping below turns `prev` into the new image
+			// A local conservative push makes sharp density peaks. Keep the push, but
+			// use the fine-grid pressure solve for a settling window after each mask
+			// change; the variable-coefficient coarse solve is unstable on this field.
+			colliderFineFrames=60;
 			if(patchOk)pushed=coreColliders.geometry(cfg,owner,prev,pushRect,geoPatch,fields.PATCH);
 			if(patchOk){
 				// the flags patch carries every byte of the rect, so the static wall and
@@ -348,8 +353,8 @@
 				fields.writePatchAt(device,pool.flags,x0,y0,w,h,"rgba8uint",flagsPatch);
 				fields.writePatchAt(device,pool.flagsTmp,x0,y0,w,h,"rgba8uint",flagsPatch);
 			}else{
-				// a teleport wider than a patch: full upload, and no imprint (a jump
-				// should not smear the body's velocity across the field)
+				// an affected rect wider than a patch: full mask upload, no local push
+				// or imprint (a jump should not smear the body's velocity across the field)
 				fields.writeTextureRect(device,pool.flags,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
 				fields.writeTextureRect(device,pool.flagsTmp,cfg.texW,cfg.texH,"rgba8uint",flagsMirror);
 			}
@@ -485,10 +490,12 @@
 			cfg.time=timeAcc;
 			cfg.chargeLatent=1;
 			cfg.rhoMean=(ledger.initialM+ledger.injectedM-ledger.removedM)/(cfg.N*cfg.N);
-			writeParams();
+			const useMultigrid=!!cfg.useMultigrid&&colliderFineFrames===0;
+			const kIters=useMultigrid?Fluid.core.config.solverIters(cfg):Math.max(1,Math.round(cfg.pressureIters)||1);
+			writeParams(kIters);
 			// profiling splits the one compute pass at timing-group boundaries;
-			// the dispatch sequence is identical either way (0.6.0 t1).
-			const kIters=Fluid.core.config.solverIters(cfg);
+			// the dispatch sequence is identical either way (0.6.0 t1). Moving
+			// colliders temporarily force the stable fine-grid pressure path.
 			const profiling=!!(prof&&cfg.gpuTiming>0);
 			const encoder=device.createCommandEncoder({label:"frame"});
 			if(profiling){
@@ -496,7 +503,7 @@
 				if(emit&&emit.any)passes.encodeEmitters(prof.pass(encoder,PROFILE_GROUP.vel,"emit"),pool,pipes,groups,state,emit);
 				for(let s=0;s<substeps;s++){
 					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
-						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
+						useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
 						needStats&&s===substeps-1,cfg.advectMac>0,cfg.fusePasses>0);
 				}
 				if(needStats||needBuoy||needProbe){
@@ -512,7 +519,7 @@
 				if(emit&&emit.any)passes.encodeEmitters(cpass,pool,pipes,groups,state,emit);
 				for(let s=0;s<substeps;s++){
 					passes.encodeStep(cpass,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
-						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
+						useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
 						needStats&&s===substeps-1,cfg.advectMac>0,cfg.fusePasses>0);
 				}
 				if(needStats){
@@ -557,6 +564,7 @@
 			rpass.end();
 			if(profiling)prof.finish(encoder);
 			device.queue.submit([encoder.finish()]);
+			if(colliderFineFrames>0)colliderFineFrames--;
 			frameCount++;
 			timeAcc+=dts*substeps;
 		}

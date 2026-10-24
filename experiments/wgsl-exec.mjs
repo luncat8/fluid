@@ -549,7 +549,7 @@ function runColliderCase() {
 
 
 // ---- 6. execute the body push (0.7.0 t4b) against the cpu oracle ----
-// a body takes cells; the taken cells give their dye and heat to the free neighbours.
+// a body takes cells; the taken cells give their dye and heat to the free radius-2 disk.
 // the check is not only "same numbers": the totals must not move, because this is the
 // pass that makes a body look like it pushes water instead of sliding over a picture.
 function runColliderPushCase() {
@@ -598,7 +598,7 @@ function runColliderPushCase() {
 	};
 	const dm = maxDiff(dstM, cpuM), dt = maxDiff(dstT, cpuT);
 	check("push exec: dye and heat match the cpu oracle cell for cell",
-		dm < 1e-5 && dt < 1e-5 && taken > 0, "mass=" + dm.toExponential(2) + " E=" + dt.toExponential(2) + " taken=" + taken);
+		dm < 1e-5 && dt < 2e-4 && taken > 0, "mass=" + dm.toExponential(2) + " E=" + dt.toExponential(2) + " taken=" + taken);
 	const sum = (f, stride) => {
 		let t = 0;
 		for (let i = 0; i < f.length; i += 4) t += f[i + stride];

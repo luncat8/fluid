@@ -1618,12 +1618,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	// its dye and its heat and is released unchanged when the body moves on - which
 	// looks like the object sliding over a picture of water. so a cell the body takes
 	// gives its contents to the fluid around it: the taken cell is emptied and each
-	// free neighbour gathers its 1/deg share. gather, not scatter, so no atomics and no
+	// free radius-2 disk neighbour gathers its 1/deg share. gather, not scatter, so no atomics and no
 	// order dependence, and the totals are preserved by construction (mass never
 	// appears, a2). geometry rides in the patch's third channel, see
 	// core/colliders.geometry: > 0 a taken cell with that many free neighbours, -1 a
 	// cell that was already solid, 0 free.
 	shaders.colliderPushMass=`
+const NX: array<i32, 12> = array<i32, 12>(0, -1, 0, 1, -2, -1, 1, 2, -1, 0, 1, 0);
+const NY: array<i32, 12> = array<i32, 12>(-2, -1, -1, -1, 0, 0, 0, 0, 1, 1, 1, 2);
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var massSrc: texture_storage_2d<rgba32float,read>;
 @group(0) @binding(2) var massDst: texture_storage_2d<rgba32float,write>;
@@ -1650,21 +1652,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			q = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 		} else if (c > -0.5) {
 			// free: gather the share of every neighbour the body just took
-			if (lx >= 1) {
-				let g = textureLoad(geoPatch, vec2<i32>(lx - 1, ly)).b;
-				if (g >= 0.5) { q = q + textureLoad(massSrc, vec2<i32>(x - 1, y)) * (1.0 / g); }
-			}
-			if (lx + 1 < pw) {
-				let g = textureLoad(geoPatch, vec2<i32>(lx + 1, ly)).b;
-				if (g >= 0.5) { q = q + textureLoad(massSrc, vec2<i32>(x + 1, y)) * (1.0 / g); }
-			}
-			if (ly >= 1) {
-				let g = textureLoad(geoPatch, vec2<i32>(lx, ly - 1)).b;
-				if (g >= 0.5) { q = q + textureLoad(massSrc, vec2<i32>(x, y - 1)) * (1.0 / g); }
-			}
-			if (ly + 1 < ph) {
-				let g = textureLoad(geoPatch, vec2<i32>(lx, ly + 1)).b;
-				if (g >= 0.5) { q = q + textureLoad(massSrc, vec2<i32>(x, y + 1)) * (1.0 / g); }
+			for (var n = 0; n < 12; n = n + 1) {
+				let dx = NX[n];
+				let dy = NY[n];
+				let nx = lx + dx;
+				let ny = ly + dy;
+				if (nx < 0 || nx >= pw || ny < 0 || ny >= ph) { continue; }
+				let g = textureLoad(geoPatch, vec2<i32>(nx, ny)).b;
+				if (g >= 0.5) { q = q + textureLoad(massSrc, vec2<i32>(x + dx, y + dy)) * (1.0 / g); }
 			}
 		}
 	}
@@ -1674,6 +1669,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	// the same walk over the thermal field: E moves with the mass it belongs to, and an
 	// emptied cell reads the ambient temperature the EOS gives a vacuum
 	shaders.colliderPushTherm=`
+const NX: array<i32, 12> = array<i32, 12>(0, -1, 0, 1, -2, -1, 1, 2, -1, 0, 1, 0);
+const NY: array<i32, 12> = array<i32, 12>(-2, -1, -1, -1, 0, 0, 0, 0, 1, 1, 1, 2);
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var thermSrc: texture_storage_2d<rgba32float,read>;
 @group(0) @binding(2) var thermDst: texture_storage_2d<rgba32float,write>;
@@ -1699,21 +1696,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		if (c >= 0.5) {
 			q = vec4<f32>(0.0, tAmb, 0.0, 0.0);
 		} else if (c > -0.5) {
-			if (lx >= 1) {
-				let g = textureLoad(geoPatch, vec2<i32>(lx - 1, ly)).b;
-				if (g >= 0.5) { q = q + textureLoad(thermSrc, vec2<i32>(x - 1, y)) * (1.0 / g); }
-			}
-			if (lx + 1 < pw) {
-				let g = textureLoad(geoPatch, vec2<i32>(lx + 1, ly)).b;
-				if (g >= 0.5) { q = q + textureLoad(thermSrc, vec2<i32>(x + 1, y)) * (1.0 / g); }
-			}
-			if (ly >= 1) {
-				let g = textureLoad(geoPatch, vec2<i32>(lx, ly - 1)).b;
-				if (g >= 0.5) { q = q + textureLoad(thermSrc, vec2<i32>(x, y - 1)) * (1.0 / g); }
-			}
-			if (ly + 1 < ph) {
-				let g = textureLoad(geoPatch, vec2<i32>(lx, ly + 1)).b;
-				if (g >= 0.5) { q = q + textureLoad(thermSrc, vec2<i32>(x, y + 1)) * (1.0 / g); }
+			for (var n = 0; n < 12; n = n + 1) {
+				let dx = NX[n];
+				let dy = NY[n];
+				let nx = lx + dx;
+				let ny = ly + dy;
+				if (nx < 0 || nx >= pw || ny < 0 || ny >= ph) { continue; }
+				let g = textureLoad(geoPatch, vec2<i32>(nx, ny)).b;
+				if (g >= 0.5) { q = q + textureLoad(thermSrc, vec2<i32>(x + dx, y + dy)) * (1.0 / g); }
 			}
 		}
 	}

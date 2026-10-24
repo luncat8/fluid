@@ -14,15 +14,18 @@
 	// a collider owns the wall flag only while it covers the cell; releasing a cell
 	// restores whatever the static mask says, so a painted wall cannot be erased by a
 	// body driving over it. velocities are read at the moment a cell is newly occupied
-	// and imprinted on the fluid next to it - that, and not the mask, is what makes a
-	// body push water instead of sliding through it. mass is never touched: a collider
-	// is a pressure boundary, so a teleport can never create substance.
+	// and imprinted on the fluid next to it - that, and the explicit conservative scalar
+	// push on supported moves, is what makes a body push water instead of sliding through
+	// it. A teleport wider than the push patch skips displacement rather than inventing
+	// substance.
 	const MAX=8;
 	const SHAPE_CIRCLE=0,SHAPE_BOX=1;
 	const shapeNames=["circle","box"];
 	const DEFAULT_RADIUS=8;
-	// the four neighbours, in a fixed order, reused: the push runs on the frame path
-	const NX=[-1,1,0,0],NY=[0,0,-1,1];
+	// Radius-2 disk stencil, in a fixed order shared by geometry and displacement.
+	// Keeping both coordinates in the arrays avoids direction-dependent neighbor bugs.
+	const NX=[0,-1,0,1,-2,-1,1,2,-1,0,1,0];
+	const NY=[-2,-1,-1,-1,0,0,0,0,1,1,1,2];
 
 	function create(){
 		const table={live:0,slots:new Array(MAX)};
@@ -155,11 +158,11 @@
 		rect.x0=1;rect.y0=1;rect.x1=0;rect.y1=0;
 		return rect;
 	}
-	// one cell of margin around a rect, clamped to the interior. the push needs it: the
-	// cells that receive a body's contents are the neighbours of the cells it took.
+	// Radius-2 margin around a rect, clamped to the interior. The push sends contents
+	// up to two cells from newly occupied cells, so all receivers need to be uploaded.
 	function padRect(cfg,rect){
-		rect.x0=Math.max(1,rect.x0-1);rect.y0=Math.max(1,rect.y0-1);
-		rect.x1=Math.min(cfg.texW-2,rect.x1+1);rect.y1=Math.min(cfg.texH-2,rect.y1+1);
+		rect.x0=Math.max(1,rect.x0-2);rect.y0=Math.max(1,rect.y0-2);
+		rect.x1=Math.min(cfg.texW-2,rect.x1+2);rect.y1=Math.min(cfg.texH-2,rect.y1+2);
 		return rect;
 	}
 	// what a body takes, and from whom (0.7.0 t4b). fills the patch-local geometry the
@@ -168,9 +171,9 @@
 	//   -1   a cell that was already body (it keeps what it holds)
 	//    0   free: this cell gathers the share of every neighbour that was just taken
 	// `rect` is the patch the caller will upload, padded (padRect): a taken cell whose
-	// receivers are not all inside the rect keeps its contents instead of losing the
-	// share that could not be delivered, so no rect mistake can destroy substance.
-	// the cell's contents are split equally between its free neighbours. returns how
+	// radius-2 receivers are not all inside the rect keeps its contents instead of losing
+	// the share that could not be delivered, so no rect mistake can destroy substance.
+	// the cell's contents are split equally between its free radius-2 neighbours. returns how
 	// many cells were taken.
 	// `pitch` is the row stride of the patch buffer: the gpu passes read a PATCH-wide
 	// texture, so the solver asks for PATCH and the cpu-only callers can stay tight.
@@ -189,7 +192,7 @@
 				const p=((x-x0)+(y-y0)*stride)*4+2;
 				if(prev[i]){geo[p]=-1;continue;}
 				let deg=0,inside=true;
-				for(let n=0;n<4;n++){
+				for(let n=0;n<NX.length;n++){
 					const nx=x+NX[n],ny=y+NY[n];
 					// the ghost ring is not a receiver
 					if(nx<1||nx>tw-2||ny<1||ny>th-2)continue;
@@ -239,8 +242,8 @@
 				if(c<=-0.5)continue;
 				let m0=sm[pi],m1=sm[pi+1],m2=sm[pi+2],m3=sm[pi+3];
 				let e0=st[pi],e1=st[pi+1];
-				for(let n=0;n<4;n++){
-					const nx=x0+x+(n===0?-1:n===1?1:0),ny=y0+y+(n===2?-1:n===3?1:0);
+				for(let n=0;n<NX.length;n++){
+					const nx=x0+x+NX[n],ny=y0+y+NY[n];
 					const g=code(nx,ny);
 					if(g<0.5)continue;
 					const np=(nx-x0+(ny-y0)*stride)*4,s=1/g;
