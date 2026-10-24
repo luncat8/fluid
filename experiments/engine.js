@@ -254,6 +254,9 @@ class Target {
 		if (at >= 0) list.splice(at, 1);
 	}
 	count() { let n = 0; for (const k in this.listeners) n += this.listeners[k].length; return n; }
+	fire(type, props) {
+		for (const fn of (this.listeners[type] || []).slice()) fn(Object.assign({ preventDefault() {} }, props));
+	}
 }
 async function testInputLifecycle() {
 	const origWindow = globalThis.window, origDocument = globalThis.document;
@@ -262,7 +265,7 @@ async function testInputLifecycle() {
 	globalThis.document = { getElementById: () => null, addEventListener() {}, removeEventListener() {}, hidden: false };
 	try {
 		require(path.join(root, "src/app/input.js"));
-		const { sim } = await makeSim({ substepsAuto: false });
+		const { sim, canvas: engineCanvas } = await makeSim({ substepsAuto: false });
 		const canvas = new Target();
 		canvas.setPointerCapture = () => {};
 		canvas.hasPointerCapture = () => false;
@@ -281,6 +284,27 @@ async function testInputLifecycle() {
 		sim.detachInput();
 		check(win.count() + canvas.count() === before, "detachInput hands every listener back",
 			"listeners=" + (win.count() + canvas.count()));
+		const keyTarget = new Target();
+		const keys = sim.bindKeys(keyTarget);
+		check(keys && keyTarget.count() === 3 && win.count() === 0,
+			"bindKeys(target) installs an independent keydown/keyup/blur binding");
+		keyTarget.fire("keydown", { key: "]", target: null });
+		check(sim.params.N === 128 && engineCanvas.width === 128 && sim.params._dirty === true,
+			"standalone grid keys route through engine resize, including canvas and dirty state");
+		sim.step(1 / 60);
+		keyTarget.fire("keydown", { key: "r", target: null });
+		check(sim.solver.getStats().frame === 0 && sim.params._dirty === true,
+			"standalone reset keys route through engine reset");
+		keyTarget.fire("keydown", { key: " ", target: null });
+		check(keys.state.keys[" "] === true, "the standalone binding tracks a held key");
+		keyTarget.fire("blur");
+		check(keys.state.keys[" "] === false, "custom key-target blur clears held-key state");
+		sim.detachInput();
+		check(keyTarget.count() === 0, "detachInput also removes a standalone key binding");
+		const defaultKeys = sim.bindKeys();
+		check(defaultKeys && (win.listeners.keydown || []).length === 1, "bindKeys() defaults to window");
+		defaultKeys.destroy();
+		check(win.count() === 0 && sim.bindKeys(null) === null, "key handles destroy independently and null binds nothing");
 		sim.attachInput(canvas);
 		sim.destroy();
 		check(win.count() + canvas.count() === before, "destroy() detaches input before releasing the pool");
@@ -381,146 +405,158 @@ async function testLabWiring() {
 }
 
 
-// sources (0.7.0 t3): the table, the pass staging, the ledger totals and the
-// resize/reset survival. the numbers the ledger books are checked against an
-// independent f64 sum over the same disc, because that is the part a wrong
-// implementation gets right visually and wrong silently.
+// sources (0.7.0 t3/t3b): six kinds, measured CPU deltas, GPU pass staging and
+// cumulative readback reconciliation. Shader numerics live in wgsl-exec.mjs.
 async function testEmitters() {
 	const E = Fluid.core.emitters;
-	// the cpu oracle: the injected totals must be exactly the fields it writes
-	const cfg = Object.assign({}, Fluid.core.config.defaults, { N: 32, scenario: "still" });
-	cfg.texW = 34; cfg.texH = 34;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, { N: 24, scenario: "still" });
+	cfg.texW = 26; cfg.texH = 26;
 	const table = E.create();
-	E.add(table, cfg, { kind: "dye", x: 16, y: 16, radius: 5, value: 3, dye: [0, 1, 0] });
-	E.add(table, cfg, { kind: "heat", x: 10, y: 10, radius: 4, value: 50 });
-	check(E.kindOf("heat") === E.KIND_HEAT && E.kindOf("momentum") === E.KIND_MOMENTUM &&
-		E.kindOf("drain") === -1 && table.live === 2,
-		"sources: kind names map to ids, and the deferred kinds are refused instead of guessed");
+	const specs = [
+		{ kind: "dye", x: 9, y: 9, radius: 4, value: 2, dye: [1, 0.2, 0.1] },
+		{ kind: "drain", x: 10, y: 9, radius: 3, value: 0.3 },
+		{ kind: "heat", x: 16, y: 16, radius: 4, value: 80 },
+		{ kind: "cold", x: 16, y: 7, radius: 3, value: 60 },
+		{ kind: "freeze", x: 7, y: 17, radius: 3, value: 90 },
+		{ kind: "momentum", x: 12, y: 12, radius: 4, value: 40, dir: [1, 0] }
+	];
+	for (const spec of specs) E.add(table, cfg, spec);
 	const size = cfg.texW * cfg.texH;
 	const fields = {
 		mass: new Float32Array(size * 4), therm: new Float32Array(size * 4),
-		vel: new Float32Array(size * 2), texW: cfg.texW, texH: cfg.texH
+		flags: new Uint8Array(size * 4), texW: cfg.texW, texH: cfg.texH
 	};
-	E.header(table, cfg);
-	const oracle = {};
-	E.sweep(table, cfg, 1 / 60, fields, oracle);
-	let sumM = 0, sumDr = 0, sumE = 0;
 	for (let i = 0; i < size; i++) {
-		sumM += fields.mass[i * 4 + 3];
-		sumDr += fields.mass[i * 4];
-		sumE += fields.therm[i * 4];
+		const m = 0.4 + 0.2 * ((i % 7) / 6), j = i * 4;
+		fields.mass[j] = 0.2 * m; fields.mass[j + 1] = 0.3 * m; fields.mass[j + 2] = 0.4 * m; fields.mass[j + 3] = m;
+		fields.therm[j] = Fluid.core.solver.energyFromT(m, 320, cfg);
 	}
-	// the fields store f32 per cell, the ledger sums f64, so only the last bits differ
-	const close = (a, b) => Math.abs(a - b) <= Math.max(Math.abs(b), 1) * 1e-6;
-	check(close(sumM, oracle.inM) && close(sumDr, oracle.inDr) && close(sumE, oracle.inE),
-		"cpu oracle: the injected totals are the fields it writes, not a fitted disc",
-		"m=" + sumM.toFixed(6) + " E=" + sumE.toFixed(1));
+	const beforeM = Float32Array.from(fields.mass), beforeT = Float32Array.from(fields.therm);
+	E.header(table, cfg);
+	const out = {};
+	E.sweep(table, cfg, 0.05, fields, out);
+	let dM = 0, dDr = 0, dE = 0, heatIn = 0, heatOut = 0;
+	for (let i = 0; i < size; i++) {
+		const j = i * 4;
+		dM += fields.mass[j + 3] - beforeM[j + 3]; dDr += fields.mass[j] - beforeM[j];
+		dE += fields.therm[j] - beforeT[j]; heatIn += fields.therm[j + 2]; heatOut += fields.therm[j + 3];
+	}
+	const close = (a, b) => Math.abs(a - b) <= Math.max(Math.abs(b), 1) * 2e-6;
+	check(E.kindOf("drain") === E.KIND_DRAIN && E.kindOf("freeze") === E.KIND_FREEZE && table.live === 6,
+		"sources: all six kinds have stable ids and preallocated slots");
+	check(close(dM, out.inM - out.outM) && close(dDr, out.inDr - out.outDr) &&
+		close(dE, out.inE - out.outE + out.heatIn - out.heatOut) && close(heatIn, out.heatIn) && close(heatOut, out.heatOut) &&
+		out.outM > 0 && out.heatOut > 0 && E.momentum(table, cfg, 11, 12, 0) > 0,
+		"cpu oracle: stored f32 deltas close every scalar and thermal ledger channel",
+		"m=" + dM.toFixed(6) + " E=" + dE.toFixed(1));
+	const cpuCfg = Object.assign({}, Fluid.core.config.defaults, { N: 16, scenario: "still", useMultigrid: false, pressureIters: 4 });
+	const cpu = Fluid.core.solver.create(cpuCfg);
+	cpu.addEmitter({ kind: "dye", x: 8, y: 8, radius: 3, value: 2 });
+	cpu.step(1 / 60);
+	check(cpu.ledger.injectedM > 0 && cpu.emitterCount() === 1,
+		"cpu solver: the same emitter API applies inside step and writes the conservation ledger",
+		"injectedM=" + cpu.ledger.injectedM.toFixed(6));
 
-	const { sim, m } = await makeSim({ substepsAuto: false, substepsFixed: 2 });
-	check(sim.emitterCount() === 0 && sim.addEmitter({ kind: "nope", x: 4, y: 4 }) === -1 &&
-		sim.addEmitter({ kind: "drain", x: 4, y: 4 }) === -1,
-		"engine: an unknown or deferred kind is refused");
+	const pattern = statsPattern();
+	pattern[36] = 2; pattern[40] = 100;
+	const { sim, m } = await makeSim({ substepsAuto: false, substepsFixed: 2, statsEvery: 2 }, { stats: pattern });
+	check(sim.emitterCount() === 0 && sim.addEmitter({ kind: "nope", x: 4, y: 4 }) === -1,
+		"engine: an unknown emitter kind is refused");
 	const dye = { kind: "dye", x: 32, y: 32, radius: 6, value: 2, dye: [1, 0, 0] };
 	const id = sim.addEmitter(dye);
+	sim.addEmitter({ kind: "heat", x: 20, y: 20, radius: 4, value: 50 });
 	const buf = new Float32Array(sim.solver.pool.emitters._buf);
 	const b = E.slotBase(0);
-	const eAmb = Fluid.core.solver.energyFromT(1, sim.params.TRef, sim.params);
-	check(id === 0 && sim.emitterCount() === 1 && buf[E.H_LIVE] === 1 &&
-		buf[b + E.E_X] === 32 && buf[b + E.E_Y] === 32 && buf[b + E.E_RADIUS] === 6 &&
-		buf[b + E.E_KIND] === E.KIND_DYE && buf[b + E.E_VALUE] === 2 &&
-		buf[b + E.E_DR] === 1 && buf[b + E.E_ACTIVE] === 1 &&
-		Math.abs(buf[E.H_EAMB] - eAmb) < 1e-6,
-		"addEmitter copies the spec into a preallocated slot and pushes the table",
-		"id=" + id + " live=" + buf[E.H_LIVE] + " x=" + buf[b + E.E_X]);
-	// the spec object is copied: mutating it afterwards must not move the slot
+	check(id === 0 && sim.emitterCount() === 2 && buf[b + E.E_X] === 32 && buf[b + E.E_KIND] === E.KIND_DYE &&
+		buf[b + E.E_ACTIVE] === 1 && sim.solver.pool.emitterLedger.size === E.LEDGER_LEN * 4,
+		"addEmitter copies the spec and allocates the 20-float cumulative GPU ledger");
 	dye.x = 1;
-	check(new Float32Array(sim.solver.pool.emitters._buf)[b + E.E_X] === 32 && sim.solver.emitters.slots[0].x === 32,
+	check(new Float32Array(sim.solver.pool.emitters._buf)[b + E.E_X] === 32,
 		"the add-time copy owns the values, so the caller can reuse its spec object");
-
-	const before = m.sink.pipeOrder.length;
+	let before = m.sink.pipeOrder.length;
 	sim.step(1 / 60);
-	const staged = m.sink.pipeOrder.slice(before);
-	check(staged.indexOf("emitterMass") >= 0 && staged.indexOf("emitterTherm") >= 0 &&
-		staged.indexOf("emitterVel") < 0,
-		"a dye source stages the mass and energy passes and no velocity pass",
-		staged.filter(p => p.indexOf("emitter") === 0).join(","));
-
-	// an independent f64 sum over the same integer disc: inclusion is exact
-	// arithmetic there, so only the per-cell rounding can differ
-	function discMass(spec, dtFrame, texW, texH) {
-		let sum = 0;
-		const r = spec.radius;
-		for (let y = Math.max(1, Math.ceil(spec.y - r)); y <= Math.min(texH - 2, Math.floor(spec.y + r)); y++) {
-			for (let x = Math.max(1, Math.ceil(spec.x - r)); x <= Math.min(texW - 2, Math.floor(spec.x + r)); x++) {
-				const dx = x - spec.x, dy = y - spec.y;
-				const d2 = dx * dx + dy * dy;
-				if (d2 >= r * r) continue;
-				const f = 1 - Math.sqrt(d2) / r;
-				sum += spec.value * f * f * dtFrame;
-			}
-		}
-		return sum;
-	}
-	const want = discMass({ x: 32, y: 32, radius: 6, value: 2 }, 1 / 60, sim.params.texW, sim.params.texH);
-	const ledger = sim.solver.getStats().ledger;
-	const gotM = ledger.injectedM, gotE = ledger.injectedE;
-	check(Math.abs(gotM - want) / want < 1e-6 && Math.abs(gotE - want * eAmb) / (want * eAmb) < 1e-6,
-		"the ledger books the mass and energy the pass adds",
-		"m=" + gotM.toFixed(6) + "/" + want.toFixed(6) + " E=" + gotE.toFixed(0));
+	let staged = m.sink.pipeOrder.slice(before);
+	check(staged.indexOf("applyEmitters") >= 0 && staged.indexOf("emitterTally") >= 0,
+		"a scalar source uses one combined apply pass and tallies on a stats frame");
+	await sim.solver.pollReadback();
+	check(sim.solver.getStats().ledger.injectedM === 2 && sim.solver.getStats().ledger.injectedE === 100,
+		"stats readback ingests the GPU totals instead of a CPU disc approximation");
+	before = m.sink.pipeOrder.length;
 	sim.step(1 / 60);
-	check(Math.abs(ledger.injectedM - 2 * want) / (2 * want) < 1e-6,
-		"a source keeps adding every frame at its rate", "m=" + ledger.injectedM.toFixed(6));
-
-	check(sim.setEmitter(id, { value: 4, radius: 9, dye: [0, 0, 1] }) === true &&
-		sim.moveEmitter(id, 10, 20) === true && sim.moveEmitter(5, 1, 1) === false,
-		"setEmitter patches named fields and moveEmitter moves the live slot only");
+	staged = m.sink.pipeOrder.slice(before);
+	check(staged.indexOf("applyEmitters") >= 0 && staged.indexOf("emitterTally") < 0 &&
+		sim.solver.getStats().ledger.injectedM === 2,
+		"application is every frame; the cumulative tally follows stats cadence only",
+		staged.filter(p => p.indexOf("mitter") >= 0).join(",") + " ledger=" + sim.solver.getStats().ledger.injectedM);
+	pattern[36] = 4; pattern[40] = 200;
+	sim.step(1 / 60); await sim.solver.pollReadback();
+	check(sim.solver.getStats().ledger.injectedM === 4 && sim.solver.getStats().ledger.injectedE === 200,
+		"the next readback adds only the delta from the last ingested cumulative total");
+	check(sim.setEmitter(id, { value: 4, radius: 9, dye: [0, 0, 1] }) === true && sim.moveEmitter(id, 10, 20) === true &&
+		sim.moveEmitter(5, 1, 1) === false, "setEmitter and moveEmitter patch live slots only");
 	const moved = new Float32Array(sim.solver.pool.emitters._buf);
-	check(moved[b + E.E_X] === 10 && moved[b + E.E_Y] === 20 && moved[b + E.E_RADIUS] === 9 &&
-		moved[b + E.E_VALUE] === 4 && moved[b + E.E_DB] === 1 && moved[b + E.E_DR] === 0,
-		"the patched slot is what the gpu reads", "x=" + moved[b + E.E_X] + " v=" + moved[b + E.E_VALUE]);
-
-	check(sim.removeEmitter(id) === true && sim.emitterCount() === 0 &&
-		new Float32Array(sim.solver.pool.emitters._buf)[b + E.E_ACTIVE] === 0 &&
-		sim.removeEmitter(id) === false,
-		"removeEmitter clears the active flag and the count, and is idempotent-safe");
-	const momentum = sim.addEmitter({ kind: "momentum", x: 20, y: 20, radius: 5, value: 60, dir: [1, 0] });
-	check(momentum === 0, "an empty slot is reused with the same stable id", "id=" + momentum);
-	const before2 = m.sink.pipeOrder.length;
-	sim.step(1 / 60);
-	const staged2 = m.sink.pipeOrder.slice(before2);
-	check(staged2.indexOf("emitterVel") >= 0 && staged2.indexOf("emitterMass") < 0,
-		"a momentum source stages the velocity pass and nothing else",
-		staged2.filter(p => p.indexOf("emitter") === 0).join(","));
-	let full = 0;
-	for (let i = sim.emitterCount(); i < E.MAX; i++) if (sim.addEmitter({ kind: "heat", x: 4, y: 4, radius: 2, value: 1 }) >= 0) full++;
-	check(full === E.MAX - 1 && sim.emitterCount() === E.MAX &&
-		sim.addEmitter({ kind: "heat", x: 4, y: 4, radius: 2, value: 1 }) === -1,
-		"the table is fixed at " + E.MAX + " slots and refuses the overflow",
-		"live=" + sim.emitterCount());
-	// an idle frame with no live source stages nothing and books nothing
+	check(moved[b + E.E_X] === 10 && moved[b + E.E_Y] === 20 && moved[b + E.E_RADIUS] === 9 && moved[b + E.E_DB] === 1,
+		"the patched slot is what the gpu reads");
+	check(sim.removeEmitter(id) === true && sim.removeEmitter(id) === false && new Float32Array(sim.solver.pool.emitters._buf)[b + E.E_ACTIVE] === 0,
+		"removeEmitter clears the slot and is idempotent-safe");
 	for (let i = 0; i < E.MAX; i++) sim.removeEmitter(i);
-	const idleM = sim.solver.getStats().ledger.injectedM;
-	const before3 = m.sink.pipeOrder.length;
+	const momentum = sim.addEmitter({ kind: "momentum", x: 20, y: 20, radius: 5, value: 60, dir: [1, 0] });
+	before = m.sink.pipeOrder.length;
 	sim.step(1 / 60);
-	check(m.sink.pipeOrder.slice(before3).every(p => p.indexOf("emitter") !== 0) &&
-		sim.solver.getStats().ledger.injectedM === idleM,
-		"with no live source a frame stages no emitter pass and books nothing");
+	staged = m.sink.pipeOrder.slice(before);
+	check(momentum === 0 && staged.indexOf("forces") >= 0 && staged.indexOf("applyEmitters") < 0 && staged.indexOf("emitterTally") < 0,
+		"momentum is acceleration inside forces, with no scalar or velocity copy pass");
+	let full = 1;
+	for (let i = 1; i < E.MAX; i++) if (sim.addEmitter({ kind: "heat", x: 4, y: 4, radius: 2, value: 1 }) >= 0) full++;
+	check(full === E.MAX && sim.addEmitter({ kind: "heat", x: 4, y: 4 }) === -1,
+		"the table is fixed at " + E.MAX + " slots and refuses overflow");
+	for (let i = 0; i < E.MAX; i++) sim.removeEmitter(i);
+	before = m.sink.pipeOrder.length;
+	sim.step(1 / 60);
+	check(m.sink.pipeOrder.slice(before).every(p => p !== "applyEmitters" && p !== "emitterTally"),
+		"with no live source a frame stages no emitter pass");
 	sim.destroy();
 
 	const r = await makeSim({ substepsAuto: false });
 	r.sim.addEmitter({ kind: "heat", x: 16, y: 16, radius: 5, value: 100 });
 	r.sim.setGrid(128);
 	const rebuilt = new Float32Array(r.sim.solver.pool.emitters._buf);
-	check(r.sim.emitterCount() === 1 && rebuilt[E.H_LIVE] === 1 && rebuilt[E.slotBase(0) + E.E_ACTIVE] === 1 &&
-		rebuilt[E.slotBase(0) + E.E_X] === 16,
-		"setGrid re-uploads the live source table into the rebuilt pool",
-		"live=" + rebuilt[E.H_LIVE]);
+	check(r.sim.emitterCount() === 1 && rebuilt[E.slotBase(0) + E.E_ACTIVE] === 1 && rebuilt[E.slotBase(0) + E.E_X] === 16,
+		"setGrid re-uploads the live source table into the rebuilt pool");
 	r.sim.reset("dam");
-	const afterReset = new Float32Array(r.sim.solver.pool.emitters._buf);
-	check(r.sim.emitterCount() === 1 && afterReset[E.H_LIVE] === 1 &&
-		r.sim.solver.getStats().ledger.injectedM === 0,
-		"reset() keeps the game's sources and starts a fresh ledger on them");
+	check(r.sim.emitterCount() === 1 && r.sim.solver.getStats().ledger.injectedM === 0 &&
+		new Float32Array(r.sim.solver.pool.emitterLedger._buf).every(v => v === 0),
+		"reset keeps the game's sources and starts a fresh cumulative ledger");
 	r.sim.destroy();
+}
+
+async function testEmitterReadbackRace() {
+	const pattern = statsPattern();
+	pattern[36] = 5; pattern[40] = 50;
+	const { sim } = await makeSim({ scenario: "still", statsEvery: 1, substepsAuto: false }, { stats: pattern });
+	sim.addEmitter({ kind: "dye", x: 20, y: 20, radius: 4, value: 1 });
+	let release;
+	const read = sim.solver.pool.statsRead;
+	read.mapAsync = () => new Promise(resolve => { release = resolve; });
+	sim.step(1 / 60); // snapshot totals 5/50; deliberately leave the map pending
+	let polling = sim.solver.pollReadback();
+	const beforePaint = sim.solver.getStats().ledger.injectedM;
+	const beforePaintE = sim.solver.getStats().ledger.injectedE;
+	sim.solver.paintDye(0.5, 0.5, [1, 0, 0]);
+	const paintM = sim.solver.getStats().ledger.injectedM - beforePaint;
+	const paintE = sim.solver.getStats().ledger.injectedE - beforePaintE;
+	sim.step(1 / 60); // no second copy while the first map is pending
+	release(); await polling;
+	check(sim.solver.getStats().ledger.injectedM === paintM + 5 && sim.solver.getStats().ledger.injectedE === paintE + 50 &&
+		sim.solver.getStats().expected.m === sim.solver.getStats().ledger.initialM + 5,
+		"delayed readback: interleaved paint is neither dropped nor counted in the old snapshot",
+		"paint=" + paintM.toFixed(6) + " actual=" + sim.solver.getStats().ledger.injectedM + "/" + sim.solver.getStats().ledger.injectedE);
+	pattern[36] = 10; pattern[40] = 100; // the second frame completed during the first map
+	sim.step(1 / 60); polling = sim.solver.pollReadback(); release(); await polling;
+	check(sim.solver.getStats().ledger.injectedM === paintM + 10 && sim.solver.getStats().ledger.injectedE === paintE + 100 &&
+		sim.solver.getStats().expected.m === sim.solver.getStats().ledger.initialM + paintM + 10,
+		"delayed readback: the next snapshot reconciles only its newly completed emitter delta");
+	sim.destroy();
 }
 
 // geometry (0.7.0 t4): the analytic mask, the delta upload, the velocity imprint and
@@ -998,12 +1034,13 @@ class El {
 		this.value = "";
 		this.style = {};
 		this.classList = { toggle: () => {} };
+		this.captured = new Set();
 	}
 	appendChild(child) { this.children.push(child); return child; }
 	focus() {}
-	setPointerCapture() {}
-	hasPointerCapture() { return false; }
-	releasePointerCapture() {}
+	setPointerCapture(id) { this.captured.add(id); }
+	hasPointerCapture(id) { return this.captured.has(id); }
+	releasePointerCapture(id) { this.captured.delete(id); }
 	addEventListener(type, fn) { (this.listeners[type] || (this.listeners[type] = [])).push(fn); }
 	removeEventListener(type, fn) {
 		const list = this.listeners[type];
@@ -1012,14 +1049,22 @@ class El {
 	}
 	getBoundingClientRect() { return { left: 0, top: 0, width: 100, height: 100 }; }
 	fire(type, props) {
-		for (const fn of (this.listeners[type] || []).slice()) fn(Object.assign({ preventDefault() {} }, props));
+		const event = Object.assign({
+			preventDefault() { this.defaultPrevented = true; },
+			stopImmediatePropagation() { this.immediateStopped = true; }
+		}, props);
+		for (const fn of (this.listeners[type] || []).slice()) {
+			fn(event);
+			if (event.immediateStopped) break;
+		}
+		return event;
 	}
 }
 async function testDemoPage() {
 	const origWindow = globalThis.window, origDocument = globalThis.document;
 	const origRaf = globalThis.requestAnimationFrame, origCancel = globalThis.cancelAnimationFrame;
 	const els = {};
-	for (const id of ["c", "status", "error-panel", "scenario", "pause", "step", "reset", "clear-probes", "views", "probe-body", "meters", "emitters", "body"]) {
+	for (const id of ["c", "status", "error-panel", "scenario", "pause", "step", "reset", "clear-probes", "views", "probe-body", "meters", "emitters", "emitter-status", "body"]) {
 		els[id] = new El(id === "c" ? "canvas" : "div");
 	}
 	const win = new El("window");
@@ -1071,10 +1116,12 @@ async function testDemoPage() {
 			"demo: fills the scenario select from the config's own scenario list",
 			"options=" + els.scenario.children.length);
 		const pool = new Float32Array(sim.solver.pool.emitters._buf);
+		let kindMask = 0;
+		for (const slot of sim.solver.emitters.slots) if (slot.active) kindMask |= 1 << slot.kind;
 		check(sim.emitterCount() === 6 && pool[0] === 6 && els.emitters.textContent === "Emitters (6)" &&
-			sim.params.scenario === "still",
-			"demo: the playground installs its heaters, cold plates and dye jet through addEmitter",
-			"live=" + pool[0] + " label=" + els.emitters.textContent);
+			kindMask === 63 && els["emitter-status"].textContent.indexOf("momentum") >= 0 && sim.params.scenario === "still",
+			"demo: the playground installs and names all six emitter kinds",
+			"live=" + pool[0] + " kinds=" + kindMask + " label=" + els.emitters.textContent);
 		await frames(6);
 		els.c.fire("contextmenu", { clientX: 50, clientY: 50 });
 		check(sim.probeCount() === 1 && sim.solver.probes.slots[0].x === 128 && sim.solver.probes.slots[0].y === 128,
@@ -1098,8 +1145,8 @@ async function testDemoPage() {
 		els.body.fire("click");
 		const bodyId = sim.colliderCount() === 1 ? 0 : -1;
 		const bodyX = bodyId >= 0 ? sim.solver.colliders.slots[bodyId].x : 0;
-		check(bodyId === 0 && els.body.textContent === "Body (on)",
-			"demo: the Body button adds one collider through addCollider", els.body.textContent);
+		check(bodyId === 0 && els.body.textContent === "Body (on)" && sim.solver.colliders.slots[bodyId].shape === 0,
+			"demo: the Body button adds a circle collider through addCollider", els.body.textContent);
 		const frameBefore = sim.solver.getStats().frame;
 		await frames(3);
 		const bodyMoved = bodyId >= 0 ? sim.solver.colliders.slots[bodyId].x : 0;
@@ -1111,6 +1158,18 @@ async function testDemoPage() {
 		check(wallAtBody === 255,
 			"demo: the body's cells are walls in the mask the solver holds",
 			"at " + bodyMoved + "," + bodyY + " flag=" + wallAtBody + " frame=" + sim.solver.getStats().frame);
+		els.c.fire("pointerdown", { pointerId: 9, button: 0, clientX: bodyMoved / sim.params.N * 100, clientY: (1 - bodyY / sim.params.N) * 100 });
+		check(els.c.captured.has(9) && sim.params.mouseStrength === 0,
+			"demo: grabbing the circle captures the drag without starting a paint stroke");
+		els.c.fire("pointermove", { pointerId: 9, clientX: 75, clientY: 60 });
+		const dragged = sim.solver.colliders.slots[bodyId];
+		const dragX = dragged.x, dragY = dragged.y;
+		check(Math.abs(dragX - 0.75 * sim.params.N) < 1e-6 && Math.abs(dragY - 0.4 * sim.params.N) < 1e-6,
+			"demo: pointer movement drives the public moveCollider API", dragX.toFixed(1) + "," + dragY.toFixed(1));
+		els.c.fire("pointerup", { pointerId: 9, clientX: 75, clientY: 60 });
+		await frames(3);
+		check(!els.c.captured.has(9) && dragged.x === dragX && dragged.y === dragY,
+			"demo: release ends capture and leaves the manually placed circle under user control");
 		els.body.fire("click");
 		check(sim.colliderCount() === 0 && els.body.textContent === "Body (off)",
 			"demo: a second click removes the body and its mask", els.body.textContent);
@@ -1126,7 +1185,7 @@ async function testDemoPage() {
 			"demo: the scenario select resets through the engine", sim.params.scenario);
 		const emittersBefore = m.sink.pipeOrder.length;
 		await frames(4);
-		check(m.sink.pipeOrder.slice(emittersBefore).indexOf("emitterMass") >= 0,
+		check(m.sink.pipeOrder.slice(emittersBefore).indexOf("applyEmitters") >= 0,
 			"demo: a frame with the playground's sources stages the emitter passes");
 		els.emitters.fire("click");
 		check(sim.emitterCount() === 0 && els.emitters.textContent === "Emitters (off)",
@@ -1162,6 +1221,7 @@ async function testDemoPage() {
 	await testPacing();
 	await testStatsAndProbes();
 	await testEmitters();
+	await testEmitterReadbackRace();
 	await testColliders();
 	await testColliderFlow();
 	await testColliderMGSafety();

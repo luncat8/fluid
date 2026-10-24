@@ -273,6 +273,9 @@
 		const fctLimiters=new Float32Array(texW*texH*6);
 		const massFctTmp=new Float32Array(texW*texH*4);
 		const acc=Fluid.core.stats;
+		const coreEmitters=Fluid.core.emitters;
+		const emitterTable=coreEmitters?coreEmitters.create():null;
+		const emitterFields={mass:null,therm:null,flags,texW,texH};
 		let ledger=null;
 		const diag={divBefore:0,divAfter:0,pressureResidual:0,sSaturated:0,
 			poissonRes:0,poissonRhs:0,poissonDrift:0,poissonDriftRhs:0,poissonDriftRel:0,
@@ -317,6 +320,21 @@
 		function vBlocked(x,y){
 			return y<=1||y>=texH-1||isBlocked(x,y-1)||isBlocked(x,y);
 		}
+		function applyEmitters(dt){
+			if(!emitterTable||!emitterTable.live)return;
+			coreEmitters.header(emitterTable,cfg);
+			emitterFields.mass=grid.curBuf(mass);emitterFields.therm=grid.curBuf(therm);
+			const out=coreEmitters.sweep(emitterTable,cfg,dt,emitterFields,emitterTable.frame);
+			ledger.injectedM+=out.inM;ledger.injectedDr+=out.inDr;ledger.injectedDg+=out.inDg;
+			ledger.injectedDb+=out.inDb;ledger.injectedE+=out.inE;
+			ledger.removedM+=out.outM;ledger.removedDr+=out.outDr;ledger.removedDg+=out.outDg;
+			ledger.removedDb+=out.outDb;ledger.removedE+=out.outE;
+			ledger.heatInE+=out.heatIn;ledger.heatOutE+=out.heatOut;
+		}
+		function addEmitter(spec){return emitterTable?coreEmitters.add(emitterTable,cfg,spec):-1;}
+		function moveEmitter(id,x,y){return emitterTable?coreEmitters.move(emitterTable,cfg,id,x,y):false;}
+		function setEmitter(id,patch){return emitterTable?coreEmitters.set(emitterTable,cfg,id,patch):false;}
+		function removeEmitter(id){return emitterTable?coreEmitters.remove(emitterTable,id):false;}
 		function reset(){
 			Fluid.core.config.prepareScenario(cfg);
 			const sc=buildScenario(cfg);
@@ -355,6 +373,7 @@
 					let u=0,v=0;
 					if(!uBlocked(x,y)){
 						u=src[vi]+dt*0.5*(cellAx(ms,ts,x-1,y,rhoMean)+cellAx(ms,ts,x,y,rhoMean));
+						if(emitterTable&&emitterTable.momentumLive)u+=dt*coreEmitters.momentum(emitterTable,cfg,x-1,y-0.5,0);
 						if(cfg.mouseStrength>0){
 							const f=mouseFall((x-1)-cfg.mouseX,(y-0.5)-cfg.mouseY,R,R2);
 							u+=dt*cfg.mouseVX*f*cfg.mouseStrength;
@@ -365,6 +384,7 @@
 					}
 					if(!vBlocked(x,y)){
 						v=src[vi+1]+dt*0.5*(cellAy(ms,ts,x,y-1,rhoMean)+cellAy(ms,ts,x,y,rhoMean));
+						if(emitterTable&&emitterTable.momentumLive)v+=dt*coreEmitters.momentum(emitterTable,cfg,x-0.5,y-1,1);
 						if(cfg.mouseStrength>0){
 							const f=mouseFall((x-0.5)-cfg.mouseX,(y-1)-cfg.mouseY,R,R2);
 							v+=dt*cfg.mouseVY*f*cfg.mouseStrength;
@@ -941,6 +961,7 @@
 			}
 		}
 		function step(dt){
+			applyEmitters(dt);
 			forces(dt);
 			advectVelocity(dt);
 			poissonRhs(dt);
@@ -1018,8 +1039,9 @@
 		}
 		reset();
 		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,sfield,flags,ledger,thermDiag,diag,mg,
+			emitters:emitterTable,addEmitter,moveEmitter,setEmitter,removeEmitter,emitterCount(){return emitterTable?emitterTable.live:0;},
 			isWall,isFrozen,isBlocked,uBlocked,vBlocked,reset,step,stats,forces,advectVelocity,poissonRhs,project,applyGrad,computeFlux,advectScalar,
-			phaseEos,conduction,heatSources,vorticityAt,
+			phaseEos,conduction,heatSources,vorticityAt,applyEmitters,
 			applyDyePatch,applyWallPatch};
 	}
 	Fluid.core.solver={create,buildScenario,buildDyePatch,buildWallPatch,patchTotals,paintBlob,

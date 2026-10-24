@@ -375,47 +375,66 @@ function runEmitterCase() {
 	const dtFrame = 1 / 15;
 	cfg.dt = dtFrame / 4;
 	cfg.substeps = 4;
+	cfg.gravityX = 0; cfg.gravityY = 0; cfg.mouseStrength = 0;
 	const table = E.create();
-	E.add(table, cfg, { kind: "dye", x: 10, y: 12, radius: 6, value: 2.5, dye: [1, 0.3, 0] });
+	E.add(table, cfg, { kind: "dye", x: 10, y: 12, radius: 6, value: 2.5, dye: [1, 0.3, 0], target: 310 });
 	E.add(table, cfg, { kind: "dye", x: 30, y: 5.5, radius: 7.25, value: 1.2, dye: [0.1, 0.9, 0.2] });
-	E.add(table, cfg, { kind: "heat", x: 16, y: 16, radius: 9, value: 300 });
+	E.add(table, cfg, { kind: "drain", x: 12, y: 12, radius: 5, value: 0.4 });
+	E.add(table, cfg, { kind: "heat", x: 16, y: 16, radius: 9, value: 300, target: 360 });
 	E.add(table, cfg, { kind: "cold", x: 16, y: 25, radius: 5.5, value: 220 });
+	E.add(table, cfg, { kind: "freeze", x: 20, y: 12, radius: 4, value: 500 });
 	E.add(table, cfg, { kind: "momentum", x: 8, y: 20, radius: 4.5, value: 150, dir: [0.6, -0.8] });
 	E.remove(table, E.add(table, cfg, { kind: "dye", x: 2, y: 2, radius: 20, value: 5 }));
 	const size = texW * texH;
 	const baseM = new Float32Array(size * 4);
 	const baseT = new Float32Array(size * 4);
 	const baseV = new Float32Array(size * 2);
+	const flagData = new Uint8Array(size * 4);
+	flagData[(9 + 12 * texW) * 4] = 255;
 	for (let y = 0; y < texH; y++) {
 		for (let x = 0; x < texW; x++) {
 			const i4 = (x + y * texW) * 4, i2 = (x + y * texW) * 2;
 			const m = 0.5 + 0.25 * Math.sin(x * 0.4) * Math.cos(y * 0.3);
 			baseM[i4] = 0.2 * m; baseM[i4 + 1] = 0.3 * m; baseM[i4 + 2] = 0.5 * m; baseM[i4 + 3] = m;
-			baseT[i4] = 800 * m;
-			baseV[i2] = 0.5 * x;
-			baseV[i2 + 1] = -0.25 * y;
+			baseT[i4] = Fluid.core.solver.energyFromT(m, 320, cfg);
+			baseT[i4 + 1] = 320; baseT[i4 + 2] = 0.02 * m; baseT[i4 + 3] = 0.01 * m;
+			baseV[i2] = 0.05 * x; baseV[i2 + 1] = -0.025 * y;
 		}
 	}
 	const cpuM = Float32Array.from(baseM), cpuT = Float32Array.from(baseT), cpuV = Float32Array.from(baseV);
 	E.header(table, cfg);
 	const out = {};
-	E.sweep(table, cfg, dtFrame, { mass: cpuM, therm: cpuT, vel: cpuV, texW: texW, texH: texH }, out);
+	E.sweep(table, cfg, dtFrame, { mass: cpuM, therm: cpuT, flags: flagData, texW, texH }, out);
 	const pa = Fluid.core.config.makeParamsArray();
 	Fluid.core.config.writeParams(pa, cfg);
 	const uniform = { uniform: pa.buffer.slice(0) };
 	const tableBuf = table.upload.buffer.slice(0);
 	const rgba = a => ({ texture: [a.buffer], descriptor: { size: [texW, texH], format: "rgba32float" } });
 	const rg = a => ({ texture: [a.buffer], descriptor: { size: [texW, texH], format: "rg32float" } });
+	const u8 = a => ({ texture: [a.buffer], descriptor: { size: [texW, texH], format: "rgba8uint" } });
+	const flags = u8(flagData);
 	const wx = Math.ceil(texW / 8), wy = Math.ceil(texH / 8);
 	const dstM = new Float32Array(baseM.length);
 	const dstT = new Float32Array(baseT.length);
-	const dstV = new Float32Array(baseV.length);
-	new WgslExec(WgslParser.Parse(PS + sh.emitterMass))
-		.dispatchWorkgroups("main", [wx, wy], { 0: { 0: uniform, 1: rgba(baseM), 2: rgba(dstM), 3: tableBuf } });
-	new WgslExec(WgslParser.Parse(PS + sh.emitterTherm))
-		.dispatchWorkgroups("main", [wx, wy], { 0: { 0: uniform, 1: rgba(baseT), 2: rgba(dstT), 3: tableBuf } });
-	new WgslExec(WgslParser.Parse(PS + sh.emitterVel))
-		.dispatchWorkgroups("main", [wx, wy], { 0: { 0: uniform, 1: rg(baseV), 2: rg(dstV), 3: tableBuf } });
+	new WgslExec(WgslParser.Parse(PS + sh.applyEmitters)).dispatchWorkgroups("main", [wx, wy], {
+		0: { 0: uniform, 1: rgba(baseM), 2: rgba(dstM), 3: rgba(baseT), 4: rgba(dstT), 5: flags, 6: tableBuf }
+	});
+	const ledgerBuf = new ArrayBuffer(E.LEDGER_LEN * 4);
+	const statsBuf = new ArrayBuffer(Fluid.core.stats.STATS_LEN * 4);
+	new WgslExec(WgslParser.Parse(PS + sh.emitterTally)).dispatchWorkgroups("main", [1], {
+		0: { 0: uniform, 1: rgba(baseM), 2: rgba(baseT), 3: flags, 4: tableBuf, 5: ledgerBuf, 6: statsBuf }
+	});
+	for (let y = 1; y < texH - 1; y++) for (let x = 1; x < texW - 1; x++) {
+		const i2 = (x + y * texW) * 2;
+		const uOpen = x > 1 && x < texW - 1 && !flagData[((x - 1) + y * texW) * 4] && !flagData[(x + y * texW) * 4];
+		const vOpen = y > 1 && y < texH - 1 && !flagData[(x + (y - 1) * texW) * 4] && !flagData[(x + y * texW) * 4];
+		cpuV[i2] = uOpen ? baseV[i2] + cfg.dt * E.momentum(table, cfg, x - 1, y - 0.5, 0) : 0;
+		cpuV[i2 + 1] = vOpen ? baseV[i2 + 1] + cfg.dt * E.momentum(table, cfg, x - 0.5, y - 1, 1) : 0;
+	}
+	const dstV = Float32Array.from(baseV);
+	new WgslExec(WgslParser.Parse(PS + sh.forces)).dispatchWorkgroups("main", [wx, wy], {
+		0: { 0: uniform, 1: rg(baseV), 2: rg(dstV), 3: rgba(dstM), 4: rgba(dstT), 5: flags, 6: tableBuf, 7: ledgerBuf }
+	});
 	const maxDiff = (a, b) => {
 		let d = 0;
 		for (let i = 0; i < a.length; i++) d = Math.max(d, Math.abs(a[i] - b[i]));
@@ -430,39 +449,43 @@ function runEmitterCase() {
 		return scale > 0 ? d / scale : d;
 	};
 	const dm = maxDiff(dstM, cpuM), dt = maxDiff(dstT, cpuT), dv = maxDiff(dstV, cpuV);
-	check("emitter exec: mass/therm/vel passes match the cpu oracle",
-		relDiff(dstM, cpuM) < 1e-5 && relDiff(dstT, cpuT) < 1e-5 && relDiff(dstV, cpuV) < 1e-5,
+	check("emitter exec: combined scalar/thermal pass and force momentum match the cpu oracle",
+		relDiff(dstM, cpuM) < 1e-6 && relDiff(dstT, cpuT) < 1e-6 && relDiff(dstV, cpuV) < 1e-6,
 		"mass=" + dm.toExponential(2) + " therm=" + dt.toExponential(2) + " vel=" + dv.toExponential(2));
-	// what the gpu actually added, summed the same way the stats reduction sums
-	let gpuIn = 0, gpuDr = 0, gpuE = 0;
+	const want = [out.inM, out.inDr, out.inDg, out.inDb, out.inE, out.outM, out.outDr, out.outDg, out.outDb, out.outE];
+	const ledger = new Float32Array(ledgerBuf), statsOut = new Float32Array(statsBuf);
+	let ledgerDiff = 0, mirrorDiff = 0;
+	for (let i = 0; i < 10; i++) {
+		ledgerDiff = Math.max(ledgerDiff, Math.abs(ledger[i] - want[i]) / Math.max(1, Math.abs(want[i])));
+		mirrorDiff = Math.max(mirrorDiff, Math.abs(statsOut[36 + i] - ledger[i]));
+	}
+	check("emitter exec: the tally closes every injected/removed channel and mirrors it to stats",
+		ledgerDiff < 2e-6 && mirrorDiff === 0, "maxRelDiff=" + ledgerDiff.toExponential(3));
+	let gpuM = 0, gpuE = 0, gpuHeatIn = 0, gpuHeatOut = 0;
 	for (let i = 0; i < size; i++) {
-		gpuIn += dstM[i * 4 + 3] - baseM[i * 4 + 3];
-		gpuDr += dstM[i * 4] - baseM[i * 4];
+		gpuM += dstM[i * 4 + 3] - baseM[i * 4 + 3];
 		gpuE += dstT[i * 4] - baseT[i * 4];
+		gpuHeatIn += dstT[i * 4 + 2] - baseT[i * 4 + 2];
+		gpuHeatOut += dstT[i * 4 + 3] - baseT[i * 4 + 3];
 	}
 	const rel = (a, b) => Math.abs(a - b) / Math.max(Math.abs(b), 1e-12);
-	// energy is booked on two sides (dye/heat in, cold out), so the field change is
-	// the difference; mass only ever comes in, and must match the injection alone
-	check("emitter exec: the ledger totals are the mass and energy the gpu added",
-		rel(gpuIn, out.inM) < 1e-6 && rel(gpuDr, out.inDr) < 1e-6 && rel(gpuE, out.inE - out.outE) < 1e-6,
-		"m " + gpuIn.toFixed(6) + "/" + out.inM.toFixed(6) + " E " + gpuE.toFixed(1) + "/" +
-		(out.inE - out.outE).toFixed(1));
-	check("emitter exec: passes staged by kind, and the removed slot adds nothing",
-		out.needMass && out.needTherm && out.needVel && table.live === 5,
-		"mass=" + out.needMass + " therm=" + out.needTherm + " vel=" + out.needVel + " live=" + table.live);
-	// the ghost ring must be copied through untouched: the interior clamp is what
-	// keeps a source from writing into a border a stencil reads as zero
+	check("emitter exec: stored field deltas equal scalar plus thermal ledger deltas",
+		rel(gpuM, out.inM - out.outM) < 2e-6 && rel(gpuE, out.inE - out.outE + out.heatIn - out.heatOut) < 2e-6 &&
+		rel(gpuHeatIn, out.heatIn) < 2e-6 && rel(gpuHeatOut, out.heatOut) < 2e-6,
+		"m=" + gpuM.toFixed(6) + " E=" + gpuE.toFixed(2) + " heat=" + gpuHeatIn.toFixed(1) + "/" + gpuHeatOut.toFixed(1));
+	check("emitter exec: all six kinds are staged, and the removed slot adds nothing",
+		out.any && out.needScalar && out.needThermal && out.needMomentum && table.live === 7 && out.outM > 0 && out.heatOut > 0,
+		"live=" + table.live + " removedM=" + out.outM.toFixed(4));
 	let ghost = 0;
 	for (let y = 0; y < texH; y++) for (let x = 0; x < texW; x++) {
 		if (x >= 1 && x <= texW - 2 && y >= 1 && y <= texH - 2) continue;
-		const i4 = (x + y * texW) * 4, i2 = (x + y * texW) * 2;
-		ghost = Math.max(ghost, Math.abs(dstM[i4 + 3] - baseM[i4 + 3]), Math.abs(dstT[i4] - baseT[i4]),
-			Math.abs(dstV[i2] - baseV[i2]));
+		const i4 = (x + y * texW) * 4;
+		ghost = Math.max(ghost, Math.abs(dstM[i4 + 3] - baseM[i4 + 3]), Math.abs(dstT[i4] - baseT[i4]));
 	}
 	check("emitter exec: ghost cells are copied, never sourced", ghost === 0, "maxDiff=" + ghost);
-	// the cold sink is a removal, not a negative injection: the two ledgers differ
-	check("emitter exec: a cold slot books removed energy, not injected",
-		out.outE > 0 && out.inE > 0, "inE=" + out.inE.toFixed(0) + " outE=" + out.outE.toFixed(0));
+	check("emitter exec: wall cells are copied and excluded from the tally",
+		dstM[(9 + 12 * texW) * 4 + 3] === baseM[(9 + 12 * texW) * 4 + 3] &&
+		dstT[(9 + 12 * texW) * 4] === baseT[(9 + 12 * texW) * 4], "wall=9,12");
 }
 
 
@@ -576,6 +599,7 @@ function runColliderPushCase() {
 		const m = 0.5 + 0.25 * Math.sin(x * 0.7) * Math.cos(y * 0.4);
 		srcM[i] = 0.2 * m; srcM[i + 1] = 0.3 * m; srcM[i + 2] = 0.5 * m; srcM[i + 3] = m;
 		srcT[i] = 800 * m; srcT[i + 1] = 300 + 20 * Math.sin(x * 0.2);
+		srcT[i + 2] = 0.07 * m; srcT[i + 3] = 0.02 * m;
 	}
 	const cpuM = Float32Array.from(srcM), cpuT = Float32Array.from(srcT);
 	const scratch = C.makeScratch(cells);
@@ -605,9 +629,11 @@ function runColliderPushCase() {
 		return t;
 	};
 	const rel = (a, b) => Math.abs(a - b) / Math.max(Math.abs(b), 1e-9);
-	check("push exec: the dye total and the energy total are unchanged",
-		rel(sum(dstM, 3), sum(srcM, 3)) < 1e-6 && rel(sum(dstT, 0), sum(srcT, 0)) < 1e-6,
-		"m " + rel(sum(dstM, 3), sum(srcM, 3)).toExponential(2) + " E " + rel(sum(dstT, 0), sum(srcT, 0)).toExponential(2));
+	check("push exec: dye, energy and cumulative heat-channel totals are unchanged",
+		rel(sum(dstM, 3), sum(srcM, 3)) < 1e-6 && rel(sum(dstT, 0), sum(srcT, 0)) < 1e-6 &&
+		rel(sum(dstT, 2), sum(srcT, 2)) < 1e-6 && rel(sum(dstT, 3), sum(srcT, 3)) < 1e-6,
+		"m " + rel(sum(dstM, 3), sum(srcM, 3)).toExponential(2) + " E " + rel(sum(dstT, 0), sum(srcT, 0)).toExponential(2) +
+		" heat " + rel(sum(dstT, 2), sum(srcT, 2)).toExponential(2) + "/" + rel(sum(dstT, 3), sum(srcT, 3)).toExponential(2));
 	// the taken cells are empty and read the reference temperature; the ghost ring is
 	// copied, not sourced
 	let body = 0, ghost = 0;

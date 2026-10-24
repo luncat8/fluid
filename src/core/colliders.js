@@ -237,18 +237,18 @@
 					continue;
 				}
 				if(c<=-0.5)continue;
-				let m0=sm[pi],m1=sm[pi+1],m2=sm[pi+2],m3=sm[pi+3];
-				let e0=st[pi],e1=st[pi+1];
-				for(let n=0;n<4;n++){
-					const nx=x0+x+(n===0?-1:n===1?1:0),ny=y0+y+(n===2?-1:n===3?1:0);
-					const g=code(nx,ny);
-					if(g<0.5)continue;
-					const np=(nx-x0+(ny-y0)*stride)*4,s=1/g;
-					m0+=sm[np]*s;m1+=sm[np+1]*s;m2+=sm[np+2]*s;m3+=sm[np+3]*s;
-					e0+=st[np]*s;e1+=st[np+1]*s;
-				}
-				mass[i*4]=m0;mass[i*4+1]=m1;mass[i*4+2]=m2;mass[i*4+3]=m3;
-				therm[i*4]=e0;therm[i*4+1]=e1;therm[i*4+2]=st[pi+2];therm[i*4+3]=st[pi+3];
+			let m0=sm[pi],m1=sm[pi+1],m2=sm[pi+2],m3=sm[pi+3];
+			let e0=st[pi],e1=st[pi+1],e2=st[pi+2],e3=st[pi+3];
+			for(let n=0;n<4;n++){
+				const nx=x0+x+(n===0?-1:n===1?1:0),ny=y0+y+(n===2?-1:n===3?1:0);
+				const g=code(nx,ny);
+				if(g<0.5)continue;
+				const np=(nx-x0+(ny-y0)*stride)*4,s=1/g;
+				m0+=sm[np]*s;m1+=sm[np+1]*s;m2+=sm[np+2]*s;m3+=sm[np+3]*s;
+				e0+=st[np]*s;e1+=st[np+1]*s;e2+=st[np+2]*s;e3+=st[np+3]*s;
+			}
+			mass[i*4]=m0;mass[i*4+1]=m1;mass[i*4+2]=m2;mass[i*4+3]=m3;
+			therm[i*4]=e0;therm[i*4+1]=e1;therm[i*4+2]=e2;therm[i*4+3]=e3;
 			}
 		}
 		return cells;

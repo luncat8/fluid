@@ -14,7 +14,7 @@
 		chargeLatent:59,TCeil:60,macLimiter:61,
 		viewMode:80,TMin:81,TMax:82,PMin:83,PMax:84,VMax:85,overlay:86,colorGain:87,
 		buoyX0:88,buoyY0:89,buoyW:90,buoyH:91,buoySub:92,buoyShow:93,
-		mgS:94,emitters:96
+		mgS:94,rhoBase:95,emitters:96
 	};
 	const defaults={
 		N:512,
@@ -364,6 +364,7 @@
 		a[paramsOff.buoySub]=cfg.buoySub||0;
 		a[paramsOff.buoyShow]=cfg.buoyShow||0;
 		a[paramsOff.mgS]=cfg.mgCoarsen||2;
+		a[paramsOff.rhoBase]=cfg.rhoBase||0;
 	}
 	Fluid.core.config={paramsOff,defaults,viewModes,viewModeNames,scenarioNames,paintModeNames,keyMap,substepCount,velocityCap,prepareScenario,recommendedIters,solverIters,setSolverIters,makeParamsArray,writeParams};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.config;

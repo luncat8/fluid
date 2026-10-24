@@ -92,9 +92,8 @@
 			statsB:comp("statsB",PS+sh.statsReduceB),
 			buoySample:comp("buoySample",PS+sh.buoySample),
 			probeSample:comp("probeSample",PS+sh.probeSample),
-			emitterMass:comp("emitterMass",PS+sh.emitterMass),
-			emitterTherm:comp("emitterTherm",PS+sh.emitterTherm),
-			emitterVel:comp("emitterVel",PS+sh.emitterVel),
+			applyEmitters:comp("applyEmitters",PS+sh.applyEmitters),
+			emitterTally:comp("emitterTally",PS+sh.emitterTally),
 			colliderVel:comp("colliderVel",PS+sh.colliderVel),
 			colliderPushMass:comp("colliderPushMass",PS+sh.colliderPushMass),
 			colliderPushTherm:comp("colliderPushTherm",PS+sh.colliderPushTherm),
@@ -133,7 +132,7 @@
 			forces:[],advectVel:[],macFwd:[],advectVelMac:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],advectScalar:[],
 			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],heatSources:[],
 		limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
-		emitterMass:[],emitterTherm:[],emitterVel:[],colliderVel:[],pushMass:[],pushTherm:[],
+			applyEmitters:[],emitterTally:[],colliderVel:[],pushMass:[],pushTherm:[],
 		poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],probeSample:[],render:null
 		};
 		for(let mm=0;mm<3;mm++){
@@ -256,21 +255,35 @@
 				{binding:2,resource:viewRes(ml)},
 				{binding:3,resource:viewRes(pool.patchGeo)}
 			]);
-			groups.emitterMass[m]=bg(device,"emitterMass"+m,pipes.emitterMass.getBindGroupLayout(0),[
-				{binding:0,resource:{buffer:pool.params}},
-				{binding:1,resource:viewRes(mm)},
-				{binding:2,resource:viewRes(ml)},
-				{binding:3,resource:{buffer:pool.emitters}}
-			]);
+			groups.applyEmitters[m]=[];
+			groups.emitterTally[m]=[];
 			groups.advectScalar[m]=[];
 			groups.applyGrad[m]=[];
 			groups.buoySample[m]=[];
 			groups.probeSample[m]=[];
 			groups.statsA[m]=[];
 			groups.toDisplay[m]=[];
-			for(let t=0;t<2;t++){
-				const tt=pool.therm.tex[t],tn=pool.therm.tex[1-t];
-				groups.advectScalar[m][t]=bg(device,"advectScalar"+m+t,pipes.advectScalar.getBindGroupLayout(0),[
+		for(let t=0;t<2;t++){
+			const tt=pool.therm.tex[t],tn=pool.therm.tex[1-t];
+			groups.applyEmitters[m][t]=bg(device,"applyEmitters"+m+t,pipes.applyEmitters.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(mm)},
+				{binding:2,resource:viewRes(ml)},
+				{binding:3,resource:viewRes(tt)},
+				{binding:4,resource:viewRes(tn)},
+				{binding:5,resource:flagsView},
+				{binding:6,resource:{buffer:pool.emitters}}
+			]);
+			groups.emitterTally[m][t]=bg(device,"emitterTally"+m+t,pipes.emitterTally.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:viewRes(mm)},
+				{binding:2,resource:viewRes(tt)},
+				{binding:3,resource:flagsView},
+				{binding:4,resource:{buffer:pool.emitters}},
+				{binding:5,resource:{buffer:pool.emitterLedger}},
+				{binding:6,resource:{buffer:pool.stats}}
+			]);
+			groups.advectScalar[m][t]=bg(device,"advectScalar"+m+t,pipes.advectScalar.getBindGroupLayout(0),[
 					{binding:0,resource:{buffer:pool.params}},
 					{binding:1,resource:fluxView},
 					{binding:2,resource:viewRes(mm)},
@@ -297,7 +310,9 @@
 						{binding:2,resource:viewRes(vn)},
 						{binding:3,resource:viewRes(mm)},
 						{binding:4,resource:viewRes(tt)},
-						{binding:5,resource:flagsView}
+						{binding:5,resource:flagsView},
+						{binding:6,resource:{buffer:pool.emitters}},
+						{binding:7,resource:{buffer:pool.emitterLedger}}
 					]);
 					if(t===0){
 						groups.applyGrad[m][v]=bg(device,"applyGrad"+m+v,pipes.applyGrad.getBindGroupLayout(0),[
@@ -362,12 +377,6 @@
 				{binding:2,resource:viewRes(tn)},
 				{binding:3,resource:viewRes(pool.patchE)}
 			]);
-			groups.emitterTherm[t]=bg(device,"emitterTherm"+t,pipes.emitterTherm.getBindGroupLayout(0),[
-				{binding:0,resource:{buffer:pool.params}},
-				{binding:1,resource:viewRes(tt)},
-				{binding:2,resource:viewRes(tn)},
-				{binding:3,resource:{buffer:pool.emitters}}
-			]);
 		}
 		for(let v=0;v<2;v++){
 			const vv=pool.vel.tex[v],vn=pool.vel.tex[1-v];
@@ -405,12 +414,6 @@
 				{binding:1,resource:viewRes(vv)},
 				{binding:2,resource:flagsView},
 				{binding:3,resource:fluxView}
-			]);
-			groups.emitterVel[v]=bg(device,"emitterVel"+v,pipes.emitterVel.getBindGroupLayout(0),[
-				{binding:0,resource:{buffer:pool.params}},
-				{binding:1,resource:viewRes(vv)},
-				{binding:2,resource:viewRes(vn)},
-				{binding:3,resource:{buffer:pool.emitters}}
 			]);
 			groups.colliderVel[v]=bg(device,"colliderVel"+v,pipes.colliderVel.getBindGroupLayout(0),[
 				{binding:0,resource:{buffer:pool.params}},
@@ -735,27 +738,20 @@
 		cpass.setBindGroup(0,groups.toDisplay[state.m][state.t][state.v]);
 		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
 	}
-	// one pass per field the active sources touch, at the top of the frame: the
-	// parities move exactly like encodePaint, so every later pass reads the new field
-	function encodeEmitters(cpass,pool,pipes,groups,state,need){
-		const wx=pool.workgroupX,wy=pool.workgroupY;
-		if(need.needMass){
-			cpass.setPipeline(pipes.emitterMass);
-			cpass.setBindGroup(0,groups.emitterMass[state.m]);
-			cpass.dispatchWorkgroups(wx,wy);
-			state.m=(state.m+1)%3;
-		}
-		if(need.needTherm){
-			cpass.setPipeline(pipes.emitterTherm);
-			cpass.setBindGroup(0,groups.emitterTherm[state.t]);
-			cpass.dispatchWorkgroups(wx,wy);
-			state.t=1-state.t;
-		}
-		if(need.needVel){
-			cpass.setPipeline(pipes.emitterVel);
-			cpass.setBindGroup(0,groups.emitterVel[state.v]);
-			cpass.dispatchWorkgroups(wx,wy);
-			state.v=1-state.v;
+	// One combined scalar/thermal pass. The optional tally reads the old parity,
+	// which remains intact while the live parity advances to the applied fields.
+	function encodeEmitters(cpass,pool,pipes,groups,state,need,needStats){
+		if(!need.any)return;
+		const m=state.m,t=state.t;
+		cpass.setPipeline(pipes.applyEmitters);
+		cpass.setBindGroup(0,groups.applyEmitters[m][t]);
+		cpass.dispatchWorkgroups(pool.workgroupX,pool.workgroupY);
+		state.m=(m+1)%3;
+		state.t=1-t;
+		if(needStats&&need.needScalar){
+			cpass.setPipeline(pipes.emitterTally);
+			cpass.setBindGroup(0,groups.emitterTally[m][t]);
+			cpass.dispatchWorkgroups(1);
 		}
 	}
 	// the contents of the cells a body takes go to the fluid around them. parities move

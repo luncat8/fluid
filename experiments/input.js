@@ -117,4 +117,20 @@ key("]");
 check(resizes===0,"maximum-grid shortcut does not rebuild an unchanged grid");
 key("[");
 check(resizes===1&&cfg.N===960,"grid shortcut still resizes within bounds");
+const local=new Target();
+let hookResets=0,hookResizes=0;
+const keys=Fluid.app.input.createKeys(local,cfg,solver,id=>{mode=id;},{
+	onReset(){hookResets++;},onResize(n){hookResizes++;cfg.N=n;}
+});
+local.fire("keydown",{key:"r"});
+local.fire("keydown",{key:"]"});
+check(hookResets===1&&hookResizes===1&&resets===1&&resizes===1,"standalone keys prefer the embedder's reset/resize hooks");
+local.fire("keydown",{key:" "});
+local.fire("blur");
+check(!keys.state.keys[" "],"standalone custom-target blur clears held keys");
+keys.destroy();
+const bare=Fluid.app.input.createKeys({},cfg,solver,id=>{mode=id;});
+bare.destroy();
+input.destroy();
+check(true,"listener setup and teardown tolerate missing add/removeEventListener methods");
 console.log("\nall "+checks+" checks pass");

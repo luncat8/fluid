@@ -20,7 +20,10 @@
 	// not solver error. a boiling spike lives there.
 	const IDX_POISSON_RES=32,IDX_POISSON_RHS=33;
 	const IDX_POISSON_DRIFT=34,IDX_POISSON_DRIFT_RHS=35;
-	const STATS_LEN=36;
+	// cumulative exact emitter totals: five injected channels then five removed.
+	// They are written by emitterTally, not by the field reduction.
+	const IDX_EMIT_IN=36,IDX_EMIT_OUT=41;
+	const STATS_LEN=46;
 	const PARTIAL_STRIDE=40;
 	// negatives below -1e-9 are real; smaller is f32/FCT roundoff (≈1e-28 seen at N=512).
 	// over threshold 1.001 catches any liquid overpack; severity is decided in the hud.
@@ -162,6 +165,6 @@
 		if(a<1e-3)return "warn";
 		return "bad";
 	}
-	Fluid.core.stats={STATS_LEN,PARTIAL_STRIDE,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,IDX_HEAT_IN,IDX_HEAT_OUT,IDX_T_MIN,IDX_T_MAX,IDX_T_MEAN,IDX_KINETIC,IDX_PH_VAC,IDX_PH_SOL,IDX_PH_MELT,IDX_PH_LIQ,IDX_PH_BOIL,IDX_PH_GAS,IDX_S_SAT,IDX_LATENT,IDX_FROZEN_MOM,IDX_POISSON_RES,IDX_POISSON_RHS,IDX_POISSON_DRIFT,IDX_POISSON_DRIFT_RHS,STATS_FIELDS,totalsFromFields,motionTotals,thermalTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift};
+	Fluid.core.stats={STATS_LEN,PARTIAL_STRIDE,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,IDX_HEAT_IN,IDX_HEAT_OUT,IDX_T_MIN,IDX_T_MAX,IDX_T_MEAN,IDX_KINETIC,IDX_PH_VAC,IDX_PH_SOL,IDX_PH_MELT,IDX_PH_LIQ,IDX_PH_BOIL,IDX_PH_GAS,IDX_S_SAT,IDX_LATENT,IDX_FROZEN_MOM,IDX_POISSON_RES,IDX_POISSON_RHS,IDX_POISSON_DRIFT,IDX_POISSON_DRIFT_RHS,IDX_EMIT_IN,IDX_EMIT_OUT,STATS_FIELDS,totalsFromFields,motionTotals,thermalTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.stats;
 })(globalThis);

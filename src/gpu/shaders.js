@@ -152,14 +152,42 @@ fn poissonResidual(p: PoissonP, x: i32, y: i32, w: i32, h: i32) -> PoissonOut {
 	shaders.paramsStruct=`
 struct Params { values: array<f32,128> };
 `;
+	const EMITTER_LIB=`
+const EMIT_MAX = 32u;
+const EMIT_HEADER = 16u;
+const EMIT_STRIDE = 16u;
+const EMIT_ACTIVE = 15u;
+const EMIT_KIND = 3u;
+const EMIT_VALUE = 4u;
+const EMIT_DX = 8u;
+const EMIT_DY = 9u;
+const EMIT_H = 11u;
+const EMIT_INVR2 = 12u;
+const EMIT_DYE = 0u;
+const EMIT_DRAIN = 1u;
+const EMIT_HEAT = 2u;
+const EMIT_COLD = 3u;
+const EMIT_FREEZE = 4u;
+const EMIT_MOMENTUM = 5u;
+
+fn emitFalloff(dx: f32, dy: f32, invR2: f32) -> f32 {
+	let d2 = dx * dx + dy * dy;
+	let t = max(0.0, 1.0 - d2 * invR2);
+	return t * t;
+}
+fn emitScalarKind(kind: u32) -> bool { return kind == EMIT_DYE || kind == EMIT_DRAIN; }
+fn emitThermalKind(kind: u32) -> bool { return kind >= EMIT_HEAT && kind <= EMIT_FREEZE; }
+`;
 	// ---------- forces ----------
-	shaders.forces=`
+	shaders.forces=EMITTER_LIB+`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var velSrc: texture_storage_2d<rg32float,read>;
 @group(0) @binding(2) var velDst: texture_storage_2d<rg32float,write>;
 @group(0) @binding(3) var massTex: texture_2d<f32>;
 @group(0) @binding(4) var thermTex: texture_2d<f32>;
 @group(0) @binding(5) var flagsTex: texture_2d<u32>;
+@group(0) @binding(6) var<storage,read> emitters: array<f32>;
+@group(0) @binding(7) var<storage,read> emitLedger: array<f32>;
 
 fn isBlocked(x: i32, y: i32, w: i32, h: i32) -> bool {
 	if (x < 1 || x > w - 2 || y < 1 || y > h - 2) { return true; }
@@ -206,7 +234,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let rhoRef = params.values[18];
 	let beta = params.values[19];
 	let tref = params.values[20];
-	let rhoMean = params.values[27];
+	let invN = params.values[1];
+	let rhoMean = params.values[95] + (emitLedger[0u] - emitLedger[5u]) * invN * invN;
 	let ms = params.values[23];
 	let mvx = params.values[24];
 	let mvy = params.values[25];
@@ -222,6 +251,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let f = mouseFall(f32(x - 1) - params.values[21], f32(y) - 0.5 - params.values[22], mr);
 			u = u + dt * mvx * f * ms;
 		}
+		for (var i = 0u; i < EMIT_MAX; i = i + 1u) {
+			let b = EMIT_HEADER + i * EMIT_STRIDE;
+			if (emitters[b + EMIT_ACTIVE] < 0.5 || u32(emitters[b + EMIT_KIND]) != EMIT_MOMENTUM) { continue; }
+			let fall = emitFalloff(f32(x - 1) - emitters[b], f32(y) - 0.5 - emitters[b + 1u], emitters[b + EMIT_INVR2]);
+			u = u + dt * emitters[b + EMIT_VALUE] * fall * emitters[b + EMIT_DX];
+		}
 		u = clamp(u, -vclamp, vclamp);
 	}
 	if (!vBlocked(x, y, w, h)) {
@@ -229,6 +264,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		if (ms > 0.0) {
 			let f = mouseFall(f32(x) - 0.5 - params.values[21], f32(y - 1) - params.values[22], mr);
 			v = v + dt * mvy * f * ms;
+		}
+		for (var i = 0u; i < EMIT_MAX; i = i + 1u) {
+			let b = EMIT_HEADER + i * EMIT_STRIDE;
+			if (emitters[b + EMIT_ACTIVE] < 0.5 || u32(emitters[b + EMIT_KIND]) != EMIT_MOMENTUM) { continue; }
+			let fall = emitFalloff(f32(x) - 0.5 - emitters[b], f32(y - 1) - emitters[b + 1u], emitters[b + EMIT_INVR2]);
+			v = v + dt * emitters[b + EMIT_VALUE] * fall * emitters[b + EMIT_DY];
 		}
 		v = clamp(v, -vclamp, vclamp);
 	}
@@ -1270,7 +1311,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 	}
 }
 `;
-	// ---------- level 2 with kahan sums (35 partial slots -> 36 stats slots) ----------
+	// ---------- level 2 with kahan sums (35 partial slots -> 36 field stats slots) ----------
 	shaders.statsReduceB=`
 @group(0) @binding(0) var<storage,read> partials: array<f32>;
 @group(0) @binding(1) var<storage,read_write> stats: array<f32>;
@@ -1460,34 +1501,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	probes[base + 9u] = textureLoad(pressTex, at, 0).r;
 }
 `;
-	// ---------- continuous sources (0.7.0 t3): one pass per field, one frame of dt ----------
-	// the table layout and the exact totals are owned by src/core/emitters.js. every
-	// kind is a cell-local addition the cpu sums over the same cells with the same
-	// falloff, so the ledger's injected/removed totals are the numbers the gpu adds.
-	// drain/freeze are not here yet: they need the cell's own state to decide how much
-	// to take, which the cpu cannot mirror without a readback (plan t3b).
-	const EMITTER_LIB=`
-const EMIT_MAX = 8u;
-const EMIT_HEADER = 16u;
-const EMIT_STRIDE = 16u;
-const EMIT_ACTIVE = 15u;
-const EMIT_KIND = 3u;
-const EMIT_VALUE = 4u;
-const EMIT_DX = 8u;
-const EMIT_DY = 9u;
-
-fn emitFalloff(dx: f32, dy: f32, r: f32) -> f32 {
-	let d2 = dx * dx + dy * dy;
-	if (d2 >= r * r) { return 0.0; }
-	let f = 1.0 - sqrt(d2) / r;
-	return f * f;
-}
-`;
-	shaders.emitterMass=EMITTER_LIB+`
+	// ---------- continuous sources (0.7.0 t3/t3b) ----------
+	// One combined copy applies scalar sources first and thermal sources second.
+	// Momentum stays in forces(), where staggered face openness and substep dt live.
+	shaders.applyEmitters=EMITTER_LIB+`
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var massSrc: texture_storage_2d<rgba32float,read>;
 @group(0) @binding(2) var massDst: texture_storage_2d<rgba32float,write>;
-@group(0) @binding(3) var<storage,read> emitters: array<f32>;
+@group(0) @binding(3) var thermSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(4) var thermDst: texture_storage_2d<rgba32float,write>;
+@group(0) @binding(5) var flagsTex: texture_2d<u32>;
+@group(0) @binding(6) var<storage,read> emitters: array<f32>;
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -1496,92 +1520,172 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	let x = i32(gid.x);
 	let y = i32(gid.y);
 	if (x >= w || y >= h) { return; }
-	var q = textureLoad(massSrc, vec2<i32>(x, y));
-	// one frame of source: the substep dt times the substep count, so a source is
-	// the same rate whether the frame ran 1 step or 12
-	let dt = params.values[4] * params.values[5];
+	let at = vec2<i32>(x, y);
+	var qm = textureLoad(massSrc, at);
+	var qt = textureLoad(thermSrc, at);
 	let inside = x >= 1 && x <= w - 2 && y >= 1 && y <= h - 2;
-	if (inside && dt > 0.0) {
+	let dt = params.values[4] * params.values[5];
+	if (inside && dt > 0.0 && textureLoad(flagsTex, at, 0).r == 0u) {
 		for (var i = 0u; i < EMIT_MAX; i = i + 1u) {
 			let b = EMIT_HEADER + i * EMIT_STRIDE;
 			if (emitters[b + EMIT_ACTIVE] < 0.5) { continue; }
-			if (emitters[b + EMIT_KIND] > 0.5) { continue; }
-			let fall = emitFalloff(f32(x) - emitters[b], f32(y) - emitters[b + 1u], emitters[b + 2u]);
+			let kind = u32(emitters[b + EMIT_KIND]);
+			if (!emitScalarKind(kind)) { continue; }
+			let fall = emitFalloff(f32(x) - emitters[b], f32(y) - emitters[b + 1u], emitters[b + EMIT_INVR2]);
 			if (fall <= 0.0) { continue; }
-			let dm = emitters[b + EMIT_VALUE] * fall * dt;
-			q = q + vec4<f32>(emitters[b + 5u] * dm, emitters[b + 6u] * dm, emitters[b + 7u] * dm, dm);
+			let amt = (emitters[b + EMIT_VALUE] * dt) * fall;
+			if (kind == EMIT_DYE) {
+				qm = qm + vec4<f32>(emitters[b + 5u] * amt, emitters[b + 6u] * amt, emitters[b + 7u] * amt, amt);
+				qt = vec4<f32>(qt.r + amt * emitters[b + EMIT_H], qt.g, qt.b, qt.a);
+			} else if (qm.a > 0.0) {
+				if (amt >= qm.a) {
+					qm = vec4<f32>(0.0);
+					qt = vec4<f32>(0.0, qt.g, qt.b, qt.a);
+				} else {
+					let scale = max(0.0, 1.0 - amt / qm.a);
+					qm = qm * scale;
+					qt = vec4<f32>(qt.r * scale, qt.g, qt.b, qt.a);
+				}
+			}
+		}
+		for (var i = 0u; i < EMIT_MAX; i = i + 1u) {
+			let b = EMIT_HEADER + i * EMIT_STRIDE;
+			if (emitters[b + EMIT_ACTIVE] < 0.5) { continue; }
+			let kind = u32(emitters[b + EMIT_KIND]);
+			if (!emitThermalKind(kind) || qm.a < params.values[58]) { continue; }
+			let fall = emitFalloff(f32(x) - emitters[b], f32(y) - emitters[b + 1u], emitters[b + EMIT_INVR2]);
+			if (fall <= 0.0) { continue; }
+			let amt = (emitters[b + EMIT_VALUE] * dt) * fall;
+			let old = qt.r;
+			var next = old;
+			if (kind == EMIT_HEAT) {
+				var d = amt;
+				if (emitters[b + 10u] > 0.0) { d = min(amt, max(0.0, qm.a * emitters[b + EMIT_H] - old)); }
+				next = old + d;
+			} else {
+				let d = min(amt, max(0.0, old - qm.a * emitters[b + EMIT_H]));
+				next = old - d;
+			}
+			let dE = next - old;
+			qt = vec4<f32>(next, qt.g, qt.b + max(dE, 0.0), qt.a + max(-dE, 0.0));
 		}
 	}
-	textureStore(massDst, vec2<i32>(x, y), q);
+	textureStore(massDst, at, qm);
+	textureStore(thermDst, at, qt);
 }
 `;
-	shaders.emitterTherm=EMITTER_LIB+`
+	// The scalar ledger replays the same f32 operations over the union of dye/drain
+	// boxes. First-box ownership makes overlaps one cell, not one contribution per
+	// box. Ten cumulative Kahan channels live in emitterLedger and are mirrored to
+	// stats[36..45] for the ordinary stats readback.
+	shaders.emitterTally=EMITTER_LIB+`
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var thermSrc: texture_storage_2d<rgba32float,read>;
-@group(0) @binding(2) var thermDst: texture_storage_2d<rgba32float,write>;
-@group(0) @binding(3) var<storage,read> emitters: array<f32>;
+@group(0) @binding(1) var massSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(2) var thermSrc: texture_storage_2d<rgba32float,read>;
+@group(0) @binding(3) var flagsTex: texture_2d<u32>;
+@group(0) @binding(4) var<storage,read> emitters: array<f32>;
+@group(0) @binding(5) var<storage,read_write> emitLedger: array<f32>;
+@group(0) @binding(6) var<storage,read_write> stats: array<f32>;
 
-@compute @workgroup_size(8,8)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn emitBox(slot: u32, x: i32, y: i32, w: i32, h: i32) -> bool {
+	let b = EMIT_HEADER + slot * EMIT_STRIDE;
+	let r = emitters[b + 2u];
+	let ex = emitters[b];
+	let ey = emitters[b + 1u];
+	let x0 = max(1, i32(ceil(ex - r)));
+	let x1 = min(w - 2, i32(floor(ex + r)));
+	let y0 = max(1, i32(ceil(ey - r)));
+	let y1 = min(h - 2, i32(floor(ey + r)));
+	return x >= x0 && x <= x1 && y >= y0 && y <= y1;
+}
+fn emitEarlierOwns(slot: u32, x: i32, y: i32, w: i32, h: i32) -> bool {
+	for (var j = 0u; j < slot; j = j + 1u) {
+		let b = EMIT_HEADER + j * EMIT_STRIDE;
+		if (emitters[b + EMIT_ACTIVE] < 0.5 || !emitScalarKind(u32(emitters[b + EMIT_KIND]))) { continue; }
+		if (emitBox(j, x, y, w, h)) { return true; }
+	}
+	return false;
+}
+@compute @workgroup_size(8)
+fn main(@builtin(local_invocation_index) lid: u32) {
 	let w = i32(params.values[2]);
 	let h = i32(params.values[3]);
-	let x = i32(gid.x);
-	let y = i32(gid.y);
-	if (x >= w || y >= h) { return; }
-	var q = textureLoad(thermSrc, vec2<i32>(x, y));
 	let dt = params.values[4] * params.values[5];
-	let inside = x >= 1 && x <= w - 2 && y >= 1 && y <= h - 2;
-	if (inside && dt > 0.0) {
+	for (var channel = lid; channel < 10u; channel = channel + 8u) {
+	var sum = 0.0;
+	if (dt > 0.0) {
 		for (var i = 0u; i < EMIT_MAX; i = i + 1u) {
-			let b = EMIT_HEADER + i * EMIT_STRIDE;
-			if (emitters[b + EMIT_ACTIVE] < 0.5) { continue; }
-			let kind = emitters[b + EMIT_KIND];
-			if (kind > 2.5) { continue; }
-			let fall = emitFalloff(f32(x) - emitters[b], f32(y) - emitters[b + 1u], emitters[b + 2u]);
-			if (fall <= 0.0) { continue; }
-			let scale = emitters[b + EMIT_VALUE] * fall * dt;
-			if (kind < 0.5) {
-				// dye mass arrives at the ambient energy the EOS uses (header slot 1)
-				q = vec4<f32>(q.r + scale * emitters[1u], q.g, q.b, q.a);
-			} else if (kind < 1.5) {
-				q = vec4<f32>(q.r + scale, q.g, q.b, q.a);
-			} else {
-				q = vec4<f32>(q.r - scale, q.g, q.b, q.a);
+			let bi = EMIT_HEADER + i * EMIT_STRIDE;
+			if (emitters[bi + EMIT_ACTIVE] < 0.5 || !emitScalarKind(u32(emitters[bi + EMIT_KIND]))) { continue; }
+			let r = emitters[bi + 2u];
+			let ex = emitters[bi];
+			let ey = emitters[bi + 1u];
+			let x0 = max(1, i32(ceil(ex - r)));
+			let x1 = min(w - 2, i32(floor(ex + r)));
+			let y0 = max(1, i32(ceil(ey - r)));
+			let y1 = min(h - 2, i32(floor(ey + r)));
+			if (x1 < x0 || y1 < y0) { continue; }
+			let bw = u32(x1 - x0 + 1);
+			let count = u32((x1 - x0 + 1) * (y1 - y0 + 1));
+			for (var k = 0u; k < count; k = k + 1u) {
+				let x = x0 + i32(k % bw);
+				let y = y0 + i32(k / bw);
+				if (emitEarlierOwns(i, x, y, w, h)) { continue; }
+				let at = vec2<i32>(x, y);
+				if (textureLoad(flagsTex, at, 0).r > 0u) { continue; }
+				var qm = textureLoad(massSrc, at);
+				var qt = textureLoad(thermSrc, at);
+				for (var j = 0u; j < EMIT_MAX; j = j + 1u) {
+					let b = EMIT_HEADER + j * EMIT_STRIDE;
+					if (emitters[b + EMIT_ACTIVE] < 0.5) { continue; }
+					let kind = u32(emitters[b + EMIT_KIND]);
+					if (!emitScalarKind(kind)) { continue; }
+					let fall = emitFalloff(f32(x) - emitters[b], f32(y) - emitters[b + 1u], emitters[b + EMIT_INVR2]);
+					if (fall <= 0.0) { continue; }
+					let amt = (emitters[b + EMIT_VALUE] * dt) * fall;
+					let om = qm.a;
+					let odr = qm.r;
+					let odg = qm.g;
+					let odb = qm.b;
+					let oe = qt.r;
+					if (kind == EMIT_DYE) {
+						qm = qm + vec4<f32>(emitters[b + 5u] * amt, emitters[b + 6u] * amt, emitters[b + 7u] * amt, amt);
+						qt = vec4<f32>(qt.r + amt * emitters[b + EMIT_H], qt.g, qt.b, qt.a);
+						if (channel == 0u) { sum = sum + (qm.a - om); }
+						else if (channel == 1u) { sum = sum + (qm.r - odr); }
+						else if (channel == 2u) { sum = sum + (qm.g - odg); }
+						else if (channel == 3u) { sum = sum + (qm.b - odb); }
+						else if (channel == 4u) { sum = sum + (qt.r - oe); }
+					} else if (qm.a > 0.0) {
+						if (amt >= qm.a) {
+							qm = vec4<f32>(0.0);
+							qt = vec4<f32>(0.0, qt.g, qt.b, qt.a);
+						} else {
+							let scale = max(0.0, 1.0 - amt / qm.a);
+							qm = qm * scale;
+							qt = vec4<f32>(qt.r * scale, qt.g, qt.b, qt.a);
+						}
+						if (channel == 5u) { sum = sum + (om - qm.a); }
+						else if (channel == 6u) { sum = sum + (odr - qm.r); }
+						else if (channel == 7u) { sum = sum + (odg - qm.g); }
+						else if (channel == 8u) { sum = sum + (odb - qm.b); }
+						else if (channel == 9u) { sum = sum + (oe - qt.r); }
+					}
+				}
 			}
 		}
 	}
-	textureStore(thermDst, vec2<i32>(x, y), q);
-}
-`;
-	shaders.emitterVel=EMITTER_LIB+`
-@group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var velSrc: texture_storage_2d<rg32float,read>;
-@group(0) @binding(2) var velDst: texture_storage_2d<rg32float,write>;
-@group(0) @binding(3) var<storage,read> emitters: array<f32>;
-
-@compute @workgroup_size(8,8)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-	let w = i32(params.values[2]);
-	let h = i32(params.values[3]);
-	let x = i32(gid.x);
-	let y = i32(gid.y);
-	if (x >= w || y >= h) { return; }
-	var q = textureLoad(velSrc, vec2<i32>(x, y));
-	// a momentum emitter is an acceleration: dv = dir * value * falloff * dt
-	let dt = params.values[4] * params.values[5];
-	let inside = x >= 1 && x <= w - 2 && y >= 1 && y <= h - 2;
-	if (inside && dt > 0.0) {
-		for (var i = 0u; i < EMIT_MAX; i = i + 1u) {
-			let b = EMIT_HEADER + i * EMIT_STRIDE;
-			if (emitters[b + EMIT_ACTIVE] < 0.5) { continue; }
-			if (emitters[b + EMIT_KIND] < 2.5) { continue; }
-			let fall = emitFalloff(f32(x) - emitters[b], f32(y) - emitters[b + 1u], emitters[b + 2u]);
-			if (fall <= 0.0) { continue; }
-			let dv = emitters[b + EMIT_VALUE] * fall * dt;
-			q = q + vec4<f32>(emitters[b + EMIT_DX] * dv, emitters[b + EMIT_DY] * dv, 0.0, 0.0);
-		}
+	// Each lane owns one or two cumulative channels (eight lanes, ten totals).
+	// Disjoint writes need no reduction/barrier, and the serial cell/source order
+	// is also the order used by the CPU oracle. Keep the one-digit workgroup size:
+	// wgsl_reflect's executor misparses multi-digit workgroup_size attributes.
+	let old = emitLedger[channel];
+	let y = sum - emitLedger[10u + channel];
+	let total = old + y;
+	emitLedger[10u + channel] = (total - old) - y;
+	emitLedger[channel] = total;
+	stats[36u + channel] = total;
 	}
-	textureStore(velDst, vec2<i32>(x, y), q);
 }
 `;
 	// ---------- collider velocity imprint (0.7.0 t4) ----------

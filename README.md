@@ -22,17 +22,17 @@ conduction with an enthalpy budget) is implemented in both the CPU reference and
 with CPU/GPU parity, and is signed off on Ampere hardware at 33-134 fps across the five
 phase scenarios (ice / cycle / jet / rain / arch). A small engine API (`Fluid.engine`)
 wraps the solver for game loops: fixed-step pacing with one frame in flight, live
-tunables, stats snapshots, a 32-slot probe table for point queries, an 8-slot source
-table (dye/heat/cold/momentum emitters with exact conservation accounting), view and
+tunables, stats snapshots, a 32-slot probe table for point queries, a 32-slot source
+table (dye/drain/heat/cold/freeze/momentum with exact conservation accounting), view and
 overlay control, and teardown that releases the pool.
 
 ## Run
 
 - Directly: open `index.html` from disk (`file://`) in a WebGPU browser.
 - API example: open `examples/demo.html` from disk. It draws the whole page through the
-  public engine API only: scenario/view controls, a source playground (heaters, cold
-  plates, a dye jet), a moving paddle that pushes the water, conservation meters and a
-  probe table fed by right-clicking the canvas.
+  public engine API only: scenario/view controls, one example of every source kind, an
+  automatically moving circle that can be dragged through the water, conservation meters
+  and a probe table fed by right-clicking the canvas.
 - Or: `python3 run_index.py` (options: `port`, `--host`, `--no-open`, `--page`) and open
   `http://127.0.0.1:8000/index.html`. The server sends COOP/COEP headers for cross-origin
   isolation and finer browser timers; for the GPU diagnostic page run
@@ -106,11 +106,11 @@ function frame(now) {
 | `paused` / `singleStep()` / `substeps` | pause state, one advance while paused, substep count of the last step. |
 | `stats(out)` | fills `out` (or one internal object) with totals, expected totals, minima, motion, thermal, phase histogram and residual diagnostics. |
 | `addProbe(x,y)` / `moveProbe(id,x,y)` / `removeProbe(id)` / `sample(id,out)` | 32 stable slots, sampled on `params.probeEvery` frames and read back through the same one-map-in-flight path as the stats. A sample is stale by design: `out.age` bounds it, a move takes effect on the next sample, and `sample` returns false until the first readback or after a reset/resize. |
-| `addEmitter(spec)` / `moveEmitter(id,x,y)` / `setEmitter(id,patch)` / `removeEmitter(id)` | 8 stable slots applied every frame. Kinds: `dye` (mass at ambient energy, tinted by `dye:[r,g,b]`), `heat` / `cold` (energy per second), `momentum` (velocity per second along `dir:[x,y]`). `value` is a per-second rate at the centre of a `radius` disc with a smooth falloff; the spec object is copied at add time, so a caller can reuse it. What a source adds is summed on the CPU from the same cells and falloff the pass uses, so the conservation meters stay meaningful while it runs. |
+| `addEmitter(spec)` / `moveEmitter(id,x,y)` / `setEmitter(id,patch)` / `removeEmitter(id)` | 32 stable slots. Kinds: `dye` (mass tinted by `dye:[r,g,b]`, at ambient or optional `target` temperature), `drain` (proportional mass/dye/energy removal), `heat` / `cold` (energy per second), `freeze` (energy removal toward the solid floor), and `momentum` (acceleration along `dir:[x,y]`). `value` is a per-second rate at the centre of a `radius` disc with smooth falloff; the spec is copied at add time. Scalar and thermal sources apply once per frame; momentum joins the force pass. A GPU-side tally measures the actual f32 deltas, including clamped drains, and the stats readback reconciles cumulative totals without double-counting interleaved paint. |
 | `addCollider(spec)` / `moveCollider(id,x,y,vx,vy)` / `setCollider(id,patch)` / `removeCollider(id)` | 8 stable slots of solid body the sim moves through, `shape: "circle"` (`radius`) or `"box"` (`hw`,`hh`). Cells a body covers become walls and newly reached fluid receives the body's velocity imprint. With the default multigrid pressure solver, the local dye/heat mass push is temporarily disabled: CPU tests found that push can trigger density and velocity runaway in the variable-coefficient coarse solve, so contents stay in covered cells until they are released. Set `params.useMultigrid=false` to use the legacy conservative neighbor push with the fine-grid pressure solver (slower). Only changed cells are uploaded; a parked body costs no collider passes. |
 | `setObstacles(mask,w,h)` / `paintObstacle(x,y,radius,kind)` | static geometry: a `w*h` byte mask (row 0 is `y = 1`, `1` = solid) or a painted disc, `kind` `"wall"` (default) or `"erase"`. A body that leaves a painted wall restores the wall underneath instead of clearing it. |
 | `setViewMode(mode)` / `bindViewMode(fn)` / `setOverlay(flag)` | view mode has one writer per page: bind the DOM control and the engine delegates to it, otherwise it writes `params.viewMode`. |
-| `attachInput(element)` / `detachInput()` | pointer stir/paint and the simulation keys; detach removes every listener. |
+| `attachInput(element)` / `bindKeys(target)` / `detachInput()` | `attachInput` installs pointer stir/paint plus keys. `bindKeys` installs only keys (omitted target = `window`, `null` = no binding) and returns an independently destroyable handle. Reset/resize shortcuts use the engine facade; custom-target blur clears held keys. Detach removes every listener. |
 | `perf` | pacing meter state: `simHz`, `renderHz`, `rafHz`, `simSpeed`, `cpuMs`, `queueMs`, `busy`, `error`. |
 | `destroy()` | detach input, destroy the pool (textures and buffers), drop the device reference. Safe to call twice. |
 

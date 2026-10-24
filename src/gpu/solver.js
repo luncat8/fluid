@@ -2,6 +2,8 @@
 	"use strict";
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.gpu=Fluid.gpu||{};
+	const EMIT_LEDGER_FIELDS=["injectedM","injectedDr","injectedDg","injectedDb","injectedE",
+		"removedM","removedDr","removedDg","removedDb","removedE"];
 	function createSolver(device,canvas,context,format,cfg){
 		const fields=Fluid.gpu.fields;
 		const passes=Fluid.gpu.passes;
@@ -35,6 +37,10 @@
 		// frame. the cpu sums the same cells into the ledger, so the drift meters
 		// stay meaningful while a game leaves a heater on.
 		const emitterTable=coreEmitters.create();
+		const emitterZero=new Float32Array(coreEmitters.LEDGER_LEN);
+		const emitterStatsZero=new Float32Array(10);
+		const emitApplied=new Float64Array(10),pendingEmit=new Float64Array(10);
+		let baseMass=0;
 		const state={m:0,t:0,v:0,pw:0,ph:0};
 		let flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
 		// colliders (0.7.0 t4): an analytic geometry, a per-cell owner index and the
@@ -76,6 +82,11 @@
 		const diag={sSaturated:0,poissonRes:0,poissonRhs:0,poissonRel:0,poissonDrift:0,poissonDriftRhs:0,poissonDriftRel:0};
 		let statsCache=null;
 		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,thermal:null,phaseCounts,diag,ledger:null};
+		function updateRhoMean(){
+			const inv=1/(cfg.N*cfg.N);
+			cfg.rhoBase=baseMass*inv;
+			cfg.rhoMean=cfg.rhoBase+(emitApplied[0]-emitApplied[5])*inv;
+		}
 		function writeParams(){
 			Fluid.core.config.writeParams(paramsArray,cfg);
 			paramsArray[Fluid.core.config.paramsOff.mgS]=pool.mgS;
@@ -107,6 +118,9 @@
 			buoyGeneration=statsGeneration;
 			probePending=false;
 			coreProbes.invalidate(probeTable);
+			emitApplied.fill(0);
+			device.queue.writeBuffer(pool.emitterLedger,0,emitterZero);
+			device.queue.writeBuffer(pool.stats,coreEmitters.STATS_OFFSET*4,emitterStatsZero);
 			device.queue.writeBuffer(pool.buoy,0,buoyZero);
 			Fluid.core.config.prepareScenario(cfg);
 			buoy.reset();
@@ -141,7 +155,8 @@
 			cfg.PMin=-100;cfg.PMax=100;
 			const init=stats.totalsFromFields(sc.massA,sc.thermA,cfg.texW,cfg.texH);
 			ledger=stats.createLedger(init);
-			cfg.rhoMean=init.sumM/(cfg.N*cfg.N);
+			baseMass=init.sumM;
+			updateRhoMean();
 			frameCount=0;
 			timeAcc=0;
 			for(let k=0;k<6;k++)phaseCounts[k]=0;
@@ -440,7 +455,8 @@
 			device.queue.submit([encoder.finish()]);
 			const t=coreSolver.patchTotals(patch);
 			ledger.injectedM+=t.m;ledger.injectedDr+=t.dr;ledger.injectedDg+=t.dg;ledger.injectedDb+=t.db;ledger.injectedE+=t.E;
-			cfg.rhoMean=(ledger.initialM+ledger.injectedM-ledger.removedM)/(cfg.N*cfg.N);
+			baseMass+=t.m;
+			updateRhoMean();
 		}
 		function paintWall(u,v,erase){
 			const patch=coreSolver.buildWallPatch(cfg,u,v,erase);
@@ -470,24 +486,16 @@
 			const needBuoy=buoy.state.active&&(frameCount%Math.max(1,cfg.buoySampleEvery)===0);
 			const needProbe=probeTable.live>0&&(frameCount%Math.max(1,cfg.probeEvery)===0);
 			updateColliders();
-			// sources next: what they add is carried, projected and advected by this
-			// same frame, and the ledger already knows the exact amount they added
+			// Scalar totals are measured on the GPU and ingested with stats. The small
+			// cumulative buffer also lets forces use this frame's exact mean density.
 			const emit=emitterTable.live>0?coreEmitters.prepare(emitterTable,cfg,dts*substeps):null;
-			if(emit&&emit.any){
-				uploadEmitters();
-				ledger.injectedM+=emit.inM;
-				ledger.injectedDr+=emit.inDr;
-				ledger.injectedDg+=emit.inDg;
-				ledger.injectedDb+=emit.inDb;
-				ledger.injectedE+=emit.inE;
-				ledger.removedE+=emit.outE;
-			}
+			if(emit&&emit.any)uploadEmitters();
 			cfg.dt=dts;
 			cfg.substeps=substeps;
 			cfg.frame=frameCount;
 			cfg.time=timeAcc;
 			cfg.chargeLatent=1;
-			cfg.rhoMean=(ledger.initialM+ledger.injectedM-ledger.removedM)/(cfg.N*cfg.N);
+			updateRhoMean();
 			writeParams();
 			// profiling splits the one compute pass at timing-group boundaries;
 			// the dispatch sequence is identical either way (0.6.0 t1).
@@ -496,7 +504,7 @@
 			const encoder=device.createCommandEncoder({label:"frame"});
 			if(profiling){
 				prof.beginFrame(substeps,frameCount+1);
-				if(emit&&emit.any)passes.encodeEmitters(prof.pass(encoder,PROFILE_GROUP.vel,"emit"),pool,pipes,groups,state,emit);
+				if(emit&&emit.any)passes.encodeEmitters(prof.pass(encoder,PROFILE_GROUP.vel,"emit"),pool,pipes,groups,state,emit,needStats);
 				for(let s=0;s<substeps;s++){
 					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
@@ -512,7 +520,7 @@
 				prof.closePass();
 			}else{
 				const cpass=encoder.beginComputePass({label:"sim"});
-				if(emit&&emit.any)passes.encodeEmitters(cpass,pool,pipes,groups,state,emit);
+				if(emit&&emit.any)passes.encodeEmitters(cpass,pool,pipes,groups,state,emit,needStats);
 				for(let s=0;s<substeps;s++){
 					passes.encodeStep(cpass,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
@@ -532,6 +540,7 @@
 			}
 			if(needStats&&!readbackInFlight){
 				encoder.copyBufferToBuffer(pool.stats,0,pool.statsRead,0,stats.STATS_LEN*4);
+				pendingEmit.set(emitApplied);
 				stats.writeExpectedTotals(pendingExpected,ledger);
 				pendingHeatNet=heatNetKnown;
 				pendingFrame=frameCount+1;
@@ -644,11 +653,15 @@
 					statsCache.totals.dg=readbackArray[2];
 					statsCache.totals.db=readbackArray[3];
 					statsCache.totals.E=readbackArray[4];
-					statsCache.expected.m=expM;
-					statsCache.expected.dr=expDr;
-					statsCache.expected.dg=expDg;
-					statsCache.expected.db=expDb;
-					statsCache.expected.E=expE;
+					for(let i=0;i<10;i++){
+						const total=readbackArray[coreEmitters.STATS_OFFSET+i];
+						ledger[EMIT_LEDGER_FIELDS[i]]+=total-pendingEmit[i];
+						emitApplied[i]=total;
+					}
+					statsCache.expected.m=expM+(emitApplied[0]-pendingEmit[0])-(emitApplied[5]-pendingEmit[5]);
+					statsCache.expected.dr=expDr+(emitApplied[1]-pendingEmit[1])-(emitApplied[6]-pendingEmit[6]);
+					statsCache.expected.dg=expDg+(emitApplied[2]-pendingEmit[2])-(emitApplied[7]-pendingEmit[7]);
+					statsCache.expected.db=expDb+(emitApplied[3]-pendingEmit[3])-(emitApplied[8]-pendingEmit[8]);
 					statsCache.mins.m=readbackArray[5];
 					statsCache.mins.dr=readbackArray[6];
 					statsCache.mins.dg=readbackArray[7];
@@ -667,8 +680,10 @@
 					cfg.PMin=-pSpanSmooth;
 					cfg.PMax=pSpanSmooth;
 					const heatIn=readbackArray[17],heatOut=readbackArray[18];
-					statsCache.expected.E=expE-expHeatNet+(heatIn-heatOut);
+					const emitE=(emitApplied[4]-pendingEmit[4])-(emitApplied[9]-pendingEmit[9]);
+					statsCache.expected.E=expE+emitE-expHeatNet+(heatIn-heatOut);
 					heatNetKnown=heatIn-heatOut;
+					updateRhoMean();
 					ledger.heatInE=heatIn;ledger.heatOutE=heatOut;
 					statsCache.thermal.TMin=readbackArray[19];
 					statsCache.thermal.TMax=readbackArray[20];

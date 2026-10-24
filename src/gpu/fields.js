@@ -77,6 +77,7 @@
 			probes:null,
 			probesRead:null,
 			emitters:null,
+			emitterLedger:null,
 			dims:null,
 			numWorkgroups:0,
 			workgroupX:0,workgroupY:0
@@ -143,8 +144,9 @@
 		const probeBytes=PROBES.LEN*4;
 		pool.probes=device.createBuffer({label:"probes",size:probeBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
 		pool.probesRead=device.createBuffer({label:"probesRead",size:probeBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
-		// sources are read by three passes and written only by the cpu, so no readback twin
 		pool.emitters=device.createBuffer({label:"emitters",size:EMITTERS.LEN*4,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
+		// ten Kahan sums plus ten compensations: exact cumulative scalar-source totals
+		pool.emitterLedger=device.createBuffer({label:"emitterLedger",size:EMITTERS.LEDGER_LEN*4,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
 		pool.dims=device.createBuffer({label:"dims",size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
 		const dimsArr=new Uint32Array([pool.numWorkgroups*PARTIAL_STRIDE,0,0,0]);
 		device.queue.writeBuffer(pool.dims,0,dimsArr);
@@ -161,7 +163,7 @@
 			pool.mgMass,pool.mgFlags,pool.mgDiv,pool.mgPress.tex[0],pool.mgPress.tex[1]];
 	}
 	function poolBuffers(pool){
-		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.probes,pool.probesRead,pool.emitters,pool.dims,pool.mgParams];
+		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.probes,pool.probesRead,pool.emitters,pool.emitterLedger,pool.dims,pool.mgParams];
 	}
 	function textureBytes(t){
 		if(!t||!t.fluidSize)return 0;

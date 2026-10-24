@@ -17,24 +17,24 @@
 	let probeCursor=0;
 	let viewButtons=null;
 	const probes=[];
-	// the playground's sources: three heaters along the floor, two cold plates under
-	// the ceiling and one dye jet. all of them are plain engine objects, so a game
-	// moves or removes them the same way.
+	// One live example of every source kind. The page only owns ids and reused specs;
+	// the engine owns the 32-slot table, GPU uploads and conservation ledger.
 	const emitters=[];
 	const EMITTER_SPOTS=[
-		{kind:"heat",x:0.28,y:0.03,r:0.06,value:220},
-		{kind:"heat",x:0.50,y:0.03,r:0.06,value:280},
-		{kind:"heat",x:0.72,y:0.03,r:0.06,value:220},
-		{kind:"cold",x:0.35,y:0.97,r:0.08,value:120},
-		{kind:"cold",x:0.65,y:0.97,r:0.08,value:120},
-		{kind:"dye",x:0.50,y:0.42,r:0.05,value:0.5,dye:[0.1,0.6,1]}
+		{kind:"dye",x:0.20,y:0.28,r:0.055,value:0.8,dye:[0.1,0.6,1]},
+		{kind:"drain",x:0.82,y:0.24,r:0.05,value:0.35},
+		{kind:"heat",x:0.28,y:0.94,r:0.06,value:180,target:360},
+		{kind:"cold",x:0.68,y:0.94,r:0.06,value:120},
+		{kind:"freeze",x:0.82,y:0.70,r:0.05,value:160},
+		{kind:"momentum",x:0.48,y:0.40,r:0.06,value:120,dir:[0.85,0.35]}
 	];
-	const emitterSpec={kind:"dye",x:0,y:0,radius:0,value:0,dye:[0,0,0]};
-	// the moving body (t4): a paddle the page drives across the tank. the engine owns
-	// the geometry and the mask; the page only says where it is and how fast, so a game
-	// substitutes its own physics for these two lines and keeps the push.
-	const paddle={id:-1,x:0.5,dir:1,speed:0.22,y:0.42};
-	const bodySpec={shape:"box",x:0,y:0,hw:0,hh:0,vx:0,vy:0};
+	const emitterSpec={kind:"dye",x:0,y:0,radius:0,value:0,target:0,dye:[0,0,0],dir:[1,0]};
+	// The body drives itself until the visitor drags it. Dragging takes manual
+	// control; toggling it off/on restores the automatic paddle.
+	const paddle={id:-1,x:0.5,dir:1,speed:0.22,y:0.42,r:0.055,auto:true,drag:false};
+	const bodySpec={shape:"circle",x:0,y:0,radius:0,vx:0,vy:0};
+	let dragPointer=-1,dragTime=0;
+	const dragCell={x:0,y:0};
 	const stats=Fluid.engine.makeStats();
 	const meter={};
 	function setText(el,value){
@@ -88,6 +88,9 @@
 			emitterSpec.y=Math.round(spot.y*N);
 			emitterSpec.radius=Math.max(2,spot.r*N);
 			emitterSpec.value=spot.value;
+			emitterSpec.target=spot.target||0;
+			emitterSpec.dir[0]=spot.dir?spot.dir[0]:1;
+			emitterSpec.dir[1]=spot.dir?spot.dir[1]:0;
 			const dye=emitterSpec.dye;
 			dye[0]=spot.dye?spot.dye[0]:1;
 			dye[1]=spot.dye?spot.dye[1]:1;
@@ -104,35 +107,89 @@
 			installEmitters();
 		}
 		setText($("emitters"),emitters.length?"Emitters ("+emitters.length+")":"Emitters (off)");
+		setText($("emitter-status"),emitters.length?"dye · drain · heat · cold · freeze · momentum":"all sources off");
 	}
 	function toggleBody(){
 		const N=sim.params.N;
 		if(paddle.id>=0){
 			sim.removeCollider(paddle.id);
 			paddle.id=-1;
+			paddle.drag=false;
+			dragPointer=-1;
 		}else{
 			bodySpec.x=Math.round(paddle.x*N);
 			bodySpec.y=Math.round(paddle.y*N);
-			bodySpec.hw=Math.max(2,Math.round(0.02*N));
-			bodySpec.hh=Math.max(3,Math.round(0.06*N));
+			bodySpec.radius=Math.max(3,Math.round(paddle.r*N));
 			bodySpec.vx=0;
 			bodySpec.vy=0;
+			paddle.auto=true;
 			paddle.id=sim.addCollider(bodySpec);
 			if(paddle.id<0)paddle.id=-1;
 		}
 		setText($("body"),paddle.id>=0?"Body (on)":"Body (off)");
 	}
-	// a wall bounce in page units, then one moveCollider: the engine diffs the mask and
-	// imprints the velocity on the water the paddle is about to reach
+	// A wall bounce in page units, then one moveCollider: the engine diffs the mask
+	// and imprints velocity on the water the paddle is about to reach.
 	function driveBody(dt){
-		// a paused sim does not step, so moving the body would only queue a jump for
-		// the resume frame (and a jump wider than a patch is a teleport, not a push)
-		if(paddle.id<0||sim.paused)return;
+		// A paused or manually dragged body must not queue an automatic teleport.
+		if(paddle.id<0||sim.paused||paddle.drag||!paddle.auto)return;
 		const N=sim.params.N;
 		paddle.x+=paddle.dir*paddle.speed*dt;
 		if(paddle.x>0.86){paddle.x=0.86;paddle.dir=-1;}
 		else if(paddle.x<0.14){paddle.x=0.14;paddle.dir=1;}
 		sim.moveCollider(paddle.id,Math.round(paddle.x*N),Math.round(paddle.y*N),paddle.dir*paddle.speed*N,0);
+	}
+	function eventCell(e){
+		const rect=canvasForDrag.getBoundingClientRect();
+		const N=sim.params.N;
+		dragCell.x=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width))*N;
+		dragCell.y=(1-Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height)))*N;
+	}
+	function consumeDragEvent(e){
+		e.preventDefault();
+		if(e.stopImmediatePropagation)e.stopImmediatePropagation();
+	}
+	function endBodyDrag(e){
+		if(!paddle.drag||e.pointerId!==dragPointer)return;
+		consumeDragEvent(e);
+		paddle.drag=false;
+		dragPointer=-1;
+		if(paddle.id>=0)sim.moveCollider(paddle.id,paddle.x*sim.params.N,paddle.y*sim.params.N,0,0);
+		if(canvasForDrag.hasPointerCapture&&canvasForDrag.hasPointerCapture(e.pointerId)&&canvasForDrag.releasePointerCapture)
+			canvasForDrag.releasePointerCapture(e.pointerId);
+	}
+	let canvasForDrag=null;
+	function attachBodyPointer(canvas){
+		canvasForDrag=canvas;
+		canvas.addEventListener("pointerdown",e=>{
+			if(paddle.id<0||paddle.drag||e.button!==0)return;
+			eventCell(e);
+			const r=Math.max(3,paddle.r*sim.params.N)+4;
+			const dx=dragCell.x-paddle.x*sim.params.N,dy=dragCell.y-paddle.y*sim.params.N;
+			if(dx*dx+dy*dy>r*r)return;
+			consumeDragEvent(e);
+			paddle.drag=true;
+			paddle.auto=false;
+			dragPointer=e.pointerId;
+			dragTime=performance.now();
+			if(canvas.setPointerCapture)canvas.setPointerCapture(e.pointerId);
+			if(paddle.id>=0)sim.moveCollider(paddle.id,dragCell.x,dragCell.y,0,0);
+		});
+		canvas.addEventListener("pointermove",e=>{
+			if(!paddle.drag||e.pointerId!==dragPointer)return;
+			consumeDragEvent(e);
+			eventCell(e);
+			const N=sim.params.N,r=Math.max(3,paddle.r*N);
+			const x=Math.max(r,Math.min(N-r,dragCell.x)),y=Math.max(r,Math.min(N-r,dragCell.y));
+			const now=performance.now(),dt=Math.max(1/240,(now-dragTime)/1000);
+			const vx=Math.max(-600,Math.min(600,(x-paddle.x*N)/dt));
+			const vy=Math.max(-600,Math.min(600,(y-paddle.y*N)/dt));
+			paddle.x=x/N;paddle.y=y/N;dragTime=now;
+			if(paddle.id>=0)sim.moveCollider(paddle.id,x,y,vx,vy);
+		});
+		canvas.addEventListener("pointerup",endBodyDrag);
+		canvas.addEventListener("pointercancel",endBodyDrag);
+		canvas.addEventListener("lostpointercapture",endBodyDrag);
 	}
 	function buildControls(){
 		const select=$("scenario");
@@ -269,6 +326,7 @@
 			status.textContent="WebGPU unavailable - see the error panel";
 			return;
 		}
+		attachBodyPointer(canvas);
 		sim.attachInput(canvas);
 		buildProbeRows();
 		viewButtons=buildControls();

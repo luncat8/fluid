@@ -82,6 +82,7 @@
 		let accumulator=0;
 		let destroyed=false;
 		let inputState=null;
+		let keyState=null;
 		let viewWriter=null;
 		let visibilityHandler=null;
 		function active(){
@@ -247,17 +248,31 @@
 			if(active())copyStats(dst,solver.getStats());
 			return dst;
 		}
+		const inputHooks={onReset:reset,onResize:setGrid};
 		function attachInput(element){
 			// the input helper is a page module: an embedder that does not load
 			// src/app/input.js keeps the engine, it just has no DOM binding
 			if(!active()||!Fluid.app||!Fluid.app.input)return null;
 			detachInput();
-			inputState=Fluid.app.input.create(element||canvas,cfg,solver,setViewMode);
+			inputState=Fluid.app.input.create(element||canvas,cfg,solver,setViewMode,inputHooks);
 			return inputState;
+		}
+		function bindKeys(element){
+			if(element===null||!active()||!Fluid.app||!Fluid.app.input||!Fluid.app.input.createKeys)return null;
+			if(keyState)keyState.destroy();
+			keyState=null;
+			// attaching keys separately must not leave the full input binding's copy live
+			if(inputState&&inputState.detachKeys)inputState.detachKeys();
+			const target=element||(typeof window!=="undefined"?window:null);
+			if(!target)return null;
+			keyState=Fluid.app.input.createKeys(target,cfg,solver,setViewMode,inputHooks);
+			return keyState;
 		}
 		function detachInput(){
 			if(inputState&&inputState.destroy)inputState.destroy();
+			if(keyState&&keyState.destroy)keyState.destroy();
 			inputState=null;
+			keyState=null;
 		}
 		function destroy(){
 			if(destroyed)return;
@@ -283,7 +298,7 @@
 			makeProbeSample:Fluid.core.probes.makeSample,
 			step,update,render,reset,setGrid,setViewMode,setOverlay,
 			bindViewMode(fn){viewWriter=typeof fn==="function"?fn:null;return !!viewWriter;},
-			addProbe,moveProbe,removeProbe,sample:sampleProbe,stats,attachInput,detachInput,pollReadback,
+			addProbe,moveProbe,removeProbe,sample:sampleProbe,stats,attachInput,bindKeys,detachInput,pollReadback,
 			addEmitter,moveEmitter,setEmitter,removeEmitter,
 			setObstacles,paintObstacle,addCollider,moveCollider,setCollider,removeCollider,
 			probeCount(){return active()?solver.probes.live:0;},
