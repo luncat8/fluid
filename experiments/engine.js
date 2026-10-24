@@ -272,9 +272,29 @@ async function testInputLifecycle() {
 		sim.detachInput();
 		check(win.count() + canvas.count() === before, "detachInput hands every listener back",
 			"listeners=" + (win.count() + canvas.count()));
+		const keyTarget = new Target();
+		const pointerBefore = canvas.count();
+		const keys = sim.bindKeys(keyTarget);
+		check(keys && (keyTarget.listeners.keydown || []).length === 1 && canvas.count() === pointerBefore,
+			"bindKeys installs keyboard handlers on the requested element without pointer listeners");
+		keyTarget.listeners.keydown[0]({ key: "2", target: null, preventDefault() {} });
+		check(mode.seen === 2, "bindKeys routes its view shortcuts through the same writer", "mode=" + mode.seen);
+		sim.detachKeys();
+		check(keyTarget.count() === 0 && canvas.count() === pointerBefore,
+			"detachKeys removes its handlers and leaves canvas pointer ownership untouched");
 		sim.attachInput(canvas);
+		const pointerListeners = canvas.count();
+		const windowKeys = (win.listeners.keydown || []).length;
+		sim.bindKeys(keyTarget);
+		check(canvas.count() === pointerListeners && (keyTarget.listeners.keydown || []).length === 1 &&
+			(win.listeners.keydown || []).length === windowKeys - 1,
+			"bindKeys replaces attachInput's key owner while preserving its pointer owner");
+		sim.detachKeys();
+		check(canvas.count() === pointerListeners && (canvas.listeners.pointerdown || []).length === 1,
+			"detachKeys leaves an attached pointer stroke handler active");
 		sim.destroy();
-		check(win.count() + canvas.count() === before, "destroy() detaches input before releasing the pool");
+		check(win.count() + canvas.count() === before && keyTarget.count() === 0,
+			"destroy() detaches all input owners before releasing the pool");
 	} finally {
 		globalThis.window = origWindow;
 		globalThis.document = origDocument;

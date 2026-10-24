@@ -82,6 +82,7 @@
 		let accumulator=0;
 		let destroyed=false;
 		let inputState=null;
+		let keyState=null;
 		let viewWriter=null;
 		let visibilityHandler=null;
 		function active(){
@@ -218,11 +219,31 @@
 			if(!active()||!Fluid.app||!Fluid.app.input)return null;
 			detachInput();
 			inputState=Fluid.app.input.create(element||canvas,cfg,solver,setViewMode);
+			keyState=inputState;
 			return inputState;
+		}
+		function bindKeys(element){
+			if(!active()||!element||!Fluid.app||!Fluid.app.input||!Fluid.app.input.createKeys)return null;
+			if(keyState===inputState&&inputState){
+				inputState.destroyKeys();
+				keyState=null;
+			}else if(keyState){
+				keyState.destroy();
+				keyState=null;
+			}
+			keyState=Fluid.app.input.createKeys(element,cfg,solver,setViewMode);
+			return keyState;
+		}
+		function detachKeys(){
+			if(keyState&&keyState!==inputState)keyState.destroy();
+			else if(keyState===inputState&&inputState)inputState.destroyKeys();
+			keyState=null;
 		}
 		function detachInput(){
 			if(inputState&&inputState.destroy)inputState.destroy();
+			if(keyState&&keyState!==inputState&&keyState.destroy)keyState.destroy();
 			inputState=null;
+			keyState=null;
 		}
 		function destroy(){
 			if(destroyed)return;
@@ -248,7 +269,7 @@
 			makeProbeSample:Fluid.core.probes.makeSample,
 			step,update,render,reset,setGrid,setViewMode,setOverlay,
 			bindViewMode(fn){viewWriter=typeof fn==="function"?fn:null;return !!viewWriter;},
-			addProbe,moveProbe,removeProbe,sample:sampleProbe,stats,attachInput,detachInput,pollReadback,
+			addProbe,moveProbe,removeProbe,sample:sampleProbe,stats,attachInput,detachInput,bindKeys,detachKeys,pollReadback,
 			probeCount(){return active()?solver.probes.live:0;},
 			singleStep(){cfg._stepOnce=true;},
 			pause(){cfg._paused=true;},

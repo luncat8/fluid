@@ -103,6 +103,7 @@ function frame(now) {
 | `addProbe(x,y)` / `moveProbe(id,x,y)` / `removeProbe(id)` / `sample(id,out)` | 32 stable slots, sampled on `params.probeEvery` frames and read back through the same one-map-in-flight path as the stats. A sample is stale by design: `out.age` bounds it, a move takes effect on the next sample, and `sample` returns false until the first readback or after a reset/resize. |
 | `setViewMode(mode)` / `bindViewMode(fn)` / `setOverlay(flag)` | view mode has one writer per page: bind the DOM control and the engine delegates to it, otherwise it writes `params.viewMode`. |
 | `attachInput(element)` / `detachInput()` | pointer stir/paint and the simulation keys; detach removes every listener. |
+| `bindKeys(element)` / `detachKeys()` | optional keyboard-only binding for games that own pointer input; shortcuts attach to the supplied element and detach without affecting pointer listeners. |
 | `perf` | pacing meter state: `simHz`, `renderHz`, `rafHz`, `simSpeed`, `cpuMs`, `queueMs`, `busy`, `error`. |
 | `destroy()` | detach input, destroy the pool (textures and buffers), drop the device reference. Safe to call twice. |
 

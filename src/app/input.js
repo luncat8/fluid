@@ -3,7 +3,11 @@
 	const Fluid=root.Fluid=root.Fluid||{};
 	Fluid.app=Fluid.app||{};
 	const DYE_COLORS=[[1,0,0],[0,1,0],[0,0,1],[1,1,0]];
-	function createInput(canvas,cfg,solver,setMode){
+	function createInput(canvas,cfg,solver,setMode,options){
+		const opt=options||{};
+		const pointerEnabled=opt.pointer!==false;
+		const keysEnabled=opt.keys!==false;
+		const keyTarget=opt.keyTarget||window;
 		const state={
 			x:0,y:0,dx:0,dy:0,down:false,
 			lastX:0,lastY:0,lastT:0,
@@ -34,25 +38,35 @@
 			state.pending.wall=cfg.paintMode!==0;
 			state.pending.erase=cfg.paintMode===2;
 		}
-		// every listener is registered through one list so destroy() can hand the
-		// canvas and the window back exactly as it found them (0.7.0: the engine may
-		// attach and detach input on a live sim)
-		const bindings=[];
-		function on(target,type,fn){
+		// pointer and keyboard listeners have separate ownership so games can detach
+		// one without disturbing the other.
+		const pointerBindings=[];
+		const keyBindings=[];
+		function on(target,type,fn,bindings){
 			target.addEventListener(type,fn);
 			bindings.push([target,type,fn]);
 		}
-		function destroy(){
+		function removeBindings(bindings){
 			for(let i=0;i<bindings.length;i++){
 				const b=bindings[i];
 				b[0].removeEventListener(b[1],b[2]);
 			}
 			bindings.length=0;
+		}
+		function destroyKeys(){
+			removeBindings(keyBindings);
+			for(const k in state.keys)state.keys[k]=false;
+		}
+		function destroy(){
+			removeBindings(pointerBindings);
+			destroyKeys();
 			state.pending=null;
 			state.down=false;
 			state.pointerId=null;
-			cfg.mouseStrength=0;
-			cfg.mouseVX=0;cfg.mouseVY=0;
+			if(pointerEnabled){
+				cfg.mouseStrength=0;
+				cfg.mouseVX=0;cfg.mouseVY=0;
+			}
 		}
 		cfg.paintColor=cfg.paintColor||0;
 		function flushPaint(){
@@ -67,6 +81,7 @@
 			state.pending=null;
 			cfg._dirty=true;
 		}
+		if(pointerEnabled){
 		on(canvas,"pointerdown",e=>{
 			if(state.down||e.button!==0)return;
 			canvas.setPointerCapture(e.pointerId);
@@ -81,7 +96,7 @@
 			if(cfg.paintMode===0)cfg.mouseStrength=1;
 			queuePaint(u,v);
 			e.preventDefault();
-		});
+		},pointerBindings);
 		on(canvas,"pointermove",e=>{
 			if(!state.down||e.pointerId!==state.pointerId)return;
 			const oldX=state.x,oldY=state.y;
@@ -100,7 +115,7 @@
 			state.lastX=u;state.lastY=v;state.lastT=now;
 			cfg.mouseX=u*cfg.N;cfg.mouseY=v*cfg.N;
 			queuePaint(u,v);
-		});
+		},pointerBindings);
 		function pointerEnd(e){
 			if(e&&e.pointerId!==state.pointerId)return;
 			if(e&&e.type!=="pointerup")state.pending=null;
@@ -112,15 +127,19 @@
 			cfg.mouseVX=0;cfg.mouseVY=0;
 			if(id!==null&&canvas.hasPointerCapture(id))canvas.releasePointerCapture(id);
 		}
-		on(canvas,"pointerup",pointerEnd);
-		on(canvas,"pointercancel",pointerEnd);
-		on(canvas,"lostpointercapture",pointerEnd);
-		on(window,"blur",()=>{
-			pointerEnd();
-			state.pending=null;
-			for(const k in state.keys)state.keys[k]=false;
-		});
-		on(window,"keydown",e=>{
+			on(canvas,"pointerup",pointerEnd,pointerBindings);
+			on(canvas,"pointercancel",pointerEnd,pointerBindings);
+			on(canvas,"lostpointercapture",pointerEnd,pointerBindings);
+			on(window,"blur",()=>{
+				pointerEnd();
+				state.pending=null;
+			},pointerBindings);
+		}
+		if(keysEnabled){
+			on(window,"blur",()=>{
+				for(const k in state.keys)state.keys[k]=false;
+			},keyBindings);
+			on(keyTarget,"keydown",e=>{
 			if(e.defaultPrevented||e.ctrlKey||e.metaKey||e.altKey||e.isComposing)return;
 			const target=e.target;
 			if(target&&(target.isContentEditable||target.closest("input, select, textarea, button, a[href]")))return;
@@ -181,12 +200,16 @@
 				if(solver&&solver.buoy)solver.buoy.reset();
 				cfg._dirty=true;
 			}
-		});
-		on(window,"keyup",e=>{
-			state.keys[e.key.toLowerCase()]=false;
-		});
-		return {state,flushPaint,destroy};
+			},keyBindings);
+			on(keyTarget,"keyup",e=>{
+				state.keys[e.key.toLowerCase()]=false;
+			},keyBindings);
+		}
+		return {state,flushPaint,destroy,destroyKeys};
 	}
-	Fluid.app.input={create:createInput,DYE_COLORS};
+	function createKeys(element,cfg,solver,setMode){
+		return createInput(null,cfg,solver,setMode,{pointer:false,keyTarget:element});
+	}
+	Fluid.app.input={create:createInput,createKeys,DYE_COLORS};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.app.input;
 })(globalThis);
