@@ -330,9 +330,12 @@
 				}
 			}
 			if(!changed)return;
-			// the push first: it reads the mask diff, so it has to run before the rect
-			// bookkeeping below turns `prev` into the new image
-			if(patchOk)pushed=coreColliders.geometry(cfg,owner,prev,pushRect,geoPatch,fields.PATCH);
+			// Conservative local pushes create sharp density spikes next to moving
+			// bodies. The variable-coefficient multigrid pressure path is not stable
+			// for that discontinuous field; keep the velocity imprint, but retain the
+			// scalar contents under the body until those cells are released. The
+			// fine-grid pressure fallback still supports the explicit mass push.
+			if(patchOk&&!cfg.useMultigrid)pushed=coreColliders.geometry(cfg,owner,prev,pushRect,geoPatch,fields.PATCH);
 			if(patchOk){
 				// the flags patch carries every byte of the rect, so the static wall and
 				// the other channels travel with the body's tiles

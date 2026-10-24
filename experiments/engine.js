@@ -622,20 +622,42 @@ async function testColliders() {
 	check(m.sink.textureWrites.some(w => w.label === "flags") && m.sink.pipeOrder.indexOf("phaseEos") >= 0,
 		"adding a body uploads the mask and re-primes the phase fields");
 
-	// a moving body: the released cells come back, the new ones block, and the fluid
-	// it displaced gets the body's velocity while the body's own cells go to zero
+	// The default variable-coefficient multigrid path uses the safe moving-body
+	// fallback: it keeps the velocity imprint but skips the sharp local mass push.
+	const safeWritesBefore = m.sink.textureWrites.length;
+	const safePipesBefore = m.sink.pipeOrder.length;
+	sim.moveCollider(id, 40, 32, 120, -30);
+	sim.step(1 / 60);
+	const safeWrites = m.sink.textureWrites.slice(safeWritesBefore);
+	const safeStaged = m.sink.pipeOrder.slice(safePipesBefore);
+	const safeVelWrite = safeWrites.filter(w => w.label === "patchVel").pop();
+	const safeFlagsWrite = safeWrites.filter(w => w.label === "flags").pop();
+	check(flagsAt(32, 32) === 0 && flagsAt(40, 32) === 255 && flagsAt(44, 32) === 255,
+		"a moved body clears the cells it left and blocks the ones it entered",
+		"old=" + flagsAt(32, 32) + " new=" + flagsAt(40, 32));
+	check(safeFlagsWrite && safeFlagsWrite.size[0] < N && safeFlagsWrite.origin[0] > 0,
+		"the mask delta uploads a patch, not the whole grid",
+		safeFlagsWrite ? "rect " + safeFlagsWrite.size.join("x") + " at " + safeFlagsWrite.origin.join(",") : "no write");
+	check(safeVelWrite && safeStaged.indexOf("colliderVel") >= 0 && safeStaged.indexOf("colliderPushMass") < 0 &&
+		safeStaged.indexOf("colliderPushTherm") < 0 && !safeWrites.some(w => w.label === "patchGeo"),
+		"multigrid collider motion keeps its velocity imprint and skips the unstable local mass push",
+		safeStaged.filter(n => n.indexOf("collider") === 0).join(","));
+
+	// Explicitly selecting the fine-grid pressure fallback keeps the conservative
+	// push path available for apps that need the body to carry scalar contents.
+	sim.params.useMultigrid = false;
 	const writesBefore = m.sink.textureWrites.length;
 	const pipesBefore = m.sink.pipeOrder.length;
-	sim.moveCollider(id, 40, 32, 120, -30);
+	sim.moveCollider(id, 48, 32, 120, -30);
 	sim.step(1 / 60);
 	const newWrites = m.sink.textureWrites.slice(writesBefore);
 	const velWrite = newWrites.filter(w => w.label === "patchVel").pop();
 	const flagsWrite = newWrites.filter(w => w.label === "flags").pop();
-	check(flagsAt(32, 32) === 0 && flagsAt(40, 32) === 255 && flagsAt(44, 32) === 255,
-		"a moved body clears the cells it left and blocks the ones it entered",
-		"old=" + flagsAt(32, 32) + " new=" + flagsAt(40, 32));
+	check(flagsAt(40, 32) === 0 && flagsAt(48, 32) === 255 && flagsAt(52, 32) === 255,
+		"the fine-grid push path also releases old cells and blocks new ones",
+		"old=" + flagsAt(40, 32) + " new=" + flagsAt(48, 32));
 	check(flagsWrite && flagsWrite.size[0] < N && flagsWrite.origin[0] > 0,
-		"the mask delta uploads a patch, not the whole grid",
+		"the fine-grid mask delta still uploads a patch, not the whole grid",
 		flagsWrite ? "rect " + flagsWrite.size.join("x") + " at " + flagsWrite.origin.join(",") : "no write");
 	const patch = velWrite ? new Float32Array(velWrite.data.buffer, velWrite.data.byteOffset, velWrite.data.length) : null;
 	// the velocity patch lives at the patch texture's origin, so its grid origin is
@@ -647,15 +669,15 @@ async function testColliders() {
 		const i = (px + py * velWrite.size[0]) * 4;
 		return [patch[i], patch[i + 1], patch[i + 2]];
 	};
-	const bodyCell = patchAt(40, 32);
-	const aheadCell = patchAt(45, 32);
-	const trailingCell = patchAt(35, 32);
+	const bodyCell = patchAt(48, 32);
+	const aheadCell = patchAt(53, 32);
+	const trailingCell = patchAt(43, 32);
 	const staged = m.sink.pipeOrder.slice(pipesBefore);
 	check(staged.indexOf("colliderVel") >= 0,
 		"a moving body stages the velocity imprint pass");
 	check(staged.indexOf("colliderPushMass") >= 0 && staged.indexOf("colliderPushTherm") >= 0 &&
 		newWrites.some(w => w.label === "patchGeo"),
-		"a moving body stages both push passes and uploads the geometry patch",
+		"the fine-grid pressure fallback stages both push passes and uploads geometry",
 		staged.filter(n => n.indexOf("collider") === 0).join(","));
 	// every pipeline the collider pass binds needs a group for each parity state, or the
 	// device drops the whole command buffer and the body silently does not move
@@ -828,6 +850,63 @@ async function testColliderFlow() {
 		"a wall is a boundary, not a drain: the core solver leaves the fluid it covers alone",
 		"m " + held.toFixed(3) + "->" + sm2[cell + 3].toFixed(3) + " v=" + sv[k * 2].toFixed(3) +
 		" drift=" + Math.abs(acc.driftRel(st3.sumM, acc.expectedTotal(s2.ledger, "m"))).toExponential(2));
+}
+
+// default multigrid path regression: the moving-body fallback keeps the existing
+// velocity imprint but omits the local conservative mass push that destabilizes the
+// variable-coefficient coarse solve.
+async function testColliderMGSafety() {
+	const S = Fluid.core.solver, C = Fluid.core.colliders, acc = Fluid.core.stats, grid = Fluid.core.grid;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {
+		N: 64, scenario: "still", useMultigrid: true, dt: 1 / 60, gravityY: 0
+	});
+	cfg.texW = cfg.N + 2; cfg.texH = cfg.N + 2;
+	const sim = S.create(cfg), table = C.create();
+	const id = C.add(table, cfg, {
+		shape: "box", x: 32, y: 27, hw: 2, hh: 4, vx: 0, vy: 0
+	});
+	const body = table.slots[id], tw = cfg.texW, N = cfg.N;
+	const owner = new Uint8Array(tw * cfg.texH), prev = new Uint8Array(owner.length), rect = {};
+	C.rasterize(table, cfg, owner, rect);
+	prev.set(owner);
+	for (let k = 0; k < owner.length; k++) if (owner[k]) sim.flags[k * 4] = 255;
+	let maxM = 0, maxVel = 0, maxDiv = 0, finite = true;
+	for (let frame = 0; frame < 60; frame++) {
+		C.move(table, cfg, id, body.x + 0.235, body.y, 14.1, 0);
+		owner.fill(0);
+		C.rasterize(table, cfg, owner, rect);
+		const vel = grid.curBuf(sim.vel);
+		for (let y = 1; y <= N; y++) {
+			for (let x = 1; x <= N; x++) {
+				const k = x + y * tw, i = k * 4;
+				const now = owner[k] !== 0, was = prev[k] !== 0;
+				sim.flags[i] = now ? 255 : 0;
+				if (!now || was) continue;
+				vel[k * 2] = 0; vel[k * 2 + 1] = 0;
+				for (const nk of [k - 1, k + 1, k - tw, k + tw]) {
+					if (owner[nk] || prev[nk]) continue;
+					vel[nk * 2] = body.vx; vel[nk * 2 + 1] = body.vy;
+				}
+			}
+		}
+		prev.set(owner);
+		sim.phaseEos(false);
+		sim.step(cfg.dt);
+		const st = sim.stats();
+		finite = finite && Number.isFinite(st.tot.sumM) && Number.isFinite(st.tot.maxM) &&
+			Number.isFinite(st.mot.maxVel) && Number.isFinite(st.mot.maxDiv);
+		maxM = Math.max(maxM, st.tot.maxM);
+		maxVel = Math.max(maxVel, st.mot.maxVel);
+		maxDiv = Math.max(maxDiv, st.mot.maxDiv);
+	}
+	const st = sim.stats();
+	const drift = Math.abs(acc.driftRel(st.tot.sumM, acc.expectedTotal(sim.ledger, "m")));
+	check(finite && maxVel > 5,
+		"a moving collider still drives fluid in the multigrid-safe fallback",
+		"finite=" + finite + " maxVel=" + maxVel.toFixed(2));
+	check(maxM < 1.02 && maxDiv < 5 && drift < 1e-6,
+		"the multigrid-safe collider path avoids density runaway and conserves total mass",
+		"maxM=" + maxM.toFixed(4) + " maxDiv=" + maxDiv.toFixed(2) + " drift_rel=" + drift.toExponential(2));
 }
 
 // a2's visible half: a body driven across a dye patch must move the dye, not leave it
@@ -1085,6 +1164,7 @@ async function testDemoPage() {
 	await testEmitters();
 	await testColliders();
 	await testColliderFlow();
+	await testColliderMGSafety();
 	await testColliderDye();
 	await testViewAndGrid();
 	await testInputLifecycle();
