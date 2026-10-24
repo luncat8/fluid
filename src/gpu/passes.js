@@ -91,6 +91,7 @@
 		statsA:comp("statsA",PS+sh.statsReduceA),
 			statsB:comp("statsB",PS+sh.statsReduceB),
 			buoySample:comp("buoySample",PS+sh.buoySample),
+			probeSample:comp("probeSample",PS+sh.probeSample),
 			toDisplay:comp("toDisplay",PS+sh.toDisplay),
 			renderPipe:device.createRenderPipeline({
 				label:"render",
@@ -126,7 +127,7 @@
 			forces:[],advectVel:[],macFwd:[],advectVelMac:[],rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],advectScalar:[],
 			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],heatSources:[],
 		limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],projRed:[],projBlack:[],
-		poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],render:null
+		poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],probeSample:[],render:null
 		};
 		for(let mm=0;mm<3;mm++){
 			groups.phaseA[mm]=[];
@@ -243,6 +244,7 @@
 			groups.advectScalar[m]=[];
 			groups.applyGrad[m]=[];
 			groups.buoySample[m]=[];
+			groups.probeSample[m]=[];
 			groups.statsA[m]=[];
 			groups.toDisplay[m]=[];
 			for(let t=0;t<2;t++){
@@ -257,6 +259,7 @@
 				]);
 				groups.statsA[m][t]=[];
 				groups.toDisplay[m][t]=[];
+				groups.probeSample[m][t]=[];
 				for(let v=0;v<2;v++){
 					const vv=pool.vel.tex[v],vn=pool.vel.tex[1-v];
 					groups.forces[m]=groups.forces[m]||[];
@@ -285,6 +288,16 @@
 							{binding:3,resource:{buffer:pool.buoy}}
 						]);
 					}
+					// probes read the live parity of every field, so this group is
+					// built for all 12 (mass, therm, vel) combinations, not only t=0
+					groups.probeSample[m][t][v]=bg(device,"probeSample"+m+t+v,pipes.probeSample.getBindGroupLayout(0),[
+						{binding:0,resource:{buffer:pool.params}},
+						{binding:1,resource:viewRes(mm)},
+						{binding:2,resource:viewRes(tt)},
+						{binding:3,resource:viewRes(vv)},
+						{binding:4,resource:viewRes(p0)},
+						{binding:5,resource:{buffer:pool.probes}}
+					]);
 					groups.statsA[m][t][v]=bg(device,"statsA"+m+t+v,pipes.statsA.getBindGroupLayout(0),[
 						{binding:0,resource:{buffer:pool.params}},
 						{binding:1,resource:viewRes(mm)},
@@ -666,6 +679,12 @@
 		cpass.setBindGroup(0,groups.buoySample[state.m][state.v]);
 		cpass.dispatchWorkgroups(1);
 	}
+	// 4 groups of 8 cover the 32 slots; inactive slots return immediately
+	function encodeProbeSample(cpass,pool,pipes,groups,state){
+		cpass.setPipeline(pipes.probeSample);
+		cpass.setBindGroup(0,groups.probeSample[state.m][state.t][state.v]);
+		cpass.dispatchWorkgroups(Fluid.core.probes.MAX/8);
+	}
 	function encodeDisplay(cpass,pool,pipes,groups,state){
 		cpass.setPipeline(pipes.toDisplay);
 		cpass.setBindGroup(0,groups.toDisplay[state.m][state.t][state.v]);
@@ -687,6 +706,6 @@
 		rpass.setBindGroup(0,groups.render);
 		rpass.draw(3);
 	}
-	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeStep,encodeStepProfiled,encodeStats,encodeBuoySample,encodeDisplay,encodePaint,encodeRender};
+	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeStep,encodeStepProfiled,encodeStats,encodeBuoySample,encodeProbeSample,encodeDisplay,encodePaint,encodeRender};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.passes;
 })(globalThis);

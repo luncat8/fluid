@@ -86,6 +86,10 @@
 		overlay:1,
 		colorGain:1.2,
 		statsEvery:30,
+		// frames between probe-table readbacks (0.7.0 t5). the sample age is bounded
+		// by this plus the in-flight readback; a game that needs fresher values lowers
+		// it and pays for one more small mapAsync per cadence frame.
+		probeEvery:4,
 		gpuTiming:0,
 		cflTarget:0.8,
 		substepMax:24,

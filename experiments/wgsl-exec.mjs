@@ -19,7 +19,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 for (const file of [
 	"src/core/config.js", "src/core/grid.js", "src/core/stats.js",
-	"src/core/multigrid.js", "src/core/solver.js", "src/gpu/shaders.js"
+	"src/core/multigrid.js", "src/core/solver.js", "src/core/probes.js", "src/gpu/shaders.js"
 ]) require(path.join(root, file));
 
 let reflectLib;
@@ -280,6 +280,90 @@ check("the limiter branch was actually exercised", wallLimited > 0 && randomLimi
 		diffCpuPT < 1e-2 && diffCpuPF === 0,
 		"cpuThermDiff=" + diffCpuPT.toExponential(3) + " cpuFlagsDiff=" + diffCpuPF);
 }
+
+
+// ---- 3. execute the probe kernel (0.7.0 t5) against the cpu sampler ----
+// the kernel decides three things no other check can: the slot stride, the
+// row-major texel index from (x, y) and the interior clamp. run it on a
+// synthetic field that varies in both axes so a transposed index cannot hide.
+function runProbeCase() {
+	const P = Fluid.core.probes;
+	const tw = texW, th = texH;
+	const mass = new Float32Array(tw * th * 4);
+	const therm = new Float32Array(tw * th * 4);
+	const vel = new Float32Array(tw * th * 2);
+	const press = new Float32Array(tw * th);
+	for (let y = 0; y < th; y++) {
+		for (let x = 0; x < tw; x++) {
+			const i4 = (x + y * tw) * 4, i2 = (x + y * tw) * 2;
+			const m = 0.5 + 0.3 * Math.sin(x * 0.3) * Math.cos(y * 0.2);
+			mass[i4] = 0.2 * m; mass[i4 + 1] = 0.3 * m; mass[i4 + 2] = 0.5 * m; mass[i4 + 3] = m;
+			therm[i4] = Fluid.core.solver.energyFromT(m, 300 + 0.5 * x + 0.25 * y, cfg);
+			vel[i2] = 0.5 * x;
+			vel[i2 + 1] = -0.25 * y;
+			press[x + y * tw] = 10 * Math.sin(x * 0.1);
+		}
+	}
+	const table = P.create();
+	const ids = [
+		P.add(table, cfg, 1, 1),        // bottom-left interior corner
+		P.add(table, cfg, N, N),        // top-right cell, not the ghost row
+		P.add(table, cfg, 7.6, 3.2),    // rounded, not truncated
+		P.add(table, cfg, 2.4, 15.5)
+	];
+	// sentinel in a slot that is not active: the kernel must not touch it
+	const idleBase = P.slotBase(9);
+	table.upload[idleBase + P.P_M] = -7;
+	const storage = table.upload.buffer.slice(0);
+	const pa = Fluid.core.config.makeParamsArray();
+	Fluid.core.config.writeParams(pa, cfg);
+	const uniform = { uniform: pa.buffer.slice(0) };
+	const rgba = a => ({ texture: [a.buffer], descriptor: { size: [tw, th], format: "rgba32float" } });
+	const rg = a => ({ texture: [a.buffer], descriptor: { size: [tw, th], format: "rg32float" } });
+	const r32 = a => ({ texture: [a.buffer], descriptor: { size: [tw, th], format: "r32float" } });
+	new WgslExec(WgslParser.Parse(PS + sh.probeSample))
+		.dispatchWorkgroups("main", [Fluid.core.probes.MAX / 8], {
+			0: { 0: uniform, 1: rgba(mass), 2: rgba(therm), 3: rg(vel), 4: r32(press), 5: storage }
+		});
+	const raw = new Float32Array(storage);
+	const cpu = P.makeSample();
+	let maxDiff = 0, values = 0, mismatched = [];
+	for (const id of ids) {
+		P.sampleCpu(table, cfg, mass, therm, vel, press, tw, th, id, cpu);
+		const b = P.slotBase(id);
+		const got = [raw[b + P.P_M], raw[b + P.P_DR], raw[b + P.P_DG], raw[b + P.P_DB],
+			raw[b + P.P_E], raw[b + P.P_U], raw[b + P.P_V], raw[b + P.P_P]];
+		const want = [cpu.m, cpu.dr, cpu.dg, cpu.db, cpu.E, cpu.u, cpu.v, cpu.p];
+		for (let i = 0; i < got.length; i++) {
+			const d = Math.abs(got[i] - want[i]);
+			if (d > maxDiff) maxDiff = d;
+			if (d > 1e-3) mismatched.push(id + ":" + i + " " + got[i] + "!=" + want[i]);
+		}
+		values += got.length;
+	}
+	check("probe exec: every measured slot matches the cpu sampler (stride, index, clamp)",
+		maxDiff < 1e-3 && values === ids.length * 8,
+		"maxAbsDiff=" + maxDiff.toExponential(3) + " values=" + values +
+		(mismatched.length ? " " + mismatched.slice(0, 3).join(" ") : ""));
+	check("probe exec: an inactive slot is left alone", raw[idleBase + P.P_M] === -7,
+		"sentinel=" + raw[idleBase + P.P_M]);
+	// moving a probe changes the cell the kernel reads, and nothing else
+	P.move(table, cfg, ids[2], 1, 1);
+	const moved = table.upload.buffer.slice(0);
+	P.sampleCpu(table, cfg, mass, therm, vel, press, tw, th, ids[2], cpu);
+	new WgslExec(WgslParser.Parse(PS + sh.probeSample))
+		.dispatchWorkgroups("main", [Fluid.core.probes.MAX / 8], {
+			0: { 0: uniform, 1: rgba(mass), 2: rgba(therm), 3: rg(vel), 4: r32(press), 5: moved }
+		});
+	const movedRaw = new Float32Array(moved);
+	const movedBase = P.slotBase(ids[2]);
+	check("probe exec: moveProbe is picked up by the next dispatch (one write, no rebuild)",
+		Math.abs(movedRaw[movedBase + P.P_M] - cpu.m) < 1e-3 &&
+		Math.abs(movedRaw[movedBase + P.P_U] - cpu.u) < 1e-3,
+		"m=" + movedRaw[movedBase + P.P_M].toFixed(4) + " u=" + movedRaw[movedBase + P.P_U].toFixed(4));
+}
+
+runProbeCase();
 
 console.log(failures ? "FAILURES: " + failures : "ALL WGSL-EXEC CHECKS PASSED");
 process.exit(failures ? 1 : 0);

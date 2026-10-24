@@ -1424,6 +1424,42 @@ fn main(@builtin(local_invocation_index) lid: u32) {
 	}
 }
 `;
+	// ---------- point queries (0.7.0 t5): one invocation per probe slot ----------
+	// the layout is owned by src/core/probes.js; this kernel only fills the measured
+	// slots (m, dye, E, u, v, p) so x/y/active stay cpu-owned and a move is one write.
+	// T and phase are derived on the cpu from (m, E) by the shared caloric EOS.
+	shaders.probeSample=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var massTex: texture_2d<f32>;
+@group(0) @binding(2) var thermTex: texture_2d<f32>;
+@group(0) @binding(3) var velTex: texture_2d<f32>;
+@group(0) @binding(4) var pressTex: texture_2d<f32>;
+@group(0) @binding(5) var<storage,read_write> probes: array<f32>;
+
+@compute @workgroup_size(8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let idx = gid.x;
+	if (idx >= 32u || probes[0u] < 1.0) { return; }
+	let base = 16u + idx * 16u;
+	if (probes[base + 15u] < 0.5) { return; }
+	let w = i32(params.values[2]);
+	let h = i32(params.values[3]);
+	let cx = clamp(i32(round(probes[base])), 1, w - 2);
+	let cy = clamp(i32(round(probes[base + 1u])), 1, h - 2);
+	let at = vec2<i32>(cx, cy);
+	let mass = textureLoad(massTex, at, 0);
+	let therm = textureLoad(thermTex, at, 0);
+	let vel = textureLoad(velTex, at, 0);
+	probes[base + 2u] = mass.a;
+	probes[base + 3u] = mass.r;
+	probes[base + 4u] = mass.g;
+	probes[base + 5u] = mass.b;
+	probes[base + 6u] = therm.r;
+	probes[base + 7u] = vel.r;
+	probes[base + 8u] = vel.g;
+	probes[base + 9u] = textureLoad(pressTex, at, 0).r;
+}
+`;
 	// ---------- view modes (0..7 + composable solid overlay + buoy overlay) ----------
 	shaders.toDisplay=`
 @group(0) @binding(0) var<uniform> params: Params;

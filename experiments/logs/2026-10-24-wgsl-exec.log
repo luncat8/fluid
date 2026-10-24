@@ -1,0 +1,46 @@
+PASS parse forces
+PASS parse advectVel
+PASS parse advectVelMac
+PASS parse poissonRhs
+PASS parse projectStep
+PASS parse applyGrad
+PASS parse computeFlux
+PASS parse advectMass
+PASS parse advectTherm
+PASS parse advectScalar
+PASS parse phaseEos
+PASS parse freezeVel
+PASS parse conduction
+PASS parse heatSources
+PASS parse limiterPrepare
+PASS parse limiterApply
+PASS parse paintMass
+PASS parse paintTherm
+PASS parse poissonReduceA
+PASS parse poissonReduceB
+PASS parse statsReduceA
+PASS parse statsReduceB
+PASS parse buoySample
+PASS parse probeSample
+PASS parse toDisplay
+PASS parse renderVert
+PASS parse renderFrag
+PASS parse mgCoarsen
+PASS parse mgRestrict
+PASS parse mgZero
+PASS parse mgProlong
+PASS mac exec: gaussian vortex limiter=1  maxAbsDiff=3.016e-5 cpu macLimit=22
+PASS mac exec: constant U=37 limiter=1  maxAbsDiff=0.000e+0 cpu macLimit=32
+PASS mac exec: constant U=37 limiter=0  maxAbsDiff=3.815e-6 cpu macLimit=0
+PASS mac exec: random faces limiter=1  maxAbsDiff=2.594e-4 cpu macLimit=336
+PASS mac exec: random faces limiter=0  maxAbsDiff=2.594e-4 cpu macLimit=0
+PASS the limiter branch was actually exercised  wall=32 random=336
+PASS t8 advectScalar: bit-exact with unfused advectMass + advectTherm  massDiff=0 thermDiff=0
+PASS t8 advectScalar: matches CPU oracle  cpuMassDiff=1.192e-7 cpuThermDiff=1.221e-4
+PASS t8 phaseSources: bit-exact with unfused heatSources -> phaseEos across all 4 outputs  therm=0 flags=0 sfield=0 accum=0 active=41
+PASS t8 phaseSources: skips wall and vacuum cells in heater band  wallUnchanged=true vacUnchanged=true
+PASS t8 phaseSources: matches CPU heatSources + phaseEos  cpuThermDiff=3.052e-5 cpuFlagsDiff=0
+PASS probe exec: every measured slot matches the cpu sampler (stride, index, clamp)  maxAbsDiff=0.000e+0 values=32
+PASS probe exec: an inactive slot is left alone  sentinel=-7
+PASS probe exec: moveProbe is picked up by the next dispatch (one write, no rebuild)  m=0.5869 u=0.5000
+ALL WGSL-EXEC CHECKS PASSED

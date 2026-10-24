@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Fluid · engine demo</title>
+	<style>
+		:root{color-scheme:dark}
+		*{box-sizing:border-box}
+		body{margin:0;background:#0b0e12;color:#cfd6df;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+		header{display:flex;align-items:baseline;gap:12px;padding:10px 14px;border-bottom:1px solid #1d2530}
+		h1{margin:0;font-size:14px;font-weight:600;letter-spacing:.02em}
+		#status{color:#7d8b9c}
+		main{display:flex;gap:14px;padding:14px;align-items:flex-start}
+		.stage{flex:0 1 auto}
+		canvas{width:min(72vh,100%);height:min(72vh,100%);aspect-ratio:1;display:block;background:#05070a;
+			border:1px solid #1d2530;border-radius:6px;touch-action:none;cursor:crosshair}
+		.panel{flex:1 1 300px;min-width:260px;display:flex;flex-direction:column;gap:10px}
+		.block{border:1px solid #1d2530;border-radius:6px;padding:10px;background:#0e131a}
+		.block h2{margin:0 0 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:#8b98a8}
+		.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0}
+		button{font:inherit;color:#d6dde6;background:#182130;border:1px solid #2a3646;border-radius:4px;padding:4px 9px;cursor:pointer}
+		button:hover{border-color:#3b4c63}
+		button.active{border-color:#4b8fd1;background:#16293c;color:#eaf3ff}
+		select{font:inherit;color:#d6dde6;background:#182130;border:1px solid #2a3646;border-radius:4px;padding:4px 6px}
+		label.check{display:inline-flex;gap:6px;align-items:center;color:#aab6c4;cursor:pointer}
+		table{width:100%;border-collapse:collapse;font-size:12px}
+		th,td{text-align:right;padding:2px 4px;border-bottom:1px solid #16202b;white-space:nowrap}
+		th:first-child,td:first-child{text-align:left}
+		th{color:#7d8b9c;font-weight:500}
+		.muted{color:#7d8b9c}
+		.ok{color:#5fbf7f}.warn{color:#d8b45a}.bad{color:#e06565}
+		#error-panel{border-color:#5b2a2a;color:#f0b4b4;white-space:pre-wrap}
+		footer{padding:0 14px 16px;color:#68768a}
+		code{background:#141b24;padding:1px 4px;border-radius:3px}
+	</style>
+	<script defer src="../src/core/config.js"></script>
+	<script defer src="../src/core/grid.js"></script>
+	<script defer src="../src/core/stats.js"></script>
+	<script defer src="../src/core/multigrid.js"></script>
+	<script defer src="../src/core/solver.js"></script>
+	<script defer src="../src/core/probes.js"></script>
+	<script defer src="../src/core/buoy.js"></script>
+	<script defer src="../src/core/pacing.js"></script>
+	<script defer src="../src/gpu/device.js"></script>
+	<script defer src="../src/gpu/shaders.js"></script>
+	<script defer src="../src/gpu/fields.js"></script>
+	<script defer src="../src/gpu/profiler.js"></script>
+	<script defer src="../src/gpu/passes.js"></script>
+	<script defer src="../src/gpu/solver.js"></script>
+	<script defer src="../src/gpu/view.js"></script>
+	<script defer src="../src/app/input.js"></script>
+	<script defer src="../src/api/engine.js"></script>
+	<script defer src="demo.js"></script>
+</head>
+<body>
+	<header>
+		<h1>Fluid engine demo</h1>
+		<span id="status" role="status">Booting...</span>
+	</header>
+	<main>
+		<div class="stage">
+			<canvas id="c" width="256" height="256" tabindex="0" aria-label="Fluid simulation"></canvas>
+		</div>
+		<section class="panel">
+			<div class="block">
+				<h2>Simulation</h2>
+				<div class="row">
+					<label for="scenario">Scenario</label>
+					<select id="scenario"></select>
+				</div>
+				<div class="row">
+					<button id="pause" type="button">Pause</button>
+					<button id="step" type="button">Step</button>
+					<button id="reset" type="button">Reset</button>
+				</div>
+				<div class="row" id="views"></div>
+			</div>
+			<div class="block">
+				<h2>Probes</h2>
+				<div class="row">
+					<button id="clear-probes" type="button">Clear probes</button>
+					<span class="muted">right-click the canvas to add</span>
+				</div>
+				<table>
+					<thead><tr><th>#</th><th>x,y</th><th>m</th><th>T</th><th>phase</th><th>u</th><th>v</th><th>p</th></tr></thead>
+					<tbody id="probe-body"></tbody>
+				</table>
+			</div>
+			<div class="block">
+				<h2>Conservation</h2>
+				<div id="meters" class="muted">waiting for the first stats sample...</div>
+			</div>
+			<div class="block" id="error-panel" role="alert" hidden></div>
+		</section>
+	</main>
+	<footer>
+		Drag to stir and paint. Keys: <code>space</code> pause · <code>r</code> reset · <code>0-7</code> view.
+		Every number here comes from the public engine API (<code>Fluid.engine</code>), not from the page's own access to the solver.
+	</footer>
+</body>
+</html>

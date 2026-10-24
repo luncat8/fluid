@@ -20,11 +20,17 @@ conformance suite. GPU thermal pipelines mirror the CPU ones. The 0.5.0 phase co
 (caloric EOS with latent plateaus, freeze/melt masks, expansion source S, phase-aware
 conduction with an enthalpy budget) is implemented in both the CPU reference and WGSL
 with CPU/GPU parity, and is signed off on Ampere hardware at 33-134 fps across the five
-phase scenarios (ice / cycle / jet / rain / arch).
+phase scenarios (ice / cycle / jet / rain / arch). A small engine API (`Fluid.engine`)
+wraps the solver for game loops: fixed-step pacing with one frame in flight, live
+tunables, stats snapshots, a 32-slot probe table for point queries, view and overlay
+control, and teardown that releases the pool.
 
 ## Run
 
 - Directly: open `index.html` from disk (`file://`) in a WebGPU browser.
+- API example: open `examples/demo.html` from disk. It draws the whole page through the
+  public engine API only: scenario/view controls, conservation meters and a probe table
+  fed by right-clicking the canvas.
 - Or: `python3 run_index.py` (options: `port`, `--host`, `--no-open`, `--page`) and open
   `http://127.0.0.1:8000/index.html`. The server sends COOP/COEP headers for cross-origin
   isolation and finer browser timers; for the GPU diagnostic page run
@@ -62,6 +68,47 @@ and severe compression. Small global drift does not imply a stable local field.
 Copied stats include exact minima and scenario/toggle settings. The donor limiter
 reserves a 1e-6 outflow margin and transport uses nonnegative weights to avoid
 f32 cancellation in almost-emptied cells; no conserved state is clipped.
+
+
+## API
+
+`Fluid.engine.create(canvas, options)` is the only promise (device + pool setup); every
+later call is synchronous. Classic script tags, no build: load `src/core/*`, `src/gpu/*`,
+`src/api/engine.js`, then
+
+```js
+const sim = await Fluid.engine.create(canvas, { cfg: { N: 256, scenario: "dam" } });
+const sample = Fluid.engine.makeProbeSample();
+const stats = Fluid.engine.makeStats();
+const id = sim.addProbe(128, 96);          // cell coordinates, +y up
+
+function frame(now) {
+	sim.update((now - last) / 1000);         // accrue -> one fixed step -> render
+	if (sim.sample(id, sample)) {
+		// sample.m, sample.dr/dg/db, sample.T, sample.phase, sample.u/v, sample.p
+		// sample.age is how many frames old the value is
+	}
+	sim.stats(stats);                        // fills stats in place, no allocation
+	requestAnimationFrame(frame);
+}
+```
+
+| call | contract |
+|---|---|
+| `step(dt)` / `update(dtReal)` / `render()` | `step` runs exactly one frame (substeps from the shared CFL policy, `dt` becomes the fixed frame dt). `update` clamps the wall delta, accrues, takes at most one step per call and keeps one submission in flight, then redraws if something is dirty. `render` is display only. |
+| `reset(scenario)` / `setGrid(N)` | restart the current or named scenario; clamp to a supported grid and rebuild the pool. |
+| `params` | the live tunable table the uniform buffer is filled from: mutate in place. |
+| `paused` / `singleStep()` / `substeps` | pause state, one advance while paused, substep count of the last step. |
+| `stats(out)` | fills `out` (or one internal object) with totals, expected totals, minima, motion, thermal, phase histogram and residual diagnostics. |
+| `addProbe(x,y)` / `moveProbe(id,x,y)` / `removeProbe(id)` / `sample(id,out)` | 32 stable slots, sampled on `params.probeEvery` frames and read back through the same one-map-in-flight path as the stats. A sample is stale by design: `out.age` bounds it, a move takes effect on the next sample, and `sample` returns false until the first readback or after a reset/resize. |
+| `setViewMode(mode)` / `bindViewMode(fn)` / `setOverlay(flag)` | view mode has one writer per page: bind the DOM control and the engine delegates to it, otherwise it writes `params.viewMode`. |
+| `attachInput(element)` / `detachInput()` | pointer stir/paint and the simulation keys; detach removes every listener. |
+| `perf` | pacing meter state: `simHz`, `renderHz`, `rafHz`, `simSpeed`, `cpuMs`, `queueMs`, `busy`, `error`. |
+| `destroy()` | detach input, destroy the pool (textures and buffers), drop the device reference. Safe to call twice. |
+
+`examples/demo.html` is the reference integration; `experiments/engine.js` is the headless
+contract for the same calls. Emitters, moving colliders and save/load are the next
+increment of `0.7.0-plan.md`.
 
 ## Validation
 
@@ -116,9 +163,10 @@ recording mock device drives real app frames and lints the WGSL param indices), 
 single writer, click, keyboard, hover gating and radio state). Run
 `node experiments/input.js` for canvas pointer ownership, cancellation and keyboard
 focus handling, and `node experiments/controls.js` for slider drag ownership and
-configuration synchronization. `node experiments/performance.js` checks windowed
-rates and drives the real app loop through high-refresh pacing, queue backpressure,
-pause and single-step. `node experiments/transport-roundoff.js` reproduces f32
+configuration synchronization. `node experiments/engine.js` is the engine contract:
+windowed pacing rates, high-refresh pacing, queue backpressure, pause/single-step,
+stats and probe readbacks, the view writer, input attach/detach, resize, teardown and
+the demo page. `node experiments/transport-roundoff.js` reproduces f32
 unit-outflow overshoot and checks the positive-weight transport (CPU numeric and
 WGSL structure, not GPU execution). `node experiments/hud.js` checks snapshot
 context, minima, rates and warnings. The mock runs no shader,

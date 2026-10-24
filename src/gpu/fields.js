@@ -6,6 +6,8 @@
 	// the stats layout is owned by src/core/stats.js so the cpu oracle, the readback
 	// and these buffers cannot disagree on the slot count
 	const STATS=Fluid.core.stats;
+	// probe table layout (slot count, stride, total floats) is owned by src/core/probes.js
+	const PROBES=Fluid.core.probes;
 	function texUsage(){
 		return GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.STORAGE_BINDING|GPUTextureUsage.COPY_SRC|GPUTextureUsage.COPY_DST;
 	}
@@ -69,6 +71,8 @@
 			statsRead:null,
 			buoy:null,
 			buoyRead:null,
+			probes:null,
+			probesRead:null,
 			dims:null,
 			numWorkgroups:0,
 			workgroupX:0,workgroupY:0
@@ -128,6 +132,9 @@
 		pool.statsRead=device.createBuffer({label:"statsRead",size:statsBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		pool.buoy=device.createBuffer({label:"buoy",size:128,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
 		pool.buoyRead=device.createBuffer({label:"buoyRead",size:128,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+		const probeBytes=PROBES.LEN*4;
+		pool.probes=device.createBuffer({label:"probes",size:probeBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
+		pool.probesRead=device.createBuffer({label:"probesRead",size:probeBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		pool.dims=device.createBuffer({label:"dims",size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
 		const dimsArr=new Uint32Array([pool.numWorkgroups*PARTIAL_STRIDE,0,0,0]);
 		device.queue.writeBuffer(pool.dims,0,dimsArr);
@@ -144,7 +151,7 @@
 			pool.mgMass,pool.mgFlags,pool.mgDiv,pool.mgPress.tex[0],pool.mgPress.tex[1]];
 	}
 	function poolBuffers(pool){
-		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.dims,pool.mgParams];
+		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.probes,pool.probesRead,pool.dims,pool.mgParams];
 	}
 	function textureBytes(t){
 		if(!t||!t.fluidSize)return 0;

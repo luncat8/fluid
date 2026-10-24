@@ -862,3 +862,48 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   period and alternate several runs. This cycle-specific repeat is deferred in
   `deferred/0.6.0-t8-cycle-fusion-validation-plan.md`; continue with the next
   planned 0.6.0 optimization instead of adding the warm-up harness now.
+
+## 2026-10-24 engine api, probe table, and the interpreter's thread cap
+
+- finding: a game-facing probe query does not need a field mirror or a second
+  readback path. 32 fixed slots live in one storage buffer; four 8-thread
+  workgroups (one per eight slots) read `mass/therm/vel/press` at the rounded cell
+  and write eight raw numbers back. `T` and `phase` are derived on the cpu with the same
+  `phaseInto` the oracle uses, so the caloric EOS has exactly one definition and
+  the kernel never duplicates it. Cost is one dispatch + one 2112-byte copy on
+  `cfg.probeEvery` frames, sharing the single-in-flight rule with stats/buoy.
+- pitfall: readback tables must be cpu-owned per slot. Compacting the table on
+  remove changes ids a game is holding; keep stable slots with an active flag and
+  let the kernel return early for inactive ones.
+- pitfall: `wgsl_reflect`'s `WgslExec` CPU interpreter silently executes only a
+  prefix of a large workgroup. `@workgroup_size(32)` with `dispatchWorkgroups(1)`
+  wrote 3 threads; 16 wrote 1, 64 wrote 6, while 8 wrote all 8. Kernels that must
+  be executable in `experiments/wgsl-exec.mjs` should use small workgroups and
+  more of them: the probe kernel is `@workgroup_size(8)` with
+  `dispatchWorkgroups(MAX/8)`, and the test compares every measured slot against
+  `probes.sampleCpu` with zero difference. Do not "fix" a failing exec row by
+  lowering the tolerance before checking how many invocations actually ran.
+- finding: one pacing gate for the whole app. `Fluid.core.pacing` (moved out of
+  `src/app/`) now lives under the engine: `update()` accrues, takes at most one
+  fixed step, refuses to submit while `busy`, and marks the resize repaint as a
+  submission too. The lab page keeps only DOM work. A second loop in the page
+  would have re-derived the substep policy - the exact duplication that kept
+  "off means one step" alive in a test once already.
+- pitfall: `setGrid` destroys and rebuilds the pool, so every buffer starts
+  zeroed - including the probe table. Re-upload the cpu-owned table from `reset()`
+  or probes silently stop after a resize while the api still reports them live.
+  A resize test that only checks `pool.N` will not see this; read the new buffer.
+- pitfall: testing a demo page against a stub engine proves the page calls *some*
+  API, not the real one. Boot `examples/demo.js` on `Fluid.engine` over the
+  recording mock and fake only `Fluid.gpu.device.init`; that is what caught the
+  missing facade export and the stale probe table above.
+- pitfall: two writers for `viewMode` (a DOM row and an API setter) disagree.
+  `bindViewMode(fn)` lets the page's control stay the single writer; the engine
+  setter delegates instead of assigning. Without a bound writer the engine owns
+  `cfg.viewMode`. `experiments/engine.js` pins both branches.
+- finding: input listeners must be removable. `attachInput`/`detachInput` and
+  `destroy()` are only honest if every `addEventListener` went through one list;
+  the harness counts window+canvas listeners before and after and requires equality.
+- pitfall: a 20-cycle create/destroy loop is the only cheap leak test available
+  without a GPU. The shared recording mock (`experiments/mock-device.js`) tracks
+  live buffers/textures, so "pool destroyed" is an assertion rather than a comment.

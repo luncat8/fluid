@@ -15,6 +15,7 @@ const modules = [
 	"src/core/stats.js",
 	"src/core/multigrid.js",
 	"src/core/solver.js",
+	"src/core/probes.js",
 	"src/core/buoy.js",
 	"src/gpu/shaders.js",
 	"src/gpu/fields.js",

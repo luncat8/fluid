@@ -1,7 +1,7 @@
 (function(root){
 	"use strict";
 	const Fluid=root.Fluid=root.Fluid||{};
-	Fluid.app=Fluid.app||{};
+	Fluid.core=Fluid.core||{};
 	function create(queue,clock){
 		const now=clock||(()=>performance.now());
 		const state={busy:false,error:null,rafHz:0,simHz:0,renderHz:0,simSpeed:0,cpuMs:0,queueMs:0};
@@ -35,6 +35,6 @@
 		}
 		return {state,tick,submitted};
 	}
-	Fluid.app.performance={create};
-	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.app.performance;
+	Fluid.core.pacing={create};
+	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.pacing;
 })(globalThis);

@@ -16,6 +16,7 @@ globalThis.GPUBufferUsage = { MAP_READ: 1, COPY_SRC: 2, COPY_DST: 4, INDEX: 8, V
 globalThis.GPUTextureUsage = { COPY_SRC: 1, COPY_DST: 2, TEXTURE_BINDING: 4, STORAGE_BINDING: 8, RENDER_ATTACHMENT: 16 };
 require(path.join(root, "src/core/config.js"));
 require(path.join(root, "src/core/stats.js"));
+require(path.join(root, "src/core/probes.js"));
 require(path.join(root, "src/gpu/fields.js"));
 
 const MB = 1024 * 1024;

@@ -7,6 +7,7 @@
 		const passes=Fluid.gpu.passes;
 		const stats=Fluid.core.stats;
 		const coreSolver=Fluid.core.solver;
+		const coreProbes=Fluid.core.probes;
 		let pool=fields.createPool(device,cfg.N,cfg.mgCoarsen);
 		const pipes=passes.createPipelines(device,format);
 		let groups=passes.makeBindGroups(device,pipes,pool);
@@ -20,6 +21,14 @@
 		let buoyPending=false;
 		let buoyInFlight=false;
 		let buoyGeneration=0;
+		// point queries (0.7.0 t5): one table for every game probe, sampled on its own
+		// cadence and copied back through the same single-in-flight rule as stats/buoy
+		const probeTable=coreProbes.create();
+		const probeRaw=new Float32Array(coreProbes.LEN);
+		let probePending=false;
+		let probeInFlight=false;
+		let probeGeneration=0;
+		let probeFrame=0;
 		const state={m:0,t:0,v:0,pw:0,ph:0};
 		let flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
 		let ledger=null;
@@ -68,6 +77,8 @@
 			pendingRead=false;
 			buoyPending=false;
 			buoyGeneration=statsGeneration;
+			probePending=false;
+			coreProbes.invalidate(probeTable);
 			device.queue.writeBuffer(pool.buoy,0,buoyZero);
 			Fluid.core.config.prepareScenario(cfg);
 			buoy.reset();
@@ -123,6 +134,31 @@
 			writeMgParams();
 			runPrimePhase(false);
 			writeParams();
+			// a resize rebuilds the pool: the new probe buffer starts zeroed, so the
+			// live table has to be pushed again or every query silently stops
+			uploadProbes();
+		}
+		function uploadProbes(){
+			device.queue.writeBuffer(pool.probes,0,probeTable.upload);
+		}
+		function addProbe(x,y){
+			const id=coreProbes.add(probeTable,cfg,x,y);
+			if(id<0)return -1;
+			uploadProbes();
+			return id;
+		}
+		function moveProbe(id,x,y){
+			if(!coreProbes.move(probeTable,cfg,id,x,y))return false;
+			uploadProbes();
+			return true;
+		}
+		function removeProbe(id){
+			if(!coreProbes.remove(probeTable,id))return false;
+			uploadProbes();
+			return true;
+		}
+		function sampleProbe(id,out){
+			return coreProbes.sample(probeTable,cfg,frameCount,id,out);
 		}
 		function paintDye(u,v,rgb){
 			const patch=coreSolver.buildDyePatch(cfg,u,v,rgb);
@@ -160,6 +196,7 @@
 		function frame(dts,substeps,needStats){
 			buoy.march(dts*substeps);
 			const needBuoy=buoy.state.active&&(frameCount%Math.max(1,cfg.buoySampleEvery)===0);
+			const needProbe=probeTable.live>0&&(frameCount%Math.max(1,cfg.probeEvery)===0);
 			cfg.dt=dts;
 			cfg.substeps=substeps;
 			cfg.frame=frameCount;
@@ -179,10 +216,11 @@
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
 						needStats&&s===substeps-1,cfg.advectMac>0,cfg.fusePasses>0);
 				}
-				if(needStats||needBuoy){
+				if(needStats||needBuoy||needProbe){
 					const cp=prof.pass(encoder,PROFILE_GROUP.stats,"stats");
 					if(needStats)passes.encodeStats(cp,pool,pipes,groups,state);
 					if(needBuoy)passes.encodeBuoySample(cp,pool,pipes,groups,state);
+					if(needProbe)passes.encodeProbeSample(cp,pool,pipes,groups,state);
 				}
 				passes.encodeDisplay(prof.pass(encoder,PROFILE_GROUP.disp,"display"),pool,pipes,groups,state);
 				prof.closePass();
@@ -199,6 +237,9 @@
 				if(needBuoy){
 					passes.encodeBuoySample(cpass,pool,pipes,groups,state);
 				}
+				if(needProbe){
+					passes.encodeProbeSample(cpass,pool,pipes,groups,state);
+				}
 				passes.encodeDisplay(cpass,pool,pipes,groups,state);
 				cpass.end();
 			}
@@ -214,6 +255,12 @@
 				encoder.copyBufferToBuffer(pool.buoy,0,pool.buoyRead,0,buoyZero.byteLength);
 				buoyGeneration=statsGeneration;
 				buoyPending=true;
+			}
+			if(needProbe&&!probeInFlight){
+				encoder.copyBufferToBuffer(pool.probes,0,pool.probesRead,0,probeRaw.byteLength);
+				probeGeneration=statsGeneration;
+				probeFrame=frameCount+1;
+				probePending=true;
 			}
 			const view=context.getCurrentTexture().createView();
 			const rdesc={
@@ -247,6 +294,7 @@
 		async function pollReadback(){
 			await pollStats();
 			await pollBuoy();
+			await pollProbe();
 			if(prof)await prof.poll();
 		}
 		function getProfile(){
@@ -269,6 +317,25 @@
 				console.error("buoy readback failed",e);
 			}
 			buoyInFlight=false;
+		}
+		async function pollProbe(){
+			if(!probePending||probeInFlight)return;
+			probePending=false;
+			probeInFlight=true;
+			const readPool=pool;
+			const readGeneration=probeGeneration;
+			const readFrame=probeFrame;
+			try{
+				await readPool.probesRead.mapAsync(GPUMapMode.READ);
+				if(readGeneration===statsGeneration){
+					probeRaw.set(new Float32Array(readPool.probesRead.getMappedRange(),0,probeRaw.length));
+					coreProbes.ingest(probeTable,probeRaw,readFrame);
+				}
+				readPool.probesRead.unmap();
+			}catch(e){
+				console.error("probe readback failed",e);
+			}
+			probeInFlight=false;
 		}
 		async function pollStats(){
 			if(!pendingRead||readbackInFlight)return;
@@ -382,7 +449,8 @@
 			if(prof)prof.destroy();
 		}
 		reset();
-		const api={pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollReadback,getStats,getProfile,buoy,resize,destroy,flagsMirror};
+		const api={pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,pollReadback,getStats,getProfile,buoy,resize,destroy,flagsMirror,
+			probes:probeTable,addProbe,moveProbe,removeProbe,sampleProbe};
 		return api;
 	}
 	Fluid.gpu.solver={create:createSolver};

@@ -12,6 +12,7 @@ require(path.join(root, "src/core/config.js"));
 require(path.join(root, "src/core/grid.js"));
 require(path.join(root, "src/core/stats.js"));
 require(path.join(root, "src/core/solver.js"));
+require(path.join(root, "src/core/probes.js"));
 require(path.join(root, "src/core/buoy.js"));
 require(path.join(root, "src/gpu/shaders.js"));
 require(path.join(root, "src/gpu/fields.js"));
@@ -24,80 +25,13 @@ function check(name, ok, detail) {
 	if (!ok) failures++;
 }
 
-// ---- mock device ----
-let buffers = 0, textures = 0, dispatches = 0, copies = 0;
-const labelOf = o => (o && o.label) || "";
-function makeBuffer(desc) {
-	buffers++;
-	const buf = new ArrayBuffer(desc.size);
-	return {
-		label: desc.label, size: desc.size, usage: desc.usage, _buf: buf, destroyed: false,
-		getMappedRange() { return buf; },
-		mapAsync() { return Promise.resolve(); },
-		unmap() {},
-		destroy() { this.destroyed = true; }
-	};
-}
+// ---- mock device: shared recording mock, never executes shaders ----
+const mock = require("./mock-device.js");
 // what the mock "kernel" leaves in the sample buffer: half a footprint of blue,
 // a rightward flow. the body must read this back as sub=0.5 and neutral lift.
-const BUOY_PATTERN = [8, 32, 32, 32, 0, 0.5];
-function makeDevice(sink) {
-	const device = {
-		createBuffer: d => makeBuffer(d),
-		createTexture: d => { textures++; return { format: d.format, createView: () => ({}), destroy() {} }; },
-		createSampler: () => ({}),
-		createShaderModule: d => { sink.modules.push(d); return { code: d.code, label: d.label }; },
-		createCommandEncoder: () => makeEncoder(sink),
-		createBindGroupLayout: () => ({}),
-		createPipelineLayout: () => ({}),
-		createBindGroup: d => ({ _entries: d.entries, label: d.label }),
-		createComputePipeline: d => {
-			const layout = {};
-			return {
-				label: d.label, _module: d.compute.module, getBindGroupLayout: () => layout
-			};
-		},
-		createRenderPipeline: d => ({ label: d.label, getBindGroupLayout: () => ({}) }),
-		queue: {
-			writeBuffer(buf, offset, src) {
-				new Float32Array(buf._buf, offset, src.length).set(src);
-				sink.writes.push(labelOf(buf));
-			},
-			writeTexture() {},
-			submit() {}
-		}
-	};
-	return device;
-}
-function makeEncoder(sink) {
-	const pass = {
-		setPipeline(p) { sink.pipeOrder.push(p.label); },
-		setBindGroup(i, g) { sink.bindings.push(g && g._entries ? g._entries.length : 0); },
-		dispatchWorkgroups() { dispatches++; },
-		end() {}
-	};
-	return {
-		beginComputePass: () => pass,
-		beginRenderPass: () => ({ setPipeline() {}, setBindGroup() {}, draw() {}, end() {} }),
-		copyBufferToBuffer(src, so, dst, doff, size) {
-			copies++;
-			sink.copies.push([labelOf(src), labelOf(dst), size]);
-			if (labelOf(src) === "buoy") new Float32Array(dst._buf).set(BUOY_PATTERN);
-		},
-		finish: () => ({})
-	};
-}
-function mockContext() {
-	return { getCurrentTexture: () => ({ createView: () => ({}) }) };
-}
-globalThis.GPUBufferUsage = { MAP_READ: 1, MAP_WRITE: 2, COPY_SRC: 4, COPY_DST: 8, INDEX: 16, VERTEX: 32, UNIFORM: 64, STORAGE: 128 };
-globalThis.GPUTextureUsage = { COPY_SRC: 1, COPY_DST: 2, TEXTURE_BINDING: 4, STORAGE_BINDING: 8, RENDER_ATTACHMENT: 16 };
-globalThis.GPUShaderStage = { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 };
-globalThis.GPUMapMode = { READ: 1, WRITE: 2 };
+const BUOY_PATTERN = new Float32Array([8, 32, 32, 32, 0, 0.5]);
+const PATTERNS = { buoy: BUOY_PATTERN };
 
-function newSink() {
-	return { modules: [], writes: [], pipeOrder: [], bindings: [], copies: [] };
-}
 // one app frame, the shared substep policy the app loop calls
 function appFrame(cfg, solver, maxVel) {
 	const frameDt = cfg.frameDt;
@@ -113,10 +47,11 @@ async function testPlumbing() {
 	const cfg = Object.assign({}, Fluid.core.config.defaults);
 	cfg.N = 64; cfg.texW = 66; cfg.texH = 66; cfg.scenario = "dam";
 	cfg._paused = false;
-	const sink = newSink();
-	const device = makeDevice(sink);
+	const m = mock.create(PATTERNS);
+	const sink = m.sink;
+	const device = m.device;
 	const canvas = { width: 64, height: 64 };
-	const solver = Fluid.gpu.solver.create(device, canvas, mockContext(), "bgra8unorm", cfg);
+	const solver = Fluid.gpu.solver.create(device, canvas, mock.mockContext(), "bgra8unorm", cfg);
 	const pool = solver.pool;
 	check("gpu pool has the buoy sample buffer and its readback twin",
 		pool.buoy && pool.buoyRead && pool.buoy.size === 128 && pool.buoyRead.usage === (1 | 8),
@@ -148,8 +83,8 @@ async function testPlumbing() {
 		"sub=" + solver.buoy.state.sub.toFixed(3) + " blue=" + solver.buoy.state.blue.toFixed(3) +
 		" ux=" + solver.buoy.state.ux.toFixed(3) + " aY=" + solver.buoy.state.aY);
 	check("every dispatch set a bind group, and the sample pass binds four resources",
-		sink.bindings.length === dispatches && sink.bindings.includes(4),
-		"dispatches=" + dispatches + " bindGroup calls=" + sink.bindings.length);
+		sink.bindings.length === m.counts.dispatches && sink.bindings.includes(4),
+		"dispatches=" + m.counts.dispatches + " bindGroup calls=" + sink.bindings.length);
 	const buoyCopies = sink.copies.filter(c => c[0] === "buoy");
 	check("the buoy sample buffer is copied back 24 bytes (6 floats) at a time",
 		buoyCopies.length > 0 && buoyCopies.every(c => c[1] === "buoyRead" && c[2] === 24),
@@ -274,11 +209,12 @@ async function testPlumbing() {
 	solver.destroy();
 
 	// substep policy: the frame count follows the toggle, dt follows the count
+	const m2 = mock.create(PATTERNS);
 	const cfg2 = Object.assign({}, cfg, {N: 64, texW: 66, texH: 66, scenario: "dam", substepsAuto: false});
-	const solver2 = Fluid.gpu.solver.create(makeDevice(newSink()), canvas, mockContext(), "bgra8unorm", cfg2);
+	const solver2 = Fluid.gpu.solver.create(m2.device, canvas, mock.mockContext(), "bgra8unorm", cfg2);
 	const nsOff = appFrame(cfg2, solver2, 1e6);
 	const cfg3 = Object.assign({}, cfg2, {substepsAuto: true});
-	const solver3 = Fluid.gpu.solver.create(makeDevice(newSink()), canvas, mockContext(), "bgra8unorm", cfg3);
+	const solver3 = Fluid.gpu.solver.create(m2.device, canvas, mock.mockContext(), "bgra8unorm", cfg3);
 	const nsOn = appFrame(cfg3, solver3, 1e6);
 	check("app frame loop: fixed steps when the policy is off, capped substeps when on",
 		nsOff === cfg2.substepsFixed && cfg2.substeps === nsOff && nsOn === cfg3.substepMax &&
@@ -286,8 +222,13 @@ async function testPlumbing() {
 		"off ns=" + nsOff + "/" + cfg2.substepsFixed + " dt=" + cfg2.dt.toFixed(5) +
 		" / on ns=" + nsOn + "/" + cfg3.substepMax + " dt=" + cfg3.dt.toFixed(5));
 	solver2.destroy(); solver3.destroy();
-	check("no buffer or texture leaks across the two solvers (pools destroyed on destroy)",
-		buffers > 0 && textures > 0, "created buffers=" + buffers + " textures=" + textures);
+	// every pool allocation is destroyed with the solver, and destroy is idempotent
+	check("no buffer or texture leaks across the solvers (pools destroyed on destroy)",
+		m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0 &&
+		m2.counts.buffersAlive === 0 && m2.counts.texturesAlive === 0,
+		"alive buffers=" + (m.counts.buffersAlive + m2.counts.buffersAlive) +
+		" textures=" + (m.counts.texturesAlive + m2.counts.texturesAlive) +
+		" created=" + m.counts.buffers + "/" + m.counts.textures);
 }
 
 // ---- 2. params: cfg -> paramsArray -> the indices the wgsl reads ----
@@ -385,20 +326,173 @@ function testSampler() {
 		st.ux === 2, "mean u=" + st.ux);
 }
 
+// ---- 4b. probe table: layout, cadence, readback, cpu oracle ----
+// measured values the mock "kernel" leaves in slots 0 and 1: slot 0 is liquid at
+// ~323 K with a rightward/upward flow, slot 1 is a cold vacuum cell.
+function probePattern() {
+	const p = new Float32Array(Fluid.core.probes.LEN);
+	const write = (id, m, dr, dg, db, E, u, v, pr) => {
+		const b = Fluid.core.probes.slotBase(id);
+		p[b + 2] = m; p[b + 3] = dr; p[b + 4] = dg; p[b + 5] = db;
+		p[b + 6] = E; p[b + 7] = u; p[b + 8] = v; p[b + 9] = pr;
+	};
+	write(0, 1, 0.1, 0.2, 0.3, 2.0 * 273 + 334 + 4.2 * 50, 3, -2, 12);
+	write(1, 0.02, 0, 0, 0.01, 1, 0.5, 0.5, 0);
+	return p;
+}
+function testProbeTable() {
+	const P = Fluid.core.probes;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {N: 16, texW: 18, texH: 18});
+	const table = P.create();
+	const out = P.makeSample();
+	const ids = [];
+	for (let i = 0; i < P.MAX; i++) ids.push(P.add(table, cfg, i % 16, 2));
+	check("probe table: 32 stable slots, the 33rd add is refused",
+		ids.every((id, i) => id === i) && P.add(table, cfg, 1, 1) === -1 && table.live === P.MAX,
+		"ids=" + ids[0] + ".." + ids[ids.length - 1] + " live=" + table.live);
+	check("probe table: upload carries the live count and the active flag the kernel reads",
+		table.upload[0] === P.MAX && table.upload[P.slotBase(3) + P.P_ACTIVE] === 1 &&
+		table.upload[P.slotBase(3) + P.P_X] === 3,
+		"count=" + table.upload[0] + " x=" + table.upload[P.slotBase(3)]);
+	check("probe table: clamped to the interior cell range on add and move",
+		(() => {
+			P.remove(table, 5);
+			const id = P.add(table, cfg, -5, 1e6);
+			const clamped = P.move(table, cfg, id, 1e6, -1) && table.slots[id].x === 16 && table.slots[id].y === 1;
+			P.remove(table, id);
+			return clamped && id === 5;
+		})(), "removed slot is reused, coordinates clamp to [1,N]");
+	// a fresh sample is refused until the first readback lands
+	P.remove(table, 0);
+	const id0 = P.add(table, cfg, 4, 4);
+	check("probe sample: no value before the first readback, stale value drops on invalidate",
+		P.sample(table, cfg, 10, id0, out) === false && out.valid === false,
+		"valid=" + out.valid);
+	const raw = new Float32Array(P.LEN);
+	raw.set(probePattern());
+	P.ingest(table, raw, 7);
+	const ok = P.sample(table, cfg, 11, id0, out);
+	check("probe sample: readback values, age and the caloric EOS derivation reach the caller",
+		ok && out.valid && out.m === 1 && Math.abs(out.dr - 0.1) < 1e-6 && out.E === 2.0 * 273 + 334 + 4.2 * 50 &&
+		out.u === 3 && out.v === -2 && out.p === 12 && out.age === 4 &&
+		out.phase === Fluid.core.solver.PHASE_LIQUID && Math.abs(out.T - 323) < 1e-4,
+		"m=" + out.m + " T=" + out.T.toFixed(2) + " phase=" + out.phase + " age=" + out.age);
+	P.invalidate(table);
+	check("probe sample: a reset or resize invalidates the completed sample",
+		P.sample(table, cfg, 12, id0, out) === false && out.valid === false);
+
+	// cpu oracle: same clamps and the same derivation on plain fields
+	const P2 = P.create();
+	const id = P.add(P2, cfg, 9, 12);
+	const mass = new Float32Array(18 * 18 * 4);
+	const therm = new Float32Array(18 * 18 * 4);
+	const vel = new Float32Array(18 * 18 * 2);
+	const press = new Float32Array(18 * 18);
+	const i4 = (9 + 12 * 18) * 4, i2 = (9 + 12 * 18) * 2;
+	mass[i4] = 0.2; mass[i4 + 1] = 0.4; mass[i4 + 2] = 0.6; mass[i4 + 3] = 1;
+	therm[i4] = 2.0 * 273 + 334 + 4.2 * 20;
+	vel[i2] = 7; vel[i2 + 1] = -3; press[9 + 12 * 18] = 44;
+	check("probe cpu oracle: reads the probe cell, not the texel origin",
+		P.sampleCpu(P2, cfg, mass, therm, vel, press, 18, 18, id, out) &&
+		out.m === 1 && Math.abs(out.dr - 0.2) < 1e-6 && Math.abs(out.db - 0.6) < 1e-6 &&
+		out.u === 7 && out.v === -3 && out.p === 44,
+		"m=" + out.m + " db=" + out.db + " u=" + out.u + " p=" + out.p);
+	const edge = P.add(P2, cfg, 16, 16);
+	const e4 = (16 + 16 * 18) * 4;
+	mass[e4 + 3] = 1;
+	therm[e4] = 2.0 * 273 + 334 + 4.2 * 20;
+	check("probe cpu oracle: the same interior clamp as the kernel, T/phase from the shared EOS",
+		P.sampleCpu(P2, cfg, mass, therm, vel, press, 18, 18, edge, out) &&
+		out.x === 16 && out.phase === Fluid.core.solver.PHASE_LIQUID,
+		"x=" + out.x + " T=" + out.T.toFixed(2));
+}
+
+async function testProbePlumbing() {
+	const N = 32;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {
+		N, texW: N + 2, texH: N + 2, scenario: "blobs", probeEvery: 4
+	});
+	const m = mock.create({probes: probePattern()});
+	const canvas = {width: N, height: N};
+	const solver = Fluid.gpu.solver.create(m.device, canvas, mock.mockContext(), "bgra8unorm", cfg);
+	check("probe pool: one storage table and its map-read twin, sized by core/probes",
+		solver.pool.probes.size === Fluid.core.probes.LEN * 4 &&
+		solver.pool.probesRead.size === Fluid.core.probes.LEN * 4,
+		"bytes=" + solver.pool.probes.size);
+	const out = Fluid.core.probes.makeSample();
+	const id0 = solver.addProbe(10, 20);
+	const id1 = solver.addProbe(30, 40);
+	const upload = new Float32Array(solver.pool.probes._buf);
+	check("probe upload: add writes count, position and active flag before any dispatch",
+		id0 === 0 && id1 === 1 && upload[0] === 2 &&
+		upload[Fluid.core.probes.slotBase(0) + Fluid.core.probes.P_X] === 10 &&
+		upload[Fluid.core.probes.slotBase(0) + Fluid.core.probes.P_Y] === 20 &&
+		upload[Fluid.core.probes.slotBase(1) + Fluid.core.probes.P_ACTIVE] === 1,
+		"count=" + upload[0]);
+	check("probe sample: refused before the first readback", solver.sampleProbe(0, out) === false);
+
+	let copies = 0;
+	for (let f = 0; f < 2 * cfg.probeEvery; f++) {
+		const before = m.sink.copies.length;
+		solver.frame(cfg.frameDt / 4, 4, false);
+		if (m.sink.copies.slice(before).some(c => c[0] === "probes")) copies++;
+		await solver.pollReadback();
+	}
+	check("probe readback: one copy every cfg.probeEvery frames, 2112 bytes, never per substep",
+		copies === 2 && m.sink.copies.filter(c => c[0] === "probes").every(c => c[2] === Fluid.core.probes.LEN * 4),
+		"copies=" + copies + "/" + (2 * cfg.probeEvery) + " frames");
+	const got = solver.sampleProbe(0, out);
+	check("probe readback reaches the table: values, age, and the derived phase",
+		got && out.valid && out.m === 1 && Math.abs(out.dr - 0.1) < 1e-6 && out.u === 3 && out.p === 12 &&
+		out.phase === Fluid.core.solver.PHASE_LIQUID && out.age <= cfg.probeEvery,
+		"m=" + out.m + " T=" + out.T.toFixed(2) + " phase=" + out.phase + " age=" + out.age);
+	solver.moveProbe(0, 32, 31);
+	check("probe move: rewrites only that slot, count unchanged",
+		upload[0] === 2 && upload[Fluid.core.probes.slotBase(0) + Fluid.core.probes.P_X] === 32 &&
+		upload[Fluid.core.probes.slotBase(0) + Fluid.core.probes.P_Y] === 31 &&
+		upload[Fluid.core.probes.slotBase(1) + Fluid.core.probes.P_ACTIVE] === 1,
+		"x=" + upload[Fluid.core.probes.slotBase(0)]);
+	solver.removeProbe(1);
+	check("probe remove: clears the active flag, drops the count, the id stops sampling",
+		upload[0] === 1 && upload[Fluid.core.probes.slotBase(1) + Fluid.core.probes.P_ACTIVE] === 0 &&
+		solver.sampleProbe(1, out) === false,
+		"count=" + upload[0]);
+	solver.removeProbe(0);
+	check("probe cadence stops with an empty table (no dispatch, no readback)",
+		(() => {
+			const before = m.sink.copies.length;
+			const order = m.sink.pipeOrder.length;
+			solver.frame(cfg.frameDt / 4, 4, false);
+			return m.sink.copies.length === before &&
+				m.sink.pipeOrder.slice(order).indexOf("probeSample") < 0;
+		})(), "live=" + solver.probes.live);
+	const wgsl = Fluid.gpu.shaders.probeSample;
+	check("wgsl: probe_sample covers the 32 slots in 4 groups of 8, reading every queried field",
+		/@workgroup_size\(8\)/.test(wgsl) && /idx >= 32u/.test(wgsl) &&
+		/binding\(1\) var massTex: texture_2d<f32>/.test(wgsl) &&
+		/binding\(2\) var thermTex: texture_2d<f32>/.test(wgsl) &&
+		/binding\(5\) var<storage,read_write> probes: array<f32>/.test(wgsl) &&
+		/dispatchWorkgroups\(Fluid.core.probes.MAX\/8\)/.test(Fluid.gpu.passes.encodeProbeSample.toString()),
+		"workgroup=8 x4, six bindings, one dispatch");
+	solver.destroy();
+	check("probe pool is released with the solver", m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0);
+}
+
 async function testPhasePlumbing() {
 	require("../src/gpu/view.js");
 	require("../src/app/hud.js");
 	require("../src/app/viewmenu.js");
 	require("../src/app/input.js");
 	require("../src/app/controls.js");
-	const sink = newSink();
-	const device = makeDevice(sink);
+	const m = mock.create(PATTERNS);
+	const sink = m.sink;
+	const device = m.device;
 	const N = 64;
 	const cfg = Object.assign({}, Fluid.core.config.defaults, {
 		N, texW: N + 2, texH: N + 2, scenario: "ice", buoyEnabled: 0
 	});
 	const canvas = { width: N, height: N };
-	const solver = Fluid.gpu.solver.create(device, canvas, mockContext(), "bgra8unorm", cfg);
+	const solver = Fluid.gpu.solver.create(device, canvas, mock.mockContext(), "bgra8unorm", cfg);
 	check("phase pool: 40-float partial stride, stats-len buffer, rgba32float sfield, rg32float accum",
 		solver.pool.statsPart.size === solver.pool.numWorkgroups * 40 * 4 &&
 		solver.pool.stats.size === Fluid.core.stats.STATS_LEN * 4 &&
@@ -448,7 +542,9 @@ async function testPhasePlumbing() {
 	testParams();
 	testWgsl();
 	testSampler();
+	testProbeTable();
 	await testPlumbing();
+	await testProbePlumbing();
 	await testPhasePlumbing();
 	console.log(failures === 0 ? "ALL GPU-MOCK CHECKS PASSED" : failures + " FAILURES");
 	process.exitCode = failures === 0 ? 0 : 1;

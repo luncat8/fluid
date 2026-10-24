@@ -1021,6 +1021,6 @@
 			applyDyePatch,applyWallPatch};
 	}
 	Fluid.core.solver={create,buildScenario,buildDyePatch,buildWallPatch,patchTotals,paintBlob,
-		phaseOf,energyFromT,eqDist,PHASE_VAC,PHASE_SOLID,PHASE_MELTING,PHASE_LIQUID,PHASE_BOILING,PHASE_GAS};
+		phaseOf,phaseInto,energyFromT,eqDist,PHASE_VAC,PHASE_SOLID,PHASE_MELTING,PHASE_LIQUID,PHASE_BOILING,PHASE_GAS};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.solver;
 })(globalThis);

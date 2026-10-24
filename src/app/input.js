@@ -34,6 +34,26 @@
 			state.pending.wall=cfg.paintMode!==0;
 			state.pending.erase=cfg.paintMode===2;
 		}
+		// every listener is registered through one list so destroy() can hand the
+		// canvas and the window back exactly as it found them (0.7.0: the engine may
+		// attach and detach input on a live sim)
+		const bindings=[];
+		function on(target,type,fn){
+			target.addEventListener(type,fn);
+			bindings.push([target,type,fn]);
+		}
+		function destroy(){
+			for(let i=0;i<bindings.length;i++){
+				const b=bindings[i];
+				b[0].removeEventListener(b[1],b[2]);
+			}
+			bindings.length=0;
+			state.pending=null;
+			state.down=false;
+			state.pointerId=null;
+			cfg.mouseStrength=0;
+			cfg.mouseVX=0;cfg.mouseVY=0;
+		}
 		cfg.paintColor=cfg.paintColor||0;
 		function flushPaint(){
 			const p=state.pending;
@@ -47,7 +67,7 @@
 			state.pending=null;
 			cfg._dirty=true;
 		}
-		canvas.addEventListener("pointerdown",e=>{
+		on(canvas,"pointerdown",e=>{
 			if(state.down||e.button!==0)return;
 			canvas.setPointerCapture(e.pointerId);
 			canvas.focus();
@@ -62,7 +82,7 @@
 			queuePaint(u,v);
 			e.preventDefault();
 		});
-		canvas.addEventListener("pointermove",e=>{
+		on(canvas,"pointermove",e=>{
 			if(!state.down||e.pointerId!==state.pointerId)return;
 			const oldX=state.x,oldY=state.y;
 			updateUV(e);
@@ -92,15 +112,15 @@
 			cfg.mouseVX=0;cfg.mouseVY=0;
 			if(id!==null&&canvas.hasPointerCapture(id))canvas.releasePointerCapture(id);
 		}
-		canvas.addEventListener("pointerup",pointerEnd);
-		canvas.addEventListener("pointercancel",pointerEnd);
-		canvas.addEventListener("lostpointercapture",pointerEnd);
-		window.addEventListener("blur",()=>{
+		on(canvas,"pointerup",pointerEnd);
+		on(canvas,"pointercancel",pointerEnd);
+		on(canvas,"lostpointercapture",pointerEnd);
+		on(window,"blur",()=>{
 			pointerEnd();
 			state.pending=null;
 			for(const k in state.keys)state.keys[k]=false;
 		});
-		window.addEventListener("keydown",e=>{
+		on(window,"keydown",e=>{
 			if(e.defaultPrevented||e.ctrlKey||e.metaKey||e.altKey||e.isComposing)return;
 			const target=e.target;
 			if(target&&(target.isContentEditable||target.closest("input, select, textarea, button, a[href]")))return;
@@ -162,10 +182,10 @@
 				cfg._dirty=true;
 			}
 		});
-		window.addEventListener("keyup",e=>{
+		on(window,"keyup",e=>{
 			state.keys[e.key.toLowerCase()]=false;
 		});
-		return {state,flushPaint};
+		return {state,flushPaint,destroy};
 	}
 	Fluid.app.input={create:createInput,DYE_COLORS};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.app.input;
