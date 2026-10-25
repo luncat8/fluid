@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Run the portable test suite, tee it to a timestamped log, and optionally copy it.
+"""Run every headless suite. No arguments needed, no browser, no device.
 
-	python3 run_tests.py
-	python3 run_tests.py --quick --copy
-	python3 run_tests.py --gpu --copy
+	python3 run_tests.py              fast profile, one PASS/FAIL verdict (~10 s)
+	python3 run_tests.py --full       add the long numerical histories (~10 min)
+	python3 run_tests.py --gpu --copy  optional real-device parity, copy the log
+
+The device pass is separate and optional: open experiments/api-test.html in a
+WebGPU browser (file:// works) and press the run button.
 """
 import argparse
 import platform
@@ -121,8 +124,12 @@ def copy_log(log):
 
 def main():
 	setup_output()
-	parser = argparse.ArgumentParser(description="run the Fluid CPU, UI and mock-device test suites")
-	parser.add_argument("--quick", action="store_true", help="run the fast profile; default is the full suite")
+	parser = argparse.ArgumentParser(
+		description="run every headless Fluid suite (no arguments needed)",
+		epilog="exit code 0 means every suite passed; the log path is printed last")
+	parser.add_argument("--full", action="store_true",
+		help="also run the long numerical histories (default is the fast profile, ~10 s)")
+	parser.add_argument("--quick", action="store_true", help="accepted for old habits; it is the default")
 	parser.add_argument("--gpu", action="store_true",
 		help="also run optional real WebGPU parity (requires the external webgpu package/backend)")
 	parser.add_argument("--copy", action="store_true", help="copy the finished log to the system clipboard")
@@ -132,13 +139,21 @@ def main():
 		print("node was not found on PATH; install Node.js and retry", file=sys.stderr)
 		return 127
 	command = [node, str(ROOT / "experiments" / "run-all.js")]
-	if args.quick:
+	if not args.full:
 		command.append("--quick")
 	if args.gpu:
 		command.append("--gpu")
 	log = log_path()
+	started = time.monotonic()
 	code = tee_run(command, log, environment_line(node))
-	print("\nlog: " + str(log))
+	elapsed = time.monotonic() - started
+	verdict = "PASS · every headless suite passed" if code == 0 else "FAIL · see the failing suite above"
+	print("\nresult: " + verdict + " · " + format(elapsed, ".1f") + " s · "
+		+ ("full" if args.full else "fast") + " profile")
+	print("log: " + str(log))
+	if code == 0 and not args.full:
+		print("device pass (optional, needs a WebGPU browser): "
+			+ "python3 run_index.py --page experiments/api-test.html")
 	if args.copy:
 		copy_log(log)
 	return code

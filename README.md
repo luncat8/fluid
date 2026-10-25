@@ -128,10 +128,12 @@ though the device run needs a browser.
 
 ## Validation
 
-Run the portable CPU, UI-contract and recording-GPU-mock suites together with
-`node experiments/run-all.js`. This is the full profile; `--quick` runs the fast
-numerical/UI/plumbing checks without the longer numerical histories (~10 s here versus
-about 10.5 min for the full run). The runner continues
+Run `python3 run_tests.py` - no arguments - for every headless suite: 13 fast suites in
+about 10 s, teed to `experiments/logs/<date>-test-suite.log`, ending in one
+`result: PASS`/`FAIL` line and a nonzero exit code on failure. Add `--full` for the long
+numerical histories (about 10.5 min), `--gpu` for optional real-device parity, `--copy` to
+copy the log. The same suites run directly with `node experiments/run-all.js` (`--quick`
+is the default there). The runner continues
 after a suite fails, reports per-suite/total durations, and exits nonzero if any
 suite fails. To keep a single, timestamped transcript under `experiments/logs/`,
 run `python3 run_tests.py`; `python3 run_tests.py --copy` also copies the complete

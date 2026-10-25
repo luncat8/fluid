@@ -54,6 +54,25 @@ archive/ - for implemented plans
 experiments/ - measurement scripts (node), not loaded by the page.
 experiments/logs/ - keep useful;
 
+## validate
+
+one command, no arguments, no browser:
+
+	python3 run_tests.py
+
+it runs every headless suite (13, ~10 s: CPU numerics, UI contracts, GPU-mock plumbing,
+engine API, page wiring), tees to experiments/logs/<date>-test-suite.log, prints one
+`result: PASS`/`FAIL` line, and exits nonzero on failure. nothing else to remember.
+
+	--full   the long numerical histories (~10 min). before a plan closes.
+	--gpu    optional real-device parity; needs the external webgpu package.
+	--copy   copy the log to the clipboard.
+
+the browser/device pass is separate because it cannot be automated here (no WebGPU in
+the sandbox): `python3 run_index.py --page experiments/api-test.html` and press run.
+do not ask the user to repeat passes the headless suites already cover - only ask for a
+device row that the sandbox genuinely cannot produce, and say which page and which button.
+
 ## sandbox
 
 git push returns "Invalid username or token" is ok, no need to investigate or report - i will apply manually

@@ -1,0 +1,391 @@
+fluid tests · 2026-10-25 16:28 · node v22.22.3 · python 3.11.2 · linux x86_64
+Fluid test suite · quick profile · 13 suites (use default profile for the longer numerical histories) (use --gpu for real-device parity)
+
+=== [1/13] eos.js ===
+PASS plateau boundaries: phase byte and T on both sides of E1..E4  8 boundary states
+PASS T(E) monotone non-decreasing over 20k samples
+PASS T(E) flat at T_melt inside the fusion interval
+PASS energyFromT round trips through every sensible branch  6 temperatures
+PASS rho* decreases continuously from rho_liq to rho_gas across phi_g  rho_liq=1.0000 rho_gas=0.0200 maxStep=4.67e-2
+PASS S: liquid overpack expands toward rho_liq  S=3.333
+PASS S: thin cold ambient (air tier) carries no source  S=0
+PASS S: vapor at its gas-law target is equilibrium  rho*=0.01865 m=0.01865 phi_g=1.000
+PASS S: under-dense vapor converges (condensation pull)  S=-10.000 rho*=0.01865
+PASS S: clamps at +-SMax  hi=5 lo=-5
+PASS eqDist: latent interval is a set (0 inside), point branches at the exact energy  mid=0 below=10.0
+ALL EOS TESTS PASSED
+PASS eos.js · 0.05 s
+
+=== [2/13] sharpness.js ===
+sharpness: dye front, N=256 steps=240 flux=0.5
+upwind_width=26 fct_width=8 improvement=3.25x
+fct_front_range=0.000e+0..0.800000 total_dye=42188.857860 total_mass=65536.000680 local_bound_violations=0
+fct_vs_upwind_dye_drift=6.307e-9
+random_2d: min=1.409e-7 local_bound_violations=0 correction_drift=3.127e-10
+PASS
+PASS sharpness.js · 6.32 s
+
+=== [3/13] transport-roundoff.js ===
+PASS f32 outflow margin: old overshoot reproduced; 100000 bounded samples
+PASS production CPU transport positivity/conservation, FCT on/off; WGSL structure matches
+PASS transport-roundoff.js · 0.14 s
+
+=== [4/13] gpu-memory.js ===
+field pool allocation estimate, mgCoarsen=4 (logical request and 256-byte row-padded upper estimate; informational only)
+N=256  textures 13.9 MB (28) + buffers 0.5 MB (17)  = 14.4 MB logical, 15.7 MB worst case (+9.0%)  texW=258 mgTexW=66
+N=512  textures 54.2 MB (28) + buffers 1.8 MB (17)  = 56.1 MB logical, 58.6 MB worst case (+4.6%)  texW=514 mgTexW=130
+N=1024  textures 215.2 MB (28) + buffers 6.9 MB (17)  = 222.0 MB logical, 227.2 MB worst case (+2.3%)  texW=1026 mgTexW=258
+ALLOCATION ACCOUNTING CHECKS PASSED
+PASS gpu-memory.js · 0.03 s
+
+=== [5/13] gpu-mock.js ===
+PASS the buoy rectangle reaches the uniform block at the slots the wgsl reads  [151,373,16,64,0.5,1]
+PASS the mac-cormack limiter reaches the uniform block (an unwritten slot would read as limiter off)  slot 61=1
+PASS the uniform block holds every declared slot: 128 floats, 512 bytes
+PASS the 16x64 reference rectangle is exact on the reference grid  {"w":16,"h":64}
+PASS wgsl: 39 sources have balanced braces, parens and brackets
+PASS wgsl: every params.values[i] index is a declared slot in config.paramsOff  all indices resolve
+PASS wgsl: buoy_sample reads the mass texture, the velocity texture and one storage buffer
+PASS wgsl: buoy_sample is a single workgroup with a workgroup reduction
+PASS wgsl: the display overlay reads the body rectangle through the same slots
+PASS wgsl: solve residual writes slots 32/33, post-step drift writes 34/35
+PASS cpu sampler: sums the rectangle the gpu kernel walks, half of it blue  blue=4 count=16 uSum=32
+PASS cpu sampler: half a footprint of blue gives half submersion and neutral lift  sub=0.500 blue=0.250 aY=0
+PASS cpu sampler: the body follows the flow horizontally by drag, not by teleport  mean u=2
+PASS probe table: 32 stable slots, the 33rd add is refused  ids=0..31 live=32
+PASS probe table: upload carries the live count and the active flag the kernel reads  count=32 x=3
+PASS probe table: clamped to the interior cell range on add and move  removed slot is reused, coordinates clamp to [1,N]
+PASS probe sample: no value before the first readback, stale value drops on invalidate  valid=false
+PASS probe sample: readback values, age and the caloric EOS derivation reach the caller  m=1 T=323.00 phase=3 age=4
+PASS probe sample: a reset or resize invalidates the completed sample
+PASS probe cpu oracle: reads the probe cell, not the texel origin  m=1 db=0.6000000238418579 u=7 p=44
+PASS probe cpu oracle: the same interior clamp as the kernel, T/phase from the shared EOS  x=16 T=293.00
+PASS gpu pool has the buoy sample buffer and its readback twin  buoy=128B usage=140 read usage=9
+PASS the buoySample compute pipeline is compiled with the params struct prefix
+PASS WGSL pressure kernel retains opposite-color values between red/black sweeps  color gate and source-copy initialization are both present
+PASS the buoy field sample is requested every cfg.buoySampleEvery frames only  sample copies=4 over 16 frames, expected 4
+PASS the body marched every frame and ingested one readback per request  marches=16 samples=4
+PASS the readback reaches the body: half a footprint of blue reads as sub=0.5, neutral lift  sub=0.500 blue=0.250 ux=1.000 aY=0
+PASS every dispatch set a bind group, and the sample pass binds four resources  dispatches=4828 bindGroup calls=4828
+PASS the buoy sample buffer is copied back 24 bytes (6 floats) at a time  copies=4 sizes=24
+PASS the field sample runs after the sim steps and before the display pass  order=phaseEos>freezeVel>buoySample>toDisplay
+PASS the uniform buffer holds the live rect and substep count, not just cfg  substeps=2 rect=[17,44,4,8] show=1
+PASS the force kernel receives the live mean density in params slot 27  uniform=0.4466308653354645 cfg=0.4466308687988203
+PASS paused redraw pushes params too, so toggles show without a sim step
+PASS resize reuses the compiled pipelines and swaps the pool  modules +0 N=128 flags=67600 canvas=128
+PASS multigrid: coarse passes are encoded and ordered in the step  cycles=2 coarsen=2 restrict=4 prolong=4
+PASS multigrid: the coarse solve uses its own bound params and press textures  S=4 Nc=32 texW=34
+PASS solve residual is not captured on a non-stats frame  reduceA=0
+PASS solve residual is reduced once, after the last projection and before transport  grad=288 reduce=289 mass=292 counts=1/1
+PASS mac-cormack: forward and correction passes are encoded in the vel segment  mac=2 sl=2
+PASS mac-cormack: off by default, the shipping path is one advection dispatch  mac=0
+PASS t8 pass fusion: advectScalar and phaseSources replace 2 dispatches/substep and track therm parity  scalar=3 phaseSrc=3 t:0->1(unf3)->1(fus3)
+PASS no body outside the dam scenario, and the overlay switch follows  show=0
+PASS app frame loop: fixed steps when the policy is off, capped substeps when on  off ns=4/4 dt=0.00417 / on ns=24/24 dt=0.00069
+PASS no buffer or texture leaks across the solvers (pools destroyed on destroy)  alive buffers=0 textures=0 created=34/56
+PASS probe pool: one storage table and its map-read twin, sized by core/probes  bytes=2112
+PASS probe upload: add writes count, position and active flag before any dispatch  count=2
+PASS probe sample: refused before the first readback
+PASS probe readback: one copy every cfg.probeEvery frames, 2112 bytes, never per substep  copies=2/8 frames
+PASS probe readback reaches the table: values, age, and the derived phase  m=1 T=323.00 phase=3 age=3
+PASS probe move: rewrites only that slot, count unchanged  x=32
+PASS probe remove: clears the active flag, drops the count, the id stops sampling  count=1
+PASS probe cadence stops with an empty table (no dispatch, no readback)  live=0
+PASS wgsl: probe_sample covers the 32 slots in 4 groups of 8, reading every queried field  workgroup=8 x4, six bindings, one dispatch
+PASS probe pool is released with the solver
+PASS phase pool: 40-float partial stride, stats-len buffer, rgba32float sfield, rg32float accum  statsPart=12960B
+PASS phase pipelines: phaseEos and freezeVel compiled and dispatched during reset priming
+PASS reset seeds CPU phase census matching scenario cells (ice + liquid = 64^2)  counts=0/754/0/3342/0/0
+PASS HUD snapshot includes 6-phase census, latent/momentum ledgers, and sSat counter  dg: total=734.8399976193905 exp=734.8399976193905 drift=0 [ok]
+PASS keyboard shortcut 'o' toggles solid overlay flag and marks view dirty  overlay 1 -> 0
+PASS emitter pool: storage table + 80B Kahan ledger buffer allocated  emitters=2112B ledger=80B
+PASS emitter dispatch gating: idle table adds zero dispatches
+PASS emitter dispatch gating: momentum-only emitter runs inside forces with zero extra passes
+PASS emitter dispatch gating: freeze/heat/cold runs applyEmitters without emitterTally
+PASS emitter dispatch gating: dye/drain runs emitterTally (1 wg) before applyEmitters each substep
+PASS emitter readback pairing: expected totals pair with GPU emitterLedger without losing interleaved paintDye  expM=4105.250 ledgerInjM=49.150
+PASS emitter resize: live slots survive pool rebuild and re-upload to new buffer  live=4
+PASS emitter pool buffers destroyed cleanly with zero leaks
+PASS collider pool: 2112B storage table allocated  colliders=2112B
+PASS collider dispatch gating: idle table adds zero dispatches
+PASS collider dispatch gating: stationary collider stamps mask once and adds zero dispatches afterward
+PASS collider dispatch gating: moving collider runs colliderMask once and colliderVel each substep before rhs
+PASS obstacle GPU ops: setObstacles and paintObstacle(solid/erase) run paintSolid + colliderMask + phase priming
+PASS collider removal: clears GPU mask once and returns to zero dispatches
+PASS collider resize: live slots survive pool rebuild and re-upload to new buffer  live=1
+PASS collider pool buffer destroyed cleanly with zero leaks
+PASS phaseEvents pool: phasePrev, phaseRow, phaseEvents, phaseEventsRead allocated  phasePrev=17424B phaseRow=18720B phaseEvents=2240B
+PASS phaseEvents gating: null listener adds zero dispatches and zero buffer copies
+PASS phaseEvents mid-run registration: seeds before step and compacts once after step  batches during submit=0
+PASS phaseEvents pollReadback: delivers batched transition matrix and cell records outside submit  batches=1 total=2 melt=1 boil=1
+PASS phaseEvents unregister: onPhaseChange(null) stops dispatches immediately
+PASS phaseEvents pool buffers destroyed cleanly with zero leaks
+PASS serialize: single-submit copies 8 textures + emitterLedger into transient saveStaging buffer and destroys it  bytes=349344 copies=9 bufAliveDelta=0
+PASS deserialize: restores frame, tables, and fields into all ping-pong slots
+PASS save/load solver destroyed cleanly with zero leaks
+ALL GPU-MOCK CHECKS PASSED
+PASS gpu-mock.js · 0.21 s
+
+=== [6/13] profiler.js ===
+PASS create with feature
+PASS render tsWrites handed out
+PASS press sum over 2 substeps  press=1.8
+PASS vel sum  vel=0.2
+PASS render separate  render=0.02
+PASS frame/substeps recorded  frame=41 ns=2
+PASS total  total=2.8699999999999997
+PASS second frame overwrites results
+PASS stale-generation sample dropped
+PASS over-capacity still returns a pass
+PASS capacity clamped to 128 pairs  vel=0.12800000000000009
+PASS no features object -> null
+PASS feature absent -> null
+PASS null device -> null
+all pass
+PASS profiler.js · 0.03 s
+
+=== [7/13] browser-tests.js ===
+PASS browser diagnostics UI: five-case run, phase scenarios, scenario query, scripted paint, in-flight lock, report and clipboard copy
+PASS browser-tests.js · 0.05 s
+
+=== [8/13] hud.js ===
+PASS snapshot: exact minima, toggle context, honest rates, CFL/compression warnings, float applicability
+PASS hud.js · 0.03 s
+
+=== [9/13] input.js ===
+ok   right button does not paint or capture
+ok   primary down captures and focuses the canvas
+ok   primary down sets brush and coordinates
+ok   second pointer cannot steal, move or end a stroke
+ok   owning pointer moves in simulation coordinates
+ok   flick velocity remains clamped and smoothed
+ok   captured stroke survives leaving the canvas
+ok   one paint per flush uses the latest point
+ok   a flushed request is not replayed
+ok   paint requests reuse preallocated storage
+ok   captured movement outside the canvas is clamped
+ok   release clears capture and stirring
+ok   normal release preserves the final queued paint
+ok   lost capture ends stirring and drops pending paint
+ok   pointer cancellation ends stirring and drops pending paint
+ok   window blur ends an active stroke
+ok   window blur drops unflushed paint and clears held keys
+ok   unfocused numeric shortcut routes to the mode writer
+ok   form controls and links keep their native shortcuts
+ok   editable content keeps its keys
+ok   browser shortcuts, composition and handled events are ignored
+ok   holding space toggles pause only once
+ok   holding reset does not repeatedly rebuild the scenario
+ok   plain reset still works
+ok   pressure adjustment still allows key repeat
+ok   with multigrid off the same keys move the red-black sweep count
+ok   minimum-grid shortcut does not rebuild an unchanged grid
+ok   maximum-grid shortcut does not rebuild an unchanged grid
+ok   grid shortcut still resizes within bounds
+ok   createKeys handles non-Element e.target without .closest
+ok   blur on the bound keyTarget clears held keys
+ok   createKeys routes reset/resize hooks when supplied
+ok   createKeys destroy removes all keyTarget listeners
+
+all 33 checks pass
+PASS input.js · 0.03 s
+
+=== [10/13] controls.js ===
+ok   grid and readout initialize from config
+ok   sync cannot snap a held grid thumb back
+ok   input previews the grid without reallocating textures
+ok   release commits one resize
+ok   same grid change does not rebuild twice
+ok   external grid changes sync when no drag owns the thumb
+ok   slider ownership is released on pointercancel
+ok   slider ownership is released on lostpointercapture
+ok   slider ownership is released on blur
+ok   slider ownership is released on window pointerup
+ok   slider ownership is released on window pointercancel
+ok   slider ownership is released on window blur
+ok   cancelled slider gestures do not commit a resize
+ok   auto-CFL checkbox initializes from the config
+ok   auto-CFL checkbox switches to fixed steps
+ok   fixed-step slider updates the shared policy immediately
+ok   fixed-step slider feeds the solver substep policy
+ok   pressure slider drives the coarse sweep count while multigrid is on
+ok   keyboard pressure changes sync back to the slider
+ok   turning multigrid off shows the red-black sweep count
+ok   mg=0 slider drives the red-black sweep count
+ok   dam float is disabled outside its scenario
+ok   dam scenario enables the float control
+ok   FCT checkbox switches the actual solver configuration off
+ok   FCT checkbox switches the actual solver configuration on
+ok   gravity checkbox removes applied gravity
+ok   gravity checkbox restores applied gravity
+
+all 27 checks pass
+PASS controls.js · 0.03 s
+
+=== [11/13] ui.js ===
+ok   one label per mode
+ok   every label wraps a radio
+ok   group name and values
+ok   exactly one checked at boot
+ok   label text follows the input
+ok   change sets the mode
+ok   change marks the view dirty
+ok   one checked after click
+ok   setMode on the active mode returns before dirtying
+ok   setMode ignores unknown ids
+ok   key 5 routes through setMode
+ok   keyboard checks the radio
+ok   touch/stylus pointerover does not switch
+ok   touch/stylus leaves the checked radio alone
+ok   fine-pointer hover switches
+ok   hover checks exactly one radio
+ok   hybrid touch cannot trigger hover switching
+ok   hybrid pen cannot trigger hover switching
+ok   dragging over the view row does not switch modes
+ok   hover from the label text finds the radio
+ok   pointerover outside a label does not switch
+ok   change from a foreign input is ignored
+
+all 22 checks pass
+PASS ui.js · 0.03 s
+
+=== [12/13] engine.js ===
+ok   pacing meter: windowed rAF/s, sim/s, speed, queue latency and encode time  raf=144.00000000000023 sim=47.3
+ok   pacing meter: a paused view reports no sim or render rate
+ok   pacing meter: a rejected completion clears busy and surfaces the error
+ok   engine exposes solver, live params and the pacing state
+ok   create sizes the canvas and the texture grid from cfg.N  canvas=64 texW=66
+ok   step(dt) runs the shared substep policy: 4 fixed steps of dt/4  ns=4 dt=0.004167
+ok   a step submits one frame and marks the queue busy  dispatches=610 busy=true
+ok   stats() reports the solver frame count  frame=1
+ok   completion releases the in-flight gate
+ok   destroy releases the pool, every buffer and the device reference  alive buffers=0
+ok   update(): 144 Hz callbacks produce 60 fixed steps per second  frames=59
+ok   update(): one application frame in flight, no catch-up submit while the gpu is busy  frames=60 inflight=1
+ok   update(): resumes after the submission completes  frames=61
+ok   pause() sets the live paused state
+ok   update(): a paused clean canvas submits no redraws
+ok   update(): a dirty paused view redraws exactly once
+ok   singleStep() advances exactly one frame while paused  frames=62
+ok   resume() clears the paused state
+ok   stats(out) fills the caller's object from the last completed readback, no allocation  m=10 phases=1/2/3/4/5/6 res=0.25
+ok   stats() without an argument reuses one internal object
+ok   addProbe returns stable ids, probeCount tracks the table
+ok   sample() refuses before the first probe readback: the age is known, not invented
+ok   sample() returns the last completed probe value with its age and derived phase  m=1 T=323.0 age=1
+ok   moveProbe/removeProbe maintain the table and invalidate the removed id
+ok   a newly added or recycled probe refuses stale samples until a later readback completes
+ok   later probe readback unlocks the newly added probe slot
+ok   addEmitter assigns stable slot ids across kinds and rejects unknown kinds  count=4
+ok   moveEmitter/setEmitter mutate slots in place and validate arguments
+ok   setGrid re-uploads live emitters into the rebuilt pool  live=4 x0=24
+ok   removeEmitter frees the slot and drops emitterCount
+ok   emitter methods become safe no-ops after destroy()
+ok   addCollider assigns stable slot ids for circle/rect and rejects invalid specs  count=2
+ok   moveCollider/setCollider mutate slots in place and validate arguments
+ok   step() folds live collider peakSpeed into auto-CFL substeps immediately  ns=10
+ok   setObstacles and paintObstacle(wall/solid/erase) validate inputs and update geometry
+ok   setGrid re-uploads live colliders into the rebuilt pool  live=2 x0=26
+ok   removeCollider frees the slot and drops colliderCount
+ok   collider and obstacle methods become safe no-ops after destroy()
+ok   bindViewMode installs the app's single writer
+ok   setViewMode delegates to the bound writer instead of writing cfg itself  seen=3 cfg=0
+ok   without a writer the engine owns cfg.viewMode and marks the view dirty
+ok   an unknown view id is refused
+ok   setOverlay writes the overlay flag
+ok   setGrid rebuilds the pool at the new size and resizes the canvas  N=128 texW=130
+ok   setGrid re-uploads the live probe table into the rebuilt pool  count=1 x=32
+ok   setGrid clamps below the supported grid  N=64
+ok   shrinking setGrid clamps existing probe coordinates into [1, newN]
+ok   reset(scenario) validates the name and restarts the solver
+ok   the resized pool is fully released on destroy
+ok   attachInput installs pointer and key handlers on the element  listeners=9
+ok   keyboard view keys route through the engine's writer  mode=4
+ok   detachInput hands every listener back  listeners=0
+ok   bindKeys installs keyboard handlers on the requested element without pointer listeners
+ok   bindKeys routes its view shortcuts through the same writer  mode=2
+ok   detachKeys removes its handlers and leaves canvas pointer ownership untouched
+ok   bindKeys replaces attachInput's key owner while preserving its pointer owner
+ok   detachKeys leaves an attached pointer stroke handler active
+ok   bindKeys() defaults omitted target to window while bindKeys(null) refuses
+ok   keyboard grid shortcut routes through engine.setGrid and resizes the canvas  N=128 canvas=128
+ok   destroy() detaches all input owners before releasing the pool
+ok   20 create/step/probe/destroy cycles leave no buffer or texture alive
+ok   lab boot applies the query overrides before the engine is created  mg=false K=40 cycles=1
+ok   lab binds the view row as the writer, attaches input and shares the live params object
+ok   the rAF loop delegates pacing to sim.update and feeds the hud  updates=4 substeps=1
+ok   stop() destroys the engine
+ok   demo: boots the real engine on the page's cfg and reports the live setup  N=256 · dam · right-click to probe
+ok   demo: fills the scenario select from the config's own scenario list  options=9
+ok   demo: a right-click maps the canvas to a cell probe (+y up) through the engine  cells=128,128
+ok   demo: the table shows the readback the engine ingested (m, T, phase, u, v, p)  0 | 128,128 | 1.000 | 323.0 K | liquid | 3.0 | -2.0 | 12.0
+ok   demo: the conservation meters come from stats(), not from the solver's internals  mass -1.00e+0 · neg=0 over=2 maxM=1.100
+ok   demo: the pause button drives the engine's paused state and its own label
+ok   demo: a view button writes cfg.viewMode through setViewMode  mode=3
+ok   demo: the scenario select resets through the engine  cycle
+ok   demo: clear drops every probe slot and hides the rows
+ok   demo: toggle-emitters installs the 6-emitter RGB + thermal + drain rig  6 active
+ok   demo: second click removes all demo emitters cleanly
+ok   demo: spawns a draggable circle collider on boot  colliders=1
+ok   demo: dragging the circle collider moves it with live velocity and releases to 0  x=184 dragVx=363.2
+ok   demo: toggle-collider removes the circle collider
+ok   demo: toggle-collider respawns the circle collider
+ok   demo: save-state button serializes snapshot and updates status  saved f=3 (4974 KB)
+ok   demo: load-state button restores snapshot frame and updates status  loaded f=3
+ok   demo: toggle-phase-events registers onPhaseChange listener and updates status  batches=0 cells=0 (frz=0 melt=0 boil=0 cond=0)
+ok   demo: second click on toggle-phase-events unregisters listener
+ok   demo: refreshMeters syncs #scenario and #status after keyboard shortcuts  N=256 · jet · right-click to probe
+ok   demo: leaving the page destroys the engine and its pool  alive buffers=0
+ok   save/load: sim.saveSize matches Fluid.core.save.byteLength(N, mgCoarsen)  saveSize=349344
+ok   save/load: serialize(out) rejects undersized caller buffer with RangeError  serialize: out buffer too small (need 349344 B, got 349336 B)
+ok   save/load: serialize(out) writes into caller-owned ArrayBuffer in place
+ok   save/load: deserialize validates all 52 physics/policy CFG_KEYS and names the offending key  validated=52/52
+ok   save/load: reset clears frame and dynamic tables before deserialize
+ok   save/load: deserialize restores frame, substeps, probes, emitters, and colliders  frame=2 probes=1 emitters=1 colliders=1
+ok   save/load: destroyed cleanly with 0 live resources
+ok   onPhaseChange: off by default (zero GPU dispatches and zero buffer copies)
+ok   onPhaseChange: fires outside submit from pollReadback() with preallocated batch  calls=1 total=3 count=2
+ok   onPhaseChange: silent when total transitions === 0
+ok   onPhaseChange(null): unregisters and returns to zero dispatches
+ok   t12 lifecycle: 20 create/step/serialize/deserialize/destroy cycles completed  cycles=20
+ok   t12 lifecycle: live textures and buffers return to 0 after every destroy()  leakedCycles=0 (texAlive=0, bufAlive=0)
+ok   t12 lifecycle: transient serialize() staging buffer destroyed before serialize resolves  stagingLeaks=0
+ok   t12 lifecycle: zero WebGPU validation/OOM errors across all cycles  0 errors
+ok   t12 lifecycle: zero uncaptured device errors across all cycles  0 errors
+ok   t12 lifecycle: engine 100-step replay from mid-run snapshot is byte-for-byte identical  bytes=349344
+ok   t12 lifecycle: replay simulation destroyed cleanly with 0 live resources  texAlive=0, bufAlive=0
+ok   t12 lifecycle: CPU reference solver 100-step replay from mid-run snapshot is byte-for-byte identical  bytes=105248
+ok   a6 hot path: the audited frames really advanced the simulation  frames=210
+ok   a6 hot path: the allocation detector is live (harness allocations seen)  seen=1260
+ok   a6 hot path: update()/render()/stats()/sample() allocate no typed arrays in src/  0 over 200 frames
+ok   a6 hot path: the cpu audit ran 105 steps with a live detector  steps=105
+ok   a6 hot path: Fluid.core.solver.step() allocates no typed arrays in src/  0 over 100 steps
+all 110 engine checks pass
+PASS engine.js · 2.43 s
+
+=== [13/13] pages.js ===
+PASS html runners found  examples/demo.html, experiments/api-test.html, experiments/browser-tests.html, index.html
+PASS examples/demo.html: every <script src> resolves  21 scripts present
+PASS examples/demo.html: all used namespaces are loaded  closure complete
+PASS examples/demo.html: scripts load in a stub browser  ok
+PASS examples/demo.html: inline entry points exist  0 symbols
+PASS experiments/api-test.html: every <script src> resolves  20 scripts present
+PASS experiments/api-test.html: all used namespaces are loaded  closure complete
+PASS experiments/api-test.html: scripts load in a stub browser  ok
+PASS experiments/api-test.html: inline entry points exist  2 symbols
+PASS experiments/browser-tests.html: every <script src> resolves  16 scripts present
+PASS experiments/browser-tests.html: all used namespaces are loaded  closure complete
+PASS experiments/browser-tests.html: scripts load in a stub browser  ok
+PASS experiments/browser-tests.html: inline entry points exist  6 symbols
+PASS index.html: every <script src> resolves  24 scripts present
+PASS index.html: all used namespaces are loaded  closure complete
+PASS index.html: scripts load in a stub browser  ok
+PASS index.html: inline entry points exist  0 symbols
+PASS experiments/api-test.html: success result renders its tables  status=PASS
+PASS experiments/api-test.html: failure result is labelled bad  status=FAIL class=bad
+PASS page wiring · 4 pages · 0.04 s
+PASS pages.js · 0.07 s
+
+PASS all 13 suites · 9.47 s
+
+exit 0 · 9.493 s
