@@ -76,6 +76,10 @@
 			emitters:null,
 			emitterLedger:null,
 			colliders:null,
+			phasePrev:null,
+			phaseRow:null,
+			phaseEvents:null,
+			phaseEventsRead:null,
 			dims:null,
 			numWorkgroups:0,
 			workgroupX:0,workgroupY:0
@@ -141,9 +145,15 @@
 		const emitBytes=(Fluid.core.emitters?Fluid.core.emitters.LEN:528)*4;
 		pool.emitters=device.createBuffer({label:"emitters",size:emitBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
 		const emitLedgerBytes=(STATS.EMIT_LEDGER_LEN||20)*4;
-		pool.emitterLedger=device.createBuffer({label:"emitterLedger",size:emitLedgerBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
+		pool.emitterLedger=device.createBuffer({label:"emitterLedger",size:emitLedgerBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
 		const collBytes=(Fluid.core.colliders?Fluid.core.colliders.LEN:528)*4;
 		pool.colliders=device.createBuffer({label:"colliders",size:collBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
+		pool.phasePrev=device.createBuffer({label:"phasePrev",size:texW*texH*4,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
+		const phaseRowBytes=(N+1)*(STATS.PHASE_ROW_STRIDE||72)*4;
+		pool.phaseRow=device.createBuffer({label:"phaseRow",size:phaseRowBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
+		const phaseEventBytes=(STATS.PHASE_EVENT_LEN||560)*4;
+		pool.phaseEvents=device.createBuffer({label:"phaseEvents",size:phaseEventBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
+		pool.phaseEventsRead=device.createBuffer({label:"phaseEventsRead",size:phaseEventBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		pool.dims=device.createBuffer({label:"dims",size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
 		const dimsArr=new Uint32Array([pool.numWorkgroups*PARTIAL_STRIDE,0,0,0]);
 		device.queue.writeBuffer(pool.dims,0,dimsArr);
@@ -160,7 +170,7 @@
 			pool.mgMass,pool.mgFlags,pool.mgDiv,pool.mgPress.tex[0],pool.mgPress.tex[1]];
 	}
 	function poolBuffers(pool){
-		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.probes,pool.probesRead,pool.emitters,pool.emitterLedger,pool.colliders,pool.dims,pool.mgParams];
+		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.probes,pool.probesRead,pool.emitters,pool.emitterLedger,pool.colliders,pool.phasePrev,pool.phaseRow,pool.phaseEvents,pool.phaseEventsRead,pool.dims,pool.mgParams];
 	}
 	function textureBytes(t){
 		if(!t||!t.fluidSize)return 0;

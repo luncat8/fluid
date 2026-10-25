@@ -965,53 +965,47 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
 
 ## 2026-10-24 moving collider scalar-flux consistency: eliminating diagonal stripes and Poisson blowup
 
-- pitfall: **The Moving Collider Divergence/Stripes Breakdown** (a classic multi-stage trap for LLM agents):
-  When dragging or moving an obstacle in an incompressible Eulerian fluid solver, the simulation can
-  catastrophically break down with diagonal high-frequency stripes (`experiments/logs/0.7.0-t4/2.webp`),
-  directional movement bias (down-left drift), and Poisson residual spikes (`poissonRes` jumping from
-  60 to > 1700-4500 and `maxDiv > 1700`).
-  
-  **Why agents struggle to diagnose this:**
-  1. *Red herring: Multigrid failure.* Agents frequently blame the coarse hierarchy, restriction,
-     or prolongation operators. However, turning Multigrid off (`useMultigrid: false`) produces the
-     exact same explosion under pure Red-Black Gauss-Seidel.
-  2. *Red herring: Texture ping-pong parity.* Agents spend hours checking pass binding indices
-     and ping-pong buffers (`stepIo.v`, `state.v`).
-  3. *Red herring: Unsolvable Neumann compatibility.* Agents suspect the global net boundary flux
-     $\oint (u \cdot n) dA \ne 0$.
-  4. *Red herring: Artificial mass displacement.* Commit `fea95e7` attempted ad-hoc local mass
-     pushing (`colliderPushMass`), which caused $NaN$ blowup under Multigrid and was a dead end.
+- pitfall: when moving a rigid collider (`flags.r & 2u`), `colliderVel` prescribes
+  rigid-body velocity `(vx, vy)` on faces bordering the collider, and the pressure
+  Poisson solve diverts fluid out through open faces so `div u = 0`. Zeroing scalar
+  transport flux in `computeFlux` (`rawFx`/`rawFy`, `isBlocked3`) across `(flags.r |
+  flags.b) > 0u` starved the cell ahead of an advancing collider of inflow while open
+  faces drained 100% of its mass in one step (`rho -> rhoVac = 0.001`). The `1/rho`
+  Poisson face weight spiked to `1000`, creating an `8000:1` condition jump and
+  diagonal checkerboard stripes (`poissonRes > 1700`). Fix: in `computeFlux` (`rawFx`/
+  `rawFy` and WGSL `isBlocked3`), zero flux only on hard-blocked cells (static walls
+  `(f.r & 1u) != 0u || f.r == 255u` and frozen solids `f.b > 0u`), allowing active
+  moving collider faces (`f.r & 2u`) to transport scalar mass/energy consistently with
+  `div u = 0` (`poissonRes < 63`, exact `1e-6` global conservation, and stationary
+  colliders unchanged since `vel = 0`).
 
-  **The Actual Root Cause (Velocity-Scalar Flux Inconsistency):**
-  - **In the Velocity Stage:** `colliderVel` prescribes the rigid-body velocity $(v_x, v_y)$ on faces
-    bordering moving colliders (`flags.r & 2u`). In cells ahead of an advancing obstacle, this acts as
-    boundary volume inflow ($u_{\text{in}} = V \cdot n$). The Poisson solver correctly generates high
-    local pressure to divert fluid away, setting high outflow velocities on open fluid faces to enforce
-    $\nabla \cdot u = 0$.
-  - **In the Scalar Transport Stage:** `computeFlux` (`rawFx`/`rawFy`) checked `isBlocked` /
-    `isBlocked3` (`(flags.r | flags.b) > 0u`). Because colliders had `flags.r = 2u`, the scalar flux
-    across all faces touching the collider was artificially **zeroed out** ($F = 0$).
-  - **The Vacuum Disaster:** In fluid cells directly ahead of the obstacle, outward velocities
-    discharged mass through open faces while receiving 0 mass from the collider face. In a single timestep,
-    **100% of the cell's mass was drained**, collapsing density to vacuum ($\rho \approx 10^{-6}$ or $\rho_{\text{vac}} = 0.001$).
-    In the wake behind the obstacle, mass was sucked in from fluid faces with 0 outflow across the collider face,
-    piling up to $8\times-10\times$ baseline.
-  - **The Poisson Breakdown:** The Poisson Laplacian stencil weights are $w = \frac{1}{\rho}$. When mass
-    in front collapsed to $\rho_{\text{vac}} = 0.001$, local weights spiked to $1000$, creating an
-    $8000:1$ condition number shock. Red-Black Gauss-Seidel cannot converge across such localized jumps;
-    the residual spiked into the thousands, and the high-frequency checkerboard error modes
-    ($e^{i(\pi x \pm \pi y)}$) propagated across the grid as the diagonal stripes in `2.webp`.
-  
-  **The Skill & Solution:**
-  Scalar flux on faces bordering moving colliders must follow the divergence-free velocity field:
-  - In `src/core/solver.js` (`rawFx`/`rawFy`) and `src/gpu/shaders.js` (`isBlocked3`), only **hard-blocked**
-    cells (static walls `(flags.r & 1u) != 0u` or `255u`, and frozen solids `flags.b > 0u`) zero out face flux.
-  - Active moving colliders (`flags.r & 2u`) allow the prescribed face velocity to transport mass density
-    consistently with velocity divergence ($\nabla \cdot u = 0$).
-  - When the collider is stationary ($v_x = 0, v_y = 0$), `velTex` on its faces is $0$, making face flux
-    identically $0$ and preserving exact static obstacle behavior (`1.webp`).
-  - Total mass conservation remains exact ($10^{-6}$ drift) because boundary walls enforce $F = 0$ and all
-    interior fluxes cancel pairwise in donor-cell advection.
-  - Directional symmetry is restored: up-right vs. down-left motion produces identical peak divergence
-    ($70.14$ vs $70.14$), and fluid return flows match the obstacle displacement with zero artificial bias.
+## 2026-10-25 0.7.0 t6 save/load, t9 phase-change events, and t12 lifecycle suite
+
+- finding (`0.7.0 t6` binary snapshot): `src/core/save.js` packs a versioned
+  little-endian `ArrayBuffer` (`256 B` header, 52 physics/policy `CFG_KEYS` as `f64`,
+  96-element CPU state as `f64`, 24-key conservation ledger as `f64`, 3 tables
+  `probes`/`emitters`+`emitterLedger`/`colliders`+`buoy`, and 9 tight field blocks
+  `mass`, `therm`, `vel`, `press`, `flags`, `flagsMirror`, `sfield`, `accum`,
+  `mgPress`). On GPU, `serialize()` records 8 `copyTextureToBuffer` commands (with
+  256-byte row alignment) plus `copyBufferToBuffer` of `pool.emitterLedger` into a
+  single transient `MAP_READ | COPY_DST` staging buffer in one submit and destroys
+  the staging buffer inside `finally {}`.
+- pitfall: storing the CPU state block (`pSpanSmooth`, `time`, `rhoMean`, `emitInjKnown`)
+  in a `Float32Array` truncated `pSpanSmooth` from `f64` to `f32` on `serialize()`,
+  causing a 1-ULP difference in `cfg.PMin`/`cfg.PMax` after the next stats readback
+  (`pSpanSmooth * 0.85 + span * 0.15`). Keeping the 96-element CPU state block in
+  `Float64Array` preserves exact IEEE-754 `f64` state across mid-run snapshots so
+  100-step replays are byte-for-byte identical (`0` byte diffs across all `349,344 B`
+  at `N = 64`). Also snapshot `cfgState(cfg)` synchronously before `await mapAsync`
+  so slider edits while readback is in flight cannot mislabel the captured fields.
+- finding (`0.7.0 t9` `onPhaseChange`): `phaseChangeRow` (`@workgroup_size(8)`, one
+  thread per interior row `row = 0..N-1`) and `phaseChangeCompact` (`@workgroup_size(1)`)
+  compare `flags.g` against `pool.phasePrev` (`255u` = unseeded/static wall, `0..5u` =
+  phase), update `phasePrev` in place, sum the 6x6 phase-transition matrix, and compact
+  up to 64 cell records `(x, y, from, to, phiL, phiG, S, T)` into `560` floats
+  (`2,240 B`) with zero atomics and zero `workgroupBarrier` calls (100% executable in
+  `WgslExec` with `0` diff against `Fluid.core.phaseEvents.scanCpu`). Gated off when no
+  listener is registered (`0` dispatches, `0` copies), and delivered outside submit in
+  `pollReadback()` only when `batch.total > 0`.
+
 

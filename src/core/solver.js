@@ -293,6 +293,9 @@
 		const emitterTable=emitMod?emitMod.create():null;
 		const collMod=Fluid.core.colliders;
 		const colliderTable=collMod?collMod.create():null;
+		const phaseEventMod=Fluid.core.phaseEvents||(acc&&acc.phaseEvents)||null;
+		const phaseEventState=phaseEventMod?phaseEventMod.create(texW,texH):null;
+		let phaseChangeCb=null;
 		let mg=null;
 		if(cfg.useMultigrid && Fluid.core.multigrid){
 			mg=Fluid.core.multigrid.create(cfg,texW,texH,{
@@ -356,6 +359,7 @@
 				if(colliderTable.maskDirty)updateColliderMask();
 			}
 			phaseEos(false);
+			if(phaseEventMod&&phaseEventState)phaseEventMod.seedFromFlags(phaseEventState,flags,texW,texH);
 		}
 		function captureSolveResidual(){
 			const mgOp=Fluid.core.multigrid;
@@ -1404,13 +1408,120 @@
 				}
 			}
 		}
+		function onPhaseChange(cb){
+			if(typeof cb!=="function"){
+				phaseChangeCb=null;
+				return false;
+			}
+			if(!phaseChangeCb&&phaseEventMod&&phaseEventState){
+				phaseEventMod.seedFromFlags(phaseEventState,flags,texW,texH);
+			}
+			phaseChangeCb=cb;
+			return true;
+		}
+		function samplePhaseEvents(){
+			if(!phaseEventMod||!phaseEventState)return null;
+			const fired=phaseEventMod.scanCpu(phaseEventState,flags,sfield,grid.curBuf(therm),texW,texH,cfg.frame);
+			if(fired&&phaseChangeCb)phaseChangeCb(phaseEventState.batch);
+			return phaseEventState.batch;
+		}
+		function serialize(out){
+			const saveMod=Fluid.core.save;
+			if(!saveMod)throw new Error("Fluid.core.save module not loaded");
+			const cfgSnap=saveMod.cfgState(cfg);
+			const lay=saveMod.layout(cfg.N,cfg.mgCoarsen);
+			const accumArr=new Float32Array(texW*texH*2);
+			if(ledger){
+				const c11=(1+texW)*2;
+				accumArr[c11]=ledger.latentChargedE||0;
+				accumArr[c11+1]=ledger.frozenMomentum||0;
+			}
+			const mgPressArr=(mg&&mg.pressC)?grid.curBuf(mg.pressC):new Float32Array(lay.mgTexW*lay.mgTexH);
+			const emitLedger=new Float32Array(acc.EMIT_LEDGER_LEN||20);
+			if(ledger){
+				emitLedger[0]=ledger.injectedM||0;emitLedger[1]=ledger.injectedDr||0;
+				emitLedger[2]=ledger.injectedDg||0;emitLedger[3]=ledger.injectedDb||0;
+				emitLedger[4]=ledger.injectedE||0;
+				emitLedger[5]=ledger.removedM||0;emitLedger[6]=ledger.removedDr||0;
+				emitLedger[7]=ledger.removedDg||0;emitLedger[8]=ledger.removedDb||0;
+				emitLedger[9]=ledger.removedE||0;
+			}
+			return saveMod.pack({
+				cfg,cfgSnap,
+				frame:cfg.frame||0,
+				time:cfg.time||0,
+				ledger,
+				diag,
+				emitters:emitterTable,
+				emitterLedger:emitLedger,
+				colliders:colliderTable,
+				fields:{
+					mass:grid.curBuf(mass),
+					therm:grid.curBuf(therm),
+					vel:grid.curBuf(vel),
+					press:grid.curBuf(press),
+					flags,
+					flagsMirror:flags,
+					sfield,
+					accum:accumArr,
+					mgPress:mgPressArr
+				}
+			},out);
+		}
+		function deserialize(buf){
+			const saveMod=Fluid.core.save;
+			if(!saveMod)throw new Error("Fluid.core.save module not loaded");
+			const snap=saveMod.unpack(buf,cfg);
+			mass.a.set(snap.fields.mass);mass.b.fill(0);mass.cur=0;
+			therm.a.set(snap.fields.therm);therm.b.fill(0);therm.cur=0;
+			vel.a.set(snap.fields.vel);vel.b.fill(0);vel.cur=0;
+			press.a.set(snap.fields.press);press.b.fill(0);press.cur=0;
+			flux.fill(0);divsrc.fill(0);
+			sfield.set(snap.fields.sfield);
+			flags.set(snap.fields.flags);
+			if(mg&&mg.pressC){
+				mg.pressC.a.set(snap.fields.mgPress);
+				mg.pressC.b.fill(0);
+				mg.pressC.cur=0;
+			}
+			const st=snap.state;
+			cfg.frame=Math.round(st[saveMod.ST_FRAME])||0;
+			cfg.time=snap.time;
+			cfg.dt=snap.dt;
+			cfg.substeps=Math.round(st[saveMod.ST_SUBSTEPS])||1;
+			cfg.vClamp=st[saveMod.ST_VCLAMP]||cfg.vClamp;
+			cfg.rhoMean=st[saveMod.ST_RHO_MEAN]||0;
+			cfg.rhoBase=st[saveMod.ST_RHO_BASE]||0;
+			cfg.PMin=st[saveMod.ST_PMIN];
+			cfg.PMax=st[saveMod.ST_PMAX];
+			cfg.mouseX=st[saveMod.ST_MOUSE_X];
+			cfg.mouseY=st[saveMod.ST_MOUSE_Y];
+			cfg.mouseStrength=st[saveMod.ST_MOUSE_STR];
+			cfg.mouseVX=st[saveMod.ST_MOUSE_VX];
+			cfg.mouseVY=st[saveMod.ST_MOUSE_VY];
+			Object.assign(ledger,snap.ledger);
+			diag.sSaturated=Math.round(st[saveMod.ST_DIAG])||0;
+			diag.poissonRes=st[saveMod.ST_DIAG+1]||0;
+			diag.poissonRhs=st[saveMod.ST_DIAG+2]||0;
+			diag.poissonDrift=st[saveMod.ST_DIAG+4]||0;
+			diag.poissonDriftRhs=st[saveMod.ST_DIAG+5]||0;
+			diag.poissonDriftRel=st[saveMod.ST_DIAG+6]||0;
+			saveMod.restoreTables(snap,cfg,null,emitterTable,colliderTable,null);
+			if(phaseEventMod&&phaseEventState)phaseEventMod.seedFromFlags(phaseEventState,flags,texW,texH);
+			return true;
+		}
 		reset();
-		return {cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,sfield,flags,ledger,thermDiag,diag,mg,emitterTable,colliderTable,
+		const api={cfg,texW,texH,N,mass,therm,vel,press,flux,divsrc,sfield,flags,ledger,thermDiag,diag,mg,emitterTable,colliderTable,
+			phaseEvents:phaseEventState,onPhaseChange,samplePhaseEvents,serialize,deserialize,
 			isWall,isStaticWall,isFrozen,isBlocked,uBlocked,vBlocked,reset,step,stats,forces,advectVelocity,poissonRhs,project,applyGrad,computeFlux,advectScalar,
 			phaseEos,conduction,applyEmitters,heatSources,vorticityAt,
 			updateColliderMask,imprintColliders,paintSolid,setObstacles,paintObstacle,
 			addCollider,moveCollider,setCollider,removeCollider,colliderCount,
 			applyDyePatch,applyWallPatch,addEmitter,moveEmitter,setEmitter,removeEmitter,emitterCount};
+		Object.defineProperty(api,"saveSize",{
+			get(){return Fluid.core.save?Fluid.core.save.byteLength(cfg.N,cfg.mgCoarsen):0;}
+		});
+		return api;
 	}
 	Fluid.core.solver={create,buildScenario,buildDyePatch,buildWallPatch,patchTotals,paintBlob,
 		phaseOf,phaseInto,energyFromT,eqDist,PHASE_VAC,PHASE_SOLID,PHASE_MELTING,PHASE_LIQUID,PHASE_BOILING,PHASE_GAS};

@@ -16,6 +16,7 @@ require(path.join(root, "src/core/probes.js"));
 require(path.join(root, "src/core/emitters.js"));
 require(path.join(root, "src/core/colliders.js"));
 require(path.join(root, "src/core/buoy.js"));
+require(path.join(root, "src/core/save.js"));
 require(path.join(root, "src/gpu/shaders.js"));
 require(path.join(root, "src/gpu/fields.js"));
 require(path.join(root, "src/gpu/passes.js"));
@@ -728,6 +729,120 @@ async function testColliderPlumbing() {
 		m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0);
 }
 
+// ---- 8. phase-change event plumbing (0.7.0 t9) ----
+async function testPhaseEventPlumbing() {
+	const cfg = Object.assign({}, Fluid.core.config.defaults, { N: 64, texW: 66, texH: 66, scenario: "ice", substepsAuto: false, substepsFixed: 2 });
+	const phasePattern = new Float32Array(Fluid.core.stats.PHASE_EVENT_LEN);
+	phasePattern[0] = 2; // total transitions
+	phasePattern[1] = 2; // emitted count
+	phasePattern[2] = 1; // melted
+	phasePattern[3] = 0; // froze
+	phasePattern[4] = 1; // boiled
+	phasePattern[5] = 0; // condensed
+	phasePattern[12 + 1 * 6 + 3] = 1; // solid -> liquid
+	phasePattern[12 + 3 * 6 + 5] = 1; // liquid -> gas
+	// cell 0: (12, 18) 1 -> 3
+	phasePattern[48] = 12; phasePattern[49] = 18; phasePattern[50] = 1; phasePattern[51] = 3;
+	phasePattern[52] = 1.0; phasePattern[53] = 0.0; phasePattern[54] = 0.25; phasePattern[55] = 285.0;
+	// cell 1: (30, 40) 3 -> 5
+	phasePattern[56] = 30; phasePattern[57] = 40; phasePattern[58] = 3; phasePattern[59] = 5;
+	phasePattern[60] = 0.0; phasePattern[61] = 1.0; phasePattern[62] = 1.4; phasePattern[63] = 395.0;
+
+	const m = mock.create({ phaseEvents: phasePattern });
+	const sink = m.sink;
+	const solver = Fluid.gpu.solver.create(m.device, { width: 64, height: 64 }, mock.mockContext(), "bgra8unorm", cfg);
+	const pool = solver.pool;
+
+	check("phaseEvents pool: phasePrev, phaseRow, phaseEvents, phaseEventsRead allocated",
+		pool.phasePrev && pool.phasePrev.size === 66 * 66 * 4 &&
+		pool.phaseRow && pool.phaseRow.size === 65 * 72 * 4 &&
+		pool.phaseEvents && pool.phaseEvents.size === 560 * 4 &&
+		pool.phaseEventsRead && pool.phaseEventsRead.size === 560 * 4,
+		"phasePrev=" + pool.phasePrev.size + "B phaseRow=" + pool.phaseRow.size + "B phaseEvents=" + pool.phaseEvents.size + "B");
+
+	// With no listener registered, frame() adds 0 phaseChange dispatches and 0 copies
+	let p0 = sink.pipeOrder.length;
+	let c0 = sink.copies.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	let slice = sink.pipeOrder.slice(p0);
+	let copies = sink.copies.slice(c0);
+	check("phaseEvents gating: null listener adds zero dispatches and zero buffer copies",
+		!slice.includes("phaseChangeRow") && !slice.includes("phaseChangeCompact") &&
+		!copies.some(c => c[0] === "phaseEvents"));
+
+	// Registering mid-run (frame > 0) seeds phasePrev before stepping and scans after stepping
+	let batches = 0, lastTotal = 0, lastMelt = 0, lastBoil = 0, firstX = 0, secondTo = 0;
+	solver.onPhaseChange(b => {
+		batches++;
+		lastTotal = b.total;
+		lastMelt = b.melted;
+		lastBoil = b.boiled;
+		firstX = b.events[0].x;
+		secondTo = b.events[1].to;
+	});
+	p0 = sink.pipeOrder.length;
+	c0 = sink.copies.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	slice = sink.pipeOrder.slice(p0);
+	copies = sink.copies.slice(c0);
+	check("phaseEvents mid-run registration: seeds before step and compacts once after step",
+		slice.filter(n => n === "phaseChangeRow").length === 2 &&
+		slice.filter(n => n === "phaseChangeCompact").length === 2 &&
+		copies.some(c => c[0] === "phaseEvents" && c[1] === "phaseEventsRead" && c[2] === 2240) &&
+		batches === 0,
+		"batches during submit=" + batches);
+
+	await solver.pollReadback();
+	check("phaseEvents pollReadback: delivers batched transition matrix and cell records outside submit",
+		batches === 1 && lastTotal === 2 && lastMelt === 1 && lastBoil === 1 && firstX === 12 && secondTo === 5,
+		"batches=" + batches + " total=" + lastTotal + " melt=" + lastMelt + " boil=" + lastBoil);
+
+	// Unregistering stops dispatches immediately
+	solver.onPhaseChange(null);
+	p0 = sink.pipeOrder.length;
+	solver.frame(cfg.frameDt / 2, 2, false);
+	slice = sink.pipeOrder.slice(p0);
+	check("phaseEvents unregister: onPhaseChange(null) stops dispatches immediately",
+		!slice.includes("phaseChangeRow") && !slice.includes("phaseChangeCompact"));
+
+	solver.destroy();
+	check("phaseEvents pool buffers destroyed cleanly with zero leaks",
+		m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0);
+}
+
+// ---- 9. save/load plumbing (0.7.0 t6) ----
+async function testSaveLoadPlumbing() {
+	const cfg = Object.assign({}, Fluid.core.config.defaults, { N: 64, texW: 66, texH: 66, scenario: "blobs", substepsAuto: false, substepsFixed: 2 });
+	const m = mock.create();
+	const sink = m.sink;
+	const solver = Fluid.gpu.solver.create(m.device, { width: 64, height: 64 }, mock.mockContext(), "bgra8unorm", cfg);
+	solver.addProbe(20, 22);
+	solver.addEmitter({ kind: "heat", x: 32, y: 12, radius: 5, value: 900 });
+	solver.addCollider({ shape: "circle", x: 32, y: 40, radius: 6, vx: 3, vy: -1 });
+	solver.frame(cfg.frameDt / 2, 2, true);
+	await solver.pollReadback();
+
+	const bufAliveBefore = m.counts.buffersAlive;
+	const copyIdx = sink.copies.length;
+	const snap = await solver.serialize();
+	const saveCopies = sink.copies.slice(copyIdx);
+	check("serialize: single-submit copies 8 textures + emitterLedger into transient saveStaging buffer and destroys it",
+		snap instanceof ArrayBuffer && snap.byteLength === solver.saveSize &&
+		saveCopies.length === 9 && saveCopies.every(c => c[1] === "saveStaging") &&
+		m.counts.buffersAlive === bufAliveBefore,
+		"bytes=" + snap.byteLength + " copies=" + saveCopies.length + " bufAliveDelta=" + (m.counts.buffersAlive - bufAliveBefore));
+
+	solver.reset();
+	solver.deserialize(snap);
+	check("deserialize: restores frame, tables, and fields into all ping-pong slots",
+		solver.getStats().frame === 1 && solver.probes.live === 1 &&
+		solver.emitterCount() === 1 && solver.colliderCount() === 1);
+
+	solver.destroy();
+	check("save/load solver destroyed cleanly with zero leaks",
+		m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0);
+}
+
 (async function main() {
 	testParams();
 	testWgsl();
@@ -738,6 +853,8 @@ async function testColliderPlumbing() {
 	await testPhasePlumbing();
 	await testEmitterPlumbing();
 	await testColliderPlumbing();
+	await testPhaseEventPlumbing();
+	await testSaveLoadPlumbing();
 	console.log(failures === 0 ? "ALL GPU-MOCK CHECKS PASSED" : failures + " FAILURES");
 	process.exitCode = failures === 0 ? 0 : 1;
 })();

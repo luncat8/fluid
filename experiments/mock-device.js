@@ -12,6 +12,12 @@ function newSink() {
 	return { modules: [], writes: [], pipeOrder: [], bindings: [], copies: [], destroyed: [] };
 }
 const labelOf = o => (o && o.label) || "";
+function texBpp(fmt) {
+	if (fmt === "r32float" || fmt === "rgba8uint" || fmt === "rg16float") return 4;
+	if (fmt === "rg32float" || fmt === "rgba16float") return 8;
+	if (fmt === "r16float") return 2;
+	return 16;
+}
 // patterns: source label -> Float32Array stamped into the copy destination, standing
 // in for what a real kernel would have written.
 function create(patterns) {
@@ -24,7 +30,12 @@ function create(patterns) {
 		const buf = new ArrayBuffer(desc.size);
 		const b = {
 			label: desc.label, size: desc.size, usage: desc.usage, _buf: buf, destroyed: false,
-			getMappedRange() { return buf; },
+			getMappedRange(offset, size) {
+				if (!offset && size === undefined) return buf;
+				const off = offset || 0;
+				const len = size !== undefined ? size : (buf.byteLength - off);
+				return buf.slice(off, off + len);
+			},
 			mapAsync() { return Promise.resolve(); },
 			unmap() {},
 			destroy() {
@@ -50,7 +61,38 @@ function create(patterns) {
 				counts.copies++;
 				sink.copies.push([labelOf(src), labelOf(dst), size]);
 				const pattern = pat[labelOf(src)];
-				if (pattern) new Float32Array(dst._buf, 0, pattern.length).set(pattern);
+				if (pattern) {
+					new Float32Array(dst._buf, doff || 0, pattern.length).set(pattern);
+				} else if (src && src._buf && dst && dst._buf) {
+					const srcOff = so || 0;
+					const dstOff = doff || 0;
+					const byteCnt = size !== undefined ? size : Math.min(src._buf.byteLength - srcOff, dst._buf.byteLength - dstOff);
+					if (byteCnt > 0) {
+						new Uint8Array(dst._buf, dstOff, byteCnt).set(new Uint8Array(src._buf, srcOff, byteCnt));
+					}
+				}
+			},
+			copyTextureToBuffer(src, dst, extent) {
+				counts.copies++;
+				const tex = src && src.texture;
+				const buf = dst && dst.buffer;
+				const w = Array.isArray(extent) ? extent[0] : (extent && extent.width) || (tex && tex.width) || 0;
+				const h = Array.isArray(extent) ? extent[1] : (extent && extent.height) || (tex && tex.height) || 0;
+				const bpp = (tex && tex._bpp) || 4;
+				const rowBytes = w * bpp;
+				const bytesPerRow = (dst && dst.bytesPerRow) || rowBytes;
+				const dstBase = (dst && dst.offset) || 0;
+				sink.copies.push([labelOf(tex), labelOf(buf), rowBytes * h]);
+				if (tex && tex._buf && buf && buf._buf) {
+					const srcBytes = new Uint8Array(tex._buf);
+					const dstBytes = new Uint8Array(buf._buf);
+					const texRowBytes = tex.width * bpp;
+					for (let r = 0; r < h; r++) {
+						const sOff = r * texRowBytes;
+						const dOff = dstBase + r * bytesPerRow;
+						dstBytes.set(srcBytes.subarray(sOff, sOff + rowBytes), dOff);
+					}
+				}
 			},
 			finish: () => ({})
 		};
@@ -60,8 +102,13 @@ function create(patterns) {
 		createTexture: d => {
 			counts.textures++;
 			counts.texturesAlive++;
+			const w = Array.isArray(d.size) ? d.size[0] : (d.size && d.size.width) || 0;
+			const h = Array.isArray(d.size) ? d.size[1] : (d.size && d.size.height) || 0;
+			const bpp = texBpp(d.format);
+			const buf = new ArrayBuffer(w * h * bpp);
 			const t = {
-				label: d.label, format: d.format, createView: () => ({}),
+				label: d.label, format: d.format, width: w, height: h, _bpp: bpp, _buf: buf,
+				createView: () => ({}),
 				destroy() {
 					if (t.destroyed) return;
 					t.destroyed = true;
@@ -82,6 +129,10 @@ function create(patterns) {
 			return { label: d.label, _module: d.compute.module, getBindGroupLayout: () => layout };
 		},
 		createRenderPipeline: d => ({ label: d.label, getBindGroupLayout: () => ({}) }),
+		pushErrorScope() {},
+		popErrorScope() { return Promise.resolve(null); },
+		addEventListener() {},
+		removeEventListener() {},
 		queue: {
 			writeBuffer(buf, offset, src, dataOffset, size) {
 				if (ArrayBuffer.isView(src)) {
@@ -97,7 +148,26 @@ function create(patterns) {
 				}
 				sink.writes.push(labelOf(buf));
 			},
-			writeTexture() {},
+			writeTexture(dst, data, layout, extent) {
+				const tex = dst && dst.texture;
+				if (!tex || !tex._buf || !data) return;
+				const srcBytes = ArrayBuffer.isView(data)
+					? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+					: new Uint8Array(data);
+				const w = Array.isArray(extent) ? extent[0] : (extent && extent.width) || tex.width;
+				const h = Array.isArray(extent) ? extent[1] : (extent && extent.height) || tex.height;
+				const bpp = tex._bpp || 4;
+				const rowBytes = w * bpp;
+				const srcStride = (layout && layout.bytesPerRow) || rowBytes;
+				const srcBase = (layout && layout.offset) || 0;
+				const dstBytes = new Uint8Array(tex._buf);
+				const dstStride = tex.width * bpp;
+				for (let r = 0; r < h; r++) {
+					const sOff = srcBase + r * srcStride;
+					const dOff = r * dstStride;
+					dstBytes.set(srcBytes.subarray(sOff, sOff + rowBytes), dOff);
+				}
+			},
 			submit() {},
 			// resolved immediately: the harnesses that observe backpressure swap this
 			// for a queue they complete by hand

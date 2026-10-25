@@ -98,6 +98,8 @@
 			statsB:comp("statsB",PS+sh.statsReduceB),
 			buoySample:comp("buoySample",PS+sh.buoySample),
 			probeSample:comp("probeSample",PS+sh.probeSample),
+			phaseChangeRow:comp("phaseChangeRow",PS+sh.phaseChangeRow),
+			phaseChangeCompact:comp("phaseChangeCompact",PS+sh.phaseChangeCompact),
 			toDisplay:comp("toDisplay",PS+sh.toDisplay),
 			renderPipe:device.createRenderPipeline({
 				label:"render",
@@ -134,7 +136,7 @@
 			rhs:[],applyGrad:[],flux:[],advectMass:[],advectTherm:[],advectScalar:[],
 			phaseA:[],phaseB:[],freezeTmp:[],freezeMain:[],conduction:[],applyEmitters:[],emitterTally:[],heatSources:[],
 			limiterPrepare:[],limiterApply:[],paintMass:[],paintTherm:[],paintSolid:[],projRed:[],projBlack:[],
-			poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],probeSample:[],render:null
+			poissonA:[],poissonB:null,statsA:[],toDisplay:[],statsB:null,buoySample:[],probeSample:[],phaseChangeRow:[],phaseChangeCompact:null,render:null
 		};
 		for(let mm=0;mm<3;mm++){
 			groups.phaseA[mm]=[];
@@ -505,6 +507,22 @@
 			{binding:2,resource:{buffer:pool.dims}},
 			{binding:3,resource:{buffer:pool.emitterLedger}}
 		]);
+		for(let t=0;t<2;t++){
+			const tV=viewRes(pool.therm.tex[t]);
+			groups.phaseChangeRow[t]=bg(device,"phaseChangeRow"+t,pipes.phaseChangeRow.getBindGroupLayout(0),[
+				{binding:0,resource:{buffer:pool.params}},
+				{binding:1,resource:flagsView},
+				{binding:2,resource:sfieldView},
+				{binding:3,resource:tV},
+				{binding:4,resource:{buffer:pool.phasePrev}},
+				{binding:5,resource:{buffer:pool.phaseRow}}
+			]);
+		}
+		groups.phaseChangeCompact=bg(device,"phaseChangeCompact",pipes.phaseChangeCompact.getBindGroupLayout(0),[
+			{binding:0,resource:{buffer:pool.params}},
+			{binding:1,resource:{buffer:pool.phaseRow}},
+			{binding:2,resource:{buffer:pool.phaseEvents}}
+		]);
 		groups.render=bg(device,"render",pipes.renderPipe.getBindGroupLayout(0),[
 			{binding:0,resource:pipes.sampler},
 			{binding:1,resource:viewRes(pool.display)}
@@ -770,6 +788,14 @@
 		cpass.setBindGroup(0,groups.probeSample[state.m][state.t][state.v]);
 		cpass.dispatchWorkgroups(Fluid.core.probes.MAX/8);
 	}
+	function encodePhaseChange(cpass,pool,pipes,groups,state){
+		cpass.setPipeline(pipes.phaseChangeRow);
+		cpass.setBindGroup(0,groups.phaseChangeRow[state.t]);
+		cpass.dispatchWorkgroups(Math.ceil(pool.N/8));
+		cpass.setPipeline(pipes.phaseChangeCompact);
+		cpass.setBindGroup(0,groups.phaseChangeCompact);
+		cpass.dispatchWorkgroups(1);
+	}
 	function encodeDisplay(cpass,pool,pipes,groups,state){
 		cpass.setPipeline(pipes.toDisplay);
 		cpass.setBindGroup(0,groups.toDisplay[state.m][state.t][state.v]);
@@ -798,6 +824,6 @@
 		rpass.setBindGroup(0,groups.render);
 		rpass.draw(3);
 	}
-	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeColliderMask,encodeStep,encodeStepProfiled,encodeStats,encodeBuoySample,encodeProbeSample,encodeDisplay,encodePaint,encodePaintSolid,encodeRender};
+	Fluid.gpu.passes={createPipelines,makeBindGroups,encodePrimePhase,encodeColliderMask,encodeStep,encodeStepProfiled,encodeStats,encodeBuoySample,encodeProbeSample,encodePhaseChange,encodeDisplay,encodePaint,encodePaintSolid,encodeRender};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.passes;
 })(globalThis);

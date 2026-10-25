@@ -16,6 +16,7 @@ require(path.join(root, "src/core/probes.js"));
 require(path.join(root, "src/core/emitters.js"));
 require(path.join(root, "src/core/colliders.js"));
 require(path.join(root, "src/core/buoy.js"));
+require(path.join(root, "src/core/save.js"));
 require(path.join(root, "src/core/pacing.js"));
 require(path.join(root, "src/gpu/device.js"));
 require(path.join(root, "src/gpu/shaders.js"));
@@ -23,6 +24,7 @@ require(path.join(root, "src/gpu/fields.js"));
 require(path.join(root, "src/gpu/passes.js"));
 require(path.join(root, "src/gpu/solver.js"));
 require(path.join(root, "src/api/engine.js"));
+require("./api-test.js");
 const mock = require("./mock-device.js");
 
 let checks = 0;
@@ -34,13 +36,18 @@ function check(ok, name, detail) {
 const flush = async (n = 4) => { for (let i = 0; i < n; i++) await Promise.resolve(); };
 
 // a queue whose completion the test decides, so backpressure is observable
-function stubQueue() {
+function stubQueue(baseQueue) {
 	const pending = [];
 	return {
 		inflight: () => pending.length,
 		onSubmittedWorkDone() { return new Promise(resolve => pending.push(resolve)); },
-		writeBuffer(buf, offset, src) { new Float32Array(buf._buf, offset, src.length).set(src); },
-		writeTexture() {},
+		writeBuffer(buf, offset, src, dataOffset, size) {
+			if (baseQueue) return baseQueue.writeBuffer(buf, offset, src, dataOffset, size);
+			new Float32Array(buf._buf, offset, src.length).set(src);
+		},
+		writeTexture(dst, data, layout, extent) {
+			if (baseQueue) return baseQueue.writeTexture(dst, data, layout, extent);
+		},
 		submit() {},
 		completeOne() { const r = pending.shift(); if (r) r(); return !!r; },
 		completeAll() { while (pending.length) pending.shift()(); }
@@ -67,7 +74,7 @@ function probePattern() {
 }
 async function makeSim(cfgOverrides, patterns) {
 	const m = mock.create(patterns || {});
-	m.device.queue = stubQueue();
+	m.device.queue = stubQueue(m.device.queue);
 	const canvas = { width: 0, height: 0 };
 	const sim = await Fluid.engine.create(canvas, {
 		device: m.device, context: mock.mockContext(), format: "bgra8unorm",
@@ -533,7 +540,7 @@ async function testDemoPage() {
 	const origWindow = globalThis.window, origDocument = globalThis.document;
 	const origRaf = globalThis.requestAnimationFrame, origCancel = globalThis.cancelAnimationFrame;
 	const els = {};
-	for (const id of ["c", "status", "error-panel", "scenario", "pause", "step", "reset", "clear-probes", "toggle-collider", "collider-status", "toggle-emitters", "emitter-status", "views", "probe-body", "meters"]) {
+	for (const id of ["c", "status", "error-panel", "scenario", "pause", "step", "reset", "save-state", "load-state", "save-status", "clear-probes", "toggle-collider", "collider-status", "toggle-emitters", "emitter-status", "toggle-phase-events", "phase-event-status", "views", "probe-body", "meters"]) {
 		els[id] = new El(id === "c" ? "canvas" : "div");
 	}
 	const win = new El("window");
@@ -551,7 +558,7 @@ async function testDemoPage() {
 	// the mock never executes a shader: these arrays stand in for what the
 	// probe and stats kernels would have written, and the page must read them
 	const m = mock.create({ stats: statsPattern(), probes: probePattern() });
-	m.device.queue = stubQueue();
+	m.device.queue = stubQueue(m.device.queue);
 	const origInit = Fluid.gpu.device.init;
 	const origCreate = Fluid.engine.create;
 	Fluid.gpu.device.init = async () => ({ device: m.device, context: mock.mockContext(), format: "bgra8unorm" });
@@ -643,6 +650,27 @@ async function testDemoPage() {
 			"demo: toggle-collider removes the circle collider");
 		els["toggle-collider"].fire("click");
 		check(sim.colliderCount() === 1, "demo: toggle-collider respawns the circle collider");
+		// demo save/load and phase events
+		await frames(2);
+		const savedDemoFrame = sim.params.frame;
+		els["save-state"].fire("click");
+		await flush(6);
+		check(/^saved f=/.test(els["save-status"].textContent),
+			"demo: save-state button serializes snapshot and updates status",
+			els["save-status"].textContent);
+		sim.step(1 / 60);
+		els["load-state"].fire("click");
+		check(sim.params.frame === savedDemoFrame && /^loaded f=/.test(els["save-status"].textContent),
+			"demo: load-state button restores snapshot frame and updates status",
+			els["save-status"].textContent);
+		els["toggle-phase-events"].fire("click");
+		check(els["toggle-phase-events"].textContent === "Stop phase events" &&
+			/^batches=/.test(els["phase-event-status"].textContent),
+			"demo: toggle-phase-events registers onPhaseChange listener and updates status",
+			els["phase-event-status"].textContent);
+		els["toggle-phase-events"].fire("click");
+		check(els["phase-event-status"].textContent === "off",
+			"demo: second click on toggle-phase-events unregisters listener");
 		win.fire("keydown", { key: "n", target: {}, repeat: false });
 		await frames(3);
 		check(els.scenario.value === sim.params.scenario && els.status.textContent.indexOf(sim.params.scenario) > 0,
@@ -662,6 +690,160 @@ async function testDemoPage() {
 	}
 }
 
+async function testSaveAndLoad() {
+	const saveMod = Fluid.core.save;
+	const { sim, m } = await makeSim({ N: 64, scenario: "ice", substepsAuto: false, substepsFixed: 2 });
+	const expectedBytes = saveMod.byteLength(64, sim.params.mgCoarsen);
+	check(sim.saveSize === expectedBytes && expectedBytes > 300000,
+		"save/load: sim.saveSize matches Fluid.core.save.byteLength(N, mgCoarsen)",
+		"saveSize=" + sim.saveSize);
+
+	const pid = sim.addProbe(20, 24);
+	const eid = sim.addEmitter({ kind: "heat", x: 32, y: 16, radius: 5, value: 1200 });
+	const cid = sim.addCollider({ shape: "circle", x: 40, y: 36, radius: 6, vx: -5, vy: 2 });
+	sim.step(1 / 60);
+	sim.step(1 / 60);
+	await sim.pollReadback();
+
+	// Caller-owned ArrayBuffer reuse + undersized RangeError
+	const prealloc = new ArrayBuffer(sim.saveSize);
+	let undersizedErr = null;
+	try { await sim.serialize(new ArrayBuffer(sim.saveSize - 8)); } catch (e) { undersizedErr = e; }
+	check(undersizedErr instanceof RangeError,
+		"save/load: serialize(out) rejects undersized caller buffer with RangeError",
+		undersizedErr && undersizedErr.message);
+
+	// Mutating cfg while serialize's mapAsync is pending must not corrupt the saved config block
+	const origGravity = sim.params.gravityY;
+	const savePromise = sim.serialize(prealloc);
+	sim.params.gravityY = origGravity + 777;
+	const outBuf = await savePromise;
+	sim.params.gravityY = origGravity;
+	check(outBuf === prealloc,
+		"save/load: serialize(out) writes into caller-owned ArrayBuffer in place");
+
+	// Validation rejections on deserialize: magic, version, N, scenario, and each of the 52 CFG_KEYS
+	const badMagic = outBuf.slice(0);
+	new DataView(badMagic).setUint32(0, 0xdeadbeef, true);
+	assert.throws(() => sim.deserialize(badMagic), /invalid magic/, "rejects bad magic");
+
+	const badVer = outBuf.slice(0);
+	new DataView(badVer).setUint32(4, 99, true);
+	assert.throws(() => sim.deserialize(badVer), /unsupported version/, "rejects bad version");
+
+	const badN = outBuf.slice(0);
+	new DataView(badN).setUint32(8, 128, true);
+	assert.throws(() => sim.deserialize(badN), /mismatched N/, "rejects mismatched N");
+
+	sim.params.scenario = "dam";
+	assert.throws(() => sim.deserialize(outBuf), /mismatched scenario/, "rejects mismatched scenario");
+	sim.params.scenario = "ice";
+
+	let keyRejections = 0;
+	for (let i = 0; i < saveMod.CFG_KEYS.length; i++) {
+		const k = saveMod.CFG_KEYS[i];
+		const prev = sim.params[k];
+		sim.params[k] = typeof prev === "boolean" ? !prev : Number(prev) + 1;
+		let msg = "";
+		try { sim.deserialize(outBuf); } catch (e) { msg = e.message || ""; }
+		sim.params[k] = prev;
+		if (msg.includes(k)) keyRejections++;
+	}
+	check(keyRejections === saveMod.CFG_KEYS.length && saveMod.CFG_KEYS.length === 52,
+		"save/load: deserialize validates all 52 physics/policy CFG_KEYS and names the offending key",
+		"validated=" + keyRejections + "/52");
+
+	// Reset and restore full state
+	sim.removeProbe(pid);
+	sim.removeEmitter(eid);
+	sim.removeCollider(cid);
+	sim.reset();
+	check(sim.probeCount() === 0 && sim.emitterCount() === 0 && sim.colliderCount() === 0 && sim.params.frame === 0,
+		"save/load: reset clears frame and dynamic tables before deserialize");
+
+	const okRestore = sim.deserialize(outBuf);
+	check(okRestore && sim.params.frame === 2 && sim.probeCount() === 1 &&
+		sim.emitterCount() === 1 && sim.colliderCount() === 1 && sim.substeps === 2,
+		"save/load: deserialize restores frame, substeps, probes, emitters, and colliders",
+		"frame=" + sim.params.frame + " probes=" + sim.probeCount() + " emitters=" + sim.emitterCount() + " colliders=" + sim.colliderCount());
+
+	sim.destroy();
+	check(m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0,
+		"save/load: destroyed cleanly with 0 live resources");
+}
+
+async function testPhaseEvents() {
+	const phasePattern = new Float32Array(Fluid.core.stats.PHASE_EVENT_LEN);
+	phasePattern[0] = 3; // total transitions
+	phasePattern[1] = 2; // emitted count
+	phasePattern[2] = 2; // melted
+	phasePattern[3] = 1; // froze
+	phasePattern[4] = 0; // boiled
+	phasePattern[5] = 0; // condensed
+	phasePattern[12 + 1 * 6 + 3] = 2;
+	phasePattern[12 + 3 * 6 + 1] = 1;
+	phasePattern[48] = 10; phasePattern[49] = 15; phasePattern[50] = 1; phasePattern[51] = 3;
+	phasePattern[52] = 1; phasePattern[53] = 0; phasePattern[54] = 0.2; phasePattern[55] = 281;
+	phasePattern[56] = 22; phasePattern[57] = 9; phasePattern[58] = 3; phasePattern[59] = 1;
+	phasePattern[60] = 0; phasePattern[61] = 0; phasePattern[62] = -0.1; phasePattern[63] = 268;
+
+	const { sim, m } = await makeSim({ N: 64, scenario: "ice", substepsAuto: false, substepsFixed: 1 }, { phaseEvents: phasePattern });
+	const sink = m.sink;
+
+	// Default: no listener -> zero phaseChange dispatches
+	const p0 = sink.pipeOrder.length;
+	sim.step(1 / 60);
+	const sliceOff = sink.pipeOrder.slice(p0);
+	check(!sliceOff.includes("phaseChangeRow") && !sliceOff.includes("phaseChangeCompact"),
+		"onPhaseChange: off by default (zero GPU dispatches and zero buffer copies)");
+
+	let callCount = 0, batchRef = null, inSubmit = true;
+	sim.onPhaseChange(b => {
+		callCount++;
+		batchRef = b;
+	});
+	sim.step(1 / 60);
+	inSubmit = callCount === 0;
+	await sim.pollReadback();
+	check(inSubmit && callCount === 1 && batchRef && batchRef.total === 3 && batchRef.count === 2 &&
+		batchRef.melted === 2 && batchRef.froze === 1 && batchRef.events[0].x === 10 && batchRef.events[1].to === 1,
+		"onPhaseChange: fires outside submit from pollReadback() with preallocated batch",
+		"calls=" + callCount + " total=" + (batchRef && batchRef.total) + " count=" + (batchRef && batchRef.count));
+
+	// Zero-transition frame must not invoke callback
+	phasePattern.fill(0);
+	sim.step(1 / 60);
+	await sim.pollReadback();
+	check(callCount === 1,
+		"onPhaseChange: silent when total transitions === 0");
+
+	// Unregister stops dispatches
+	sim.onPhaseChange(null);
+	const p1 = sink.pipeOrder.length;
+	sim.step(1 / 60);
+	const sliceUnreg = sink.pipeOrder.slice(p1);
+	check(!sliceUnreg.includes("phaseChangeRow") && !sliceUnreg.includes("phaseChangeCompact"),
+		"onPhaseChange(null): unregisters and returns to zero dispatches");
+
+	sim.destroy();
+}
+
+async function testLifecycleSuite() {
+	const m = mock.create();
+	const res = await Fluid.tests.apiTest.runLifecycleSuite({
+		device: m.device,
+		context: mock.mockContext(),
+		format: "bgra8unorm",
+		cycles: 20,
+		N: 64,
+		stepFrames: 4,
+		replayFrames: 100
+	});
+	for (const c of res.checks) {
+		check(c.ok, "t12 lifecycle: " + c.name, c.detail);
+	}
+}
+
 (async function main() {
 	await testPacingMeter();
 	await testEngineCreate();
@@ -674,6 +856,9 @@ async function testDemoPage() {
 	await testTeardown();
 	await testLabWiring();
 	await testDemoPage();
+	await testSaveAndLoad();
+	await testPhaseEvents();
+	await testLifecycleSuite();
 	console.log("all " + checks + " engine checks pass");
 })().catch(error => {
 	console.error(error);

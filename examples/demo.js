@@ -18,6 +18,8 @@
 	let colliderId=-1;
 	let collX=0,collY=0,collR=14,collPrevX=0,collPrevY=0,collN=256;
 	let collDrag=false,collPtrId=-1;
+	let savedSnapshot=null,savedScenario="",savedN=0,saveBusy=false;
+	let phaseTracking=false,phaseBatches=0,phaseTransitions=0,phaseFreeze=0,phaseMelt=0,phaseBoil=0,phaseCondense=0;
 	const emitterIds=[];
 	const probes=[];
 	const stats=Fluid.engine.makeStats();
@@ -185,6 +187,66 @@
 			sim.reset();
 			sim.singleStep();
 		});
+		const saveBtn=$("save-state");
+		const loadBtn=$("load-state");
+		if(saveBtn){
+			saveBtn.addEventListener("click",async()=>{
+				if(!sim||saveBusy)return;
+				saveBusy=true;
+				setText($("save-status"),"saving...");
+				try{
+					if(!savedSnapshot||savedSnapshot.byteLength!==sim.saveSize){
+						savedSnapshot=new ArrayBuffer(sim.saveSize);
+					}
+					await sim.serialize(savedSnapshot);
+					savedScenario=sim.params.scenario;
+					savedN=sim.params.N;
+					if(loadBtn)loadBtn.disabled=false;
+					setText($("save-status"),"saved f="+sim.params.frame+" ("+Math.round(savedSnapshot.byteLength/1024)+" KB)");
+				}catch(err){
+					setText($("save-status"),"save err: "+(err&&err.message||err));
+				}
+				saveBusy=false;
+			});
+		}
+		if(loadBtn){
+			loadBtn.addEventListener("click",()=>{
+				if(!sim||!savedSnapshot||saveBusy)return;
+				try{
+					if(sim.params.N!==savedN)sim.setGrid(savedN);
+					if(sim.params.scenario!==savedScenario)sim.reset(savedScenario);
+					sim.deserialize(savedSnapshot);
+					sim.render();
+					refreshProbes();
+					refreshMeters(viewButtons);
+					setText($("save-status"),"loaded f="+sim.params.frame);
+				}catch(err){
+					setText($("save-status"),"load err: "+(err&&err.message||err));
+				}
+			});
+		}
+		const togglePhase=$("toggle-phase-events");
+		if(togglePhase){
+			togglePhase.addEventListener("click",()=>{
+				phaseTracking=!phaseTracking;
+				if(phaseTracking){
+					phaseBatches=0;phaseTransitions=0;
+					phaseFreeze=0;phaseMelt=0;phaseBoil=0;phaseCondense=0;
+					sim.onPhaseChange(batch=>{
+						phaseBatches++;
+						phaseTransitions+=batch.total;
+						phaseFreeze+=batch.freeze;
+						phaseMelt+=batch.melt;
+						phaseBoil+=batch.boil;
+						phaseCondense+=batch.condense;
+					});
+				}else{
+					sim.onPhaseChange(null);
+				}
+				setText(togglePhase,phaseTracking?"Stop phase events":"Track phase events");
+				syncPhaseUi();
+			});
+		}
 		$("clear-probes").addEventListener("click",()=>{
 			for(const p of probes){
 				if(p.id>=0)sim.removeProbe(p.id);
@@ -250,6 +312,15 @@
 		slot.row.hidden=slot.id<0;
 		return slot.id;
 	}
+	function syncPhaseUi(){
+		const st=$("phase-event-status");
+		if(!st)return;
+		if(!phaseTracking){
+			setText(st,"off");
+			return;
+		}
+		setText(st,"batches="+phaseBatches+" cells="+phaseTransitions+" (frz="+phaseFreeze+" melt="+phaseMelt+" boil="+phaseBoil+" cond="+phaseCondense+")");
+	}
 	function refreshProbes(){
 		for(const p of probes){
 			const c=p.cells;
@@ -294,6 +365,7 @@
 		setText($("status"),"N="+sim.params.N+" · "+sim.params.scenario+" · right-click to probe");
 		setText($("emitter-status"),sim.emitterCount()+" active");
 		syncColliderUi();
+		syncPhaseUi();
 		// the buttons follow cfg.viewMode, the one value every writer (keys, clicks) sets
 		for(let i=0;i<viewButtons.length;i++)viewButtons[i].classList.toggle("active",i===sim.params.viewMode);
 	}

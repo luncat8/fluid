@@ -1939,6 +1939,119 @@ fn main(@builtin(local_invocation_index) lid: u32) {
 	}
 }
 `;
+	// ---------- phase-change event scan & compaction (0.7.0 t9) ----------
+	// two-pass deterministic scan over interior rows (1..N) with zero atomics and
+	// zero workgroup barriers:
+	// - phaseChangeRow: one thread per interior row y compares flags.g against
+	//   phasePrev (255u means unseeded/static wall, 0..5u means phase), updates
+	//   phasePrev, accumulates the row's 6x6 transition matrix, and records up to
+	//   4 cell transition samples (x, y, from, to, phiL, phiG, S, T).
+	// - phaseChangeCompact: single-thread pass sums row matrices and compacts up
+	//   to 64 cell records in scanline order into the 560-float phaseEvents buffer.
+	shaders.phaseChangeRow=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var flagsTex: texture_2d<u32>;
+@group(0) @binding(2) var sTex: texture_2d<f32>;
+@group(0) @binding(3) var thermTex: texture_2d<f32>;
+@group(0) @binding(4) var<storage,read_write> phasePrev: array<u32>;
+@group(0) @binding(5) var<storage,read_write> phaseRow: array<f32>;
+
+@compute @workgroup_size(8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	let w = i32(params.values[2]);
+	let n = w - 2;
+	let row = i32(gid.x);
+	if (row < 0 || row >= n) { return; }
+	let y = row + 1;
+	let rBase = u32(row) * 72u;
+	for (var i = 0u; i < 40u; i = i + 1u) {
+		phaseRow[rBase + i] = 0.0;
+	}
+	var rowTotal = 0.0;
+	var rowKept = 0u;
+	for (var x = 1; x <= n; x = x + 1) {
+		let idx = u32(x + y * w);
+		let at = vec2<i32>(x, y);
+		let fl = textureLoad(flagsTex, at, 0);
+		let isStatic = (fl.r & 1u) != 0u || fl.r == 255u;
+		let p = phasePrev[idx];
+		let cur = min(fl.g, 5u);
+		if (isStatic) {
+			phasePrev[idx] = 255u;
+		} else {
+			phasePrev[idx] = cur;
+			if (p <= 5u && p != cur) {
+				rowTotal = rowTotal + 1.0;
+				let mIdx = rBase + 2u + p * 6u + cur;
+				phaseRow[mIdx] = phaseRow[mIdx] + 1.0;
+				if (rowKept < 4u) {
+					let sv = textureLoad(sTex, at, 0);
+					let tv = textureLoad(thermTex, at, 0);
+					let eBase = rBase + 40u + rowKept * 8u;
+					phaseRow[eBase] = f32(x);
+					phaseRow[eBase + 1u] = f32(y);
+					phaseRow[eBase + 2u] = f32(p);
+					phaseRow[eBase + 3u] = f32(cur);
+					phaseRow[eBase + 4u] = sv.g;
+					phaseRow[eBase + 5u] = sv.b;
+					phaseRow[eBase + 6u] = sv.r;
+					phaseRow[eBase + 7u] = tv.g;
+					rowKept = rowKept + 1u;
+				}
+			}
+		}
+	}
+	phaseRow[rBase] = rowTotal;
+	phaseRow[rBase + 1u] = f32(rowKept);
+}
+`;
+	shaders.phaseChangeCompact=`
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage,read> phaseRow: array<f32>;
+@group(0) @binding(2) var<storage,read_write> phaseOut: array<f32>;
+
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+	if (gid.x > 0u) { return; }
+	let n = i32(params.values[2]) - 2;
+	for (var i = 0u; i < 48u; i = i + 1u) {
+		phaseOut[i] = 0.0;
+	}
+	var total = 0.0;
+	var outCount = 0u;
+	for (var row = 0; row < n; row = row + 1) {
+		let rBase = u32(row) * 72u;
+		let rTotal = phaseRow[rBase];
+		if (rTotal > 0.0) {
+			total = total + rTotal;
+			for (var m = 0u; m < 36u; m = m + 1u) {
+				phaseOut[12u + m] = phaseOut[12u + m] + phaseRow[rBase + 2u + m];
+			}
+			let rKept = u32(phaseRow[rBase + 1u]);
+			for (var k = 0u; k < rKept; k = k + 1u) {
+				if (outCount < 64u) {
+					let sOff = rBase + 40u + k * 8u;
+					let dOff = 48u + outCount * 8u;
+					for (var c = 0u; c < 8u; c = c + 1u) {
+						phaseOut[dOff + c] = phaseRow[sOff + c];
+					}
+					outCount = outCount + 1u;
+				}
+			}
+		}
+	}
+	let melted = phaseOut[12u + 8u] + phaseOut[12u + 9u] + phaseOut[12u + 15u];
+	let froze = phaseOut[12u + 20u] + phaseOut[12u + 19u] + phaseOut[12u + 13u];
+	let boiled = phaseOut[12u + 22u] + phaseOut[12u + 23u] + phaseOut[12u + 29u];
+	let condensed = phaseOut[12u + 34u] + phaseOut[12u + 33u] + phaseOut[12u + 27u];
+	phaseOut[0u] = total;
+	phaseOut[1u] = f32(outCount);
+	phaseOut[2u] = melted;
+	phaseOut[3u] = froze;
+	phaseOut[4u] = boiled;
+	phaseOut[5u] = condensed;
+}
+`;
 	// ---------- point queries (0.7.0 t5): one invocation per probe slot ----------
 	// the layout is owned by src/core/probes.js; this kernel only fills the measured
 	// slots (m, dye, E, u, v, p) so x/y/active stay cpu-owned and a move is one write.

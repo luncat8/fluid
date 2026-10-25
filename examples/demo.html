@@ -43,6 +43,7 @@
 	<script defer src="../src/core/emitters.js"></script>
 	<script defer src="../src/core/colliders.js"></script>
 	<script defer src="../src/core/buoy.js"></script>
+	<script defer src="../src/core/save.js"></script>
 	<script defer src="../src/core/pacing.js"></script>
 	<script defer src="../src/gpu/device.js"></script>
 	<script defer src="../src/gpu/shaders.js"></script>
@@ -75,6 +76,9 @@
 					<button id="pause" type="button">Pause</button>
 					<button id="step" type="button">Step</button>
 					<button id="reset" type="button">Reset</button>
+					<button id="save-state" type="button">Save</button>
+					<button id="load-state" type="button" disabled>Load</button>
+					<span id="save-status" class="muted">no snapshot</span>
 				</div>
 				<div class="row" id="views"></div>
 			</div>
@@ -90,6 +94,10 @@
 				<div class="row">
 					<button id="toggle-emitters" type="button">Enable RGB + thermal rig</button>
 					<span id="emitter-status" class="muted">0 active</span>
+				</div>
+				<div class="row">
+					<button id="toggle-phase-events" type="button">Track phase events</button>
+					<span id="phase-event-status" class="muted">off</span>
 				</div>
 			</div>
 			<div class="block">

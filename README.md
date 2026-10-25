@@ -111,6 +111,8 @@ function frame(now) {
 | `addEmitter(spec)` / `moveEmitter(id,x,y)` / `setEmitter(id,patch)` / `removeEmitter(id)` / `emitterCount()` | 32 preallocated slots (`spec` copied at add/set time, zero per-frame allocation) across kinds `dye` (`value` mass/s, `dye: [r,g,b]`), `drain` (`value` mass/s), `heat` (`value` power/cell, optional `target` K cap), `cold` (`value` power/cell, liquid floor `> TMelt`), `freeze` (`value` power/cell, solid-ice floor `< TMelt` forcing `phi_l -> 0`), and `momentum` (`vx, vy` or `angle` + `value` accel). All mass, tracer and enthalpy changes close the conservation ledger. |
 | `setObstacles(maskArray,w,h)` / `paintObstacle(x,y,radius,kind)` | static geometry and obstacle brush in cell coordinates (`+y` up). `setObstacles` resamples `w×h` nonzero entries onto static wall cells in one texture upload while preserving live moving colliders; `paintObstacle` supports `"wall"` (static wall), `"solid"` (freezes open fluid to `PHASE_SOLID` and charges `heatOut`), and `"erase"` (clears static wall and thaws frozen ice back to liquid, charging `heatIn`). |
 | `addCollider(spec)` / `moveCollider(id,x,y,vx,vy)` / `setCollider(id,patch)` / `removeCollider(id)` / `colliderCount()` | 32 preallocated moving-collider slots (`shape: "circle"` with `radius`, or `shape: "rect"` with `w, h`; optional `vx, vy` in cells/s). Stationary colliders stamp their GPU mask once and add zero per-frame dispatches; moving colliders update the GPU mask delta and imprint rigid-body face velocities before projection without creating or deleting mass. Live collider speed feeds the auto-CFL substep policy immediately. |
+| `await serialize([out])` / `deserialize(buf)` / `saveSize` | binary save/load (`src/core/save.js`). `serialize` captures all 8 live GPU textures plus `emitterLedger` in one command submission into a transient 256-aligned staging buffer and writes a versioned little-endian `ArrayBuffer` (reusing `out` if provided, size `sim.saveSize`). `deserialize` synchronously validates magic, version, `N`, scenario, and all 52 physics/step-policy tunables (throwing with the offending key and value named on mismatch) and restores all ping-pong texture slots, tables, and conservation ledgers for byte-for-byte replay. |
+| `onPhaseChange(cb)` | registers (or clears with `null`) a batched phase-transition listener. Off by default (`0` GPU dispatches and `0` copies when unset). When active, two atomic-free passes (`phaseChangeRow` + `phaseChangeCompact`) scan `flags.g` against `phasePrev` and deliver a preallocated `batch` (`frame`, `total`, `count`, `melted`, `froze`, `boiled`, `condensed`, 6×6 `matrix`, and up to 64 `events[i]` records `{x, y, from, to, phiL, phiG, S, T}`) from `pollReadback()` outside submit whenever `total > 0`. |
 | `setViewMode(mode)` / `bindViewMode(fn)` / `setOverlay(flag)` | view mode has one writer per page: bind the DOM control and the engine delegates to it, otherwise it writes `params.viewMode`. |
 | `attachInput(element)` / `detachInput()` | pointer stir/paint and the simulation keys; detach removes every listener. |
 | `bindKeys(element)` / `detachKeys()` | optional keyboard-only binding for games that own pointer input (defaults omitted `element` to `window`); shortcuts attach to the target, route reset/resize through the engine, and detach without affecting pointer listeners. |
@@ -118,8 +120,9 @@ function frame(now) {
 | `destroy()` | detach input, destroy the pool (textures and buffers), drop the device reference. Safe to call twice. |
 
 `examples/demo.html` is the reference integration; `experiments/engine.js` is the headless
-contract for the same calls. Save/load (`serialize`/`deserialize`), `onPhaseChange`
-batching and `experiments/api-test.html` are the remaining items of `0.7.0-plan.md`.
+contract for the same calls, and `experiments/api-test.html` (`experiments/api-test.js`) runs
+20 instrumented `create`/`step`/`serialize`/`deserialize`/`destroy` cycles plus a 100-step
+deterministic replay test on a WebGPU device.
 
 ## Validation
 

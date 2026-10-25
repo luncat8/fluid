@@ -33,15 +33,25 @@
 		let probeFrame=0;
 		const emitterTable=coreEmitters?coreEmitters.create():null;
 		const colliderTable=coreColliders?coreColliders.create():null;
+		const phaseEventMod=Fluid.core.phaseEvents||(stats&&stats.phaseEvents)||null;
+		const phaseEventState=phaseEventMod?phaseEventMod.create(cfg.texW,cfg.texH):null;
+		const phaseEventRaw=new Float32Array(stats.PHASE_EVENT_LEN||560);
+		let phaseChangeCb=null;
+		let phasePending=false;
+		let phaseInFlight=false;
+		let phaseGeneration=0;
+		let phaseFrame=0;
+		let phaseSeedNeeded=false;
 		const emitLedgerZero=new Float32Array(stats.EMIT_LEDGER_LEN||20);
 		let paintInjM=0;
 		const emitInjKnown={m:0,dr:0,dg:0,db:0,E:0};
 		const emitRemKnown={m:0,dr:0,dg:0,db:0,E:0};
 		const emitNetKnown={m:0,dr:0,dg:0,db:0,E:0};
 		const pendingEmitNet={m:0,dr:0,dg:0,db:0,E:0};
-		const state={m:0,t:0,v:0,pw:0,ph:0};
+		const state={m:0,t:0,v:0};
 		let flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
 		let ledger=null;
+		let destroyed=false;
 		const readbackArray=new Float32Array(stats.STATS_LEN);
 		let readbackInFlight=false;
 		let pendingRead=false;
@@ -95,6 +105,9 @@
 			buoyPending=false;
 			buoyGeneration=statsGeneration;
 			probePending=false;
+			phasePending=false;
+			phaseGeneration=statsGeneration;
+			phaseSeedNeeded=false;
 			coreProbes.invalidate(probeTable);
 			device.queue.writeBuffer(pool.buoy,0,buoyZero);
 			Fluid.core.config.prepareScenario(cfg);
@@ -118,6 +131,8 @@
 			fields.clearTexture(device,pool.accumTmp,cfg.texW,cfg.texH,"rg32float");
 			fields.clearTexture(device,pool.flux,cfg.texW,cfg.texH,"rg32float");
 			fields.clearTexture(device,pool.divsrc,cfg.texW,cfg.texH,"r32float");
+			fields.clearTexture(device,pool.mgPress.tex[0],pool.mgTexW,pool.mgTexH,"r32float");
+			fields.clearTexture(device,pool.mgPress.tex[1],pool.mgTexW,pool.mgTexH,"r32float");
 			flagsMirror.set(sc.flagsA);
 			state.m=0;state.t=0;state.v=0;
 			heatNetKnown=0;pendingHeatNet=0;
@@ -135,12 +150,31 @@
 			cfg.rhoBase=cfg.rhoMean;
 			frameCount=0;
 			timeAcc=0;
+			cfg.frame=0;
+			cfg.time=0;
 			for(let k=0;k<6;k++)phaseCounts[k]=0;
+			if(phaseEventState)phaseEventState.prev.fill(255);
 			for(let y=1;y<cfg.texH-1;y++){
 				for(let x=1;x<cfg.texW-1;x++){
-					const i=(x+y*cfg.texW)*4;
-					phaseCounts[coreSolver.phaseOf(sc.massA[i+3],sc.thermA[i],cfg).phase]++;
+					const cell=x+y*cfg.texW;
+					const i=cell*4;
+					const ph=coreSolver.phaseOf(sc.massA[i+3],sc.thermA[i],cfg).phase;
+					phaseCounts[ph]++;
+					if(phaseEventState){
+						const r=sc.flagsA[i];
+						const isStatic=(r&1)!==0||r===255;
+						phaseEventState.prev[cell]=isStatic?255:(ph>>>0);
+					}
 				}
+			}
+			if(phaseEventState){
+				const b=phaseEventState.batch;
+				b.frame=0;b.total=0;b.count=0;
+				b.melted=0;b.froze=0;b.boiled=0;b.condensed=0;
+				b.melt=0;b.freeze=0;b.boil=0;b.condense=0;
+				b.matrix.fill(0);
+				phaseEventState.seeded=true;
+				device.queue.writeBuffer(pool.phasePrev,0,phaseEventState.prev);
 			}
 			diag.sSaturated=0;
 			diag.poissonRes=0;diag.poissonRhs=0;diag.poissonRel=0;
@@ -347,6 +381,13 @@
 			buoy.march(dts*substeps);
 			const needBuoy=buoy.state.active&&(frameCount%Math.max(1,cfg.buoySampleEvery)===0);
 			const needProbe=probeTable.live>0&&(frameCount%Math.max(1,cfg.probeEvery)===0);
+			const needPhase=phaseChangeCb!==null&&!phaseInFlight&&!phasePending;
+			const seedPhasePreStep=needPhase&&phaseSeedNeeded&&phaseEventState!==null;
+			if(seedPhasePreStep){
+				phaseEventState.prev.fill(255);
+				device.queue.writeBuffer(pool.phasePrev,0,phaseEventState.prev);
+				phaseSeedNeeded=false;
+			}
 			if(emitterTable&&(coreEmitters.syncConfig(emitterTable,cfg,false)||emitterTable.dirty))uploadEmitters();
 			if(colliderTable&&(coreColliders.syncConfig(colliderTable,cfg,false)||colliderTable.dirty))uploadColliders();
 			const scalarEmit=!!(emitterTable&&emitterTable.scalarCount>0);
@@ -373,16 +414,20 @@
 					colliderTable.maskDirty=false;
 					colliderTable.hasGpuMask=colliderTable.live>0;
 				}
+				if(seedPhasePreStep){
+					passes.encodePhaseChange(prof.pass(encoder,PROFILE_GROUP.vel,"vel"),pool,pipes,groups,state);
+				}
 				for(let s=0;s<substeps;s++){
 					passes.encodeStepProfiled(encoder,prof,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
 						!!cfg.useMultigrid,cfg.mgPre||4,cfg.mgPost||8,cfg.mgCycles||1,
 						needStats&&s===substeps-1,cfg.advectMac>0,cfg.fusePasses>0,scalarEmit,massDrainEmit,movingColl);
 				}
-				if(needStats||needBuoy||needProbe){
+				if(needStats||needBuoy||needProbe||needPhase){
 					const cp=prof.pass(encoder,PROFILE_GROUP.stats,"stats");
 					if(needStats)passes.encodeStats(cp,pool,pipes,groups,state);
 					if(needBuoy)passes.encodeBuoySample(cp,pool,pipes,groups,state);
 					if(needProbe)passes.encodeProbeSample(cp,pool,pipes,groups,state);
+					if(needPhase)passes.encodePhaseChange(cp,pool,pipes,groups,state);
 				}
 				passes.encodeDisplay(prof.pass(encoder,PROFILE_GROUP.disp,"display"),pool,pipes,groups,state);
 				prof.closePass();
@@ -392,6 +437,9 @@
 					passes.encodeColliderMask(cpass,pool,pipes,groups);
 					colliderTable.maskDirty=false;
 					colliderTable.hasGpuMask=colliderTable.live>0;
+				}
+				if(seedPhasePreStep){
+					passes.encodePhaseChange(cpass,pool,pipes,groups,state);
 				}
 				for(let s=0;s<substeps;s++){
 					passes.encodeStep(cpass,pool,pipes,groups,state,kIters,cfg.fctLimiter>0,
@@ -406,6 +454,9 @@
 				}
 				if(needProbe){
 					passes.encodeProbeSample(cpass,pool,pipes,groups,state);
+				}
+				if(needPhase){
+					passes.encodePhaseChange(cpass,pool,pipes,groups,state);
 				}
 				passes.encodeDisplay(cpass,pool,pipes,groups,state);
 				cpass.end();
@@ -432,6 +483,12 @@
 				probeFrame=frameCount+1;
 				probePending=true;
 			}
+			if(needPhase){
+				encoder.copyBufferToBuffer(pool.phaseEvents,0,pool.phaseEventsRead,0,phaseEventRaw.byteLength);
+				phaseGeneration=statsGeneration;
+				phaseFrame=frameCount+1;
+				phasePending=true;
+			}
 			const view=context.getCurrentTexture().createView();
 			const rdesc={
 				label:"render",
@@ -445,6 +502,8 @@
 			device.queue.submit([encoder.finish()]);
 			frameCount++;
 			timeAcc+=dts*substeps;
+			cfg.frame=frameCount;
+			cfg.time=timeAcc;
 		}
 		function renderOnly(){
 			if(colliderTable&&(coreColliders.syncConfig(colliderTable,cfg,false)||colliderTable.dirty))uploadColliders();
@@ -472,10 +531,44 @@
 			await pollStats();
 			await pollBuoy();
 			await pollProbe();
+			await pollPhaseEvents();
 			if(prof)await prof.poll();
 		}
 		function getProfile(){
 			return prof?prof.results:null;
+		}
+		function onPhaseChange(cb){
+			if(typeof cb!=="function"){
+				phaseChangeCb=null;
+				phasePending=false;
+				return false;
+			}
+			if(!phaseChangeCb&&frameCount>0){
+				phaseSeedNeeded=true;
+			}
+			phaseChangeCb=cb;
+			return true;
+		}
+		async function pollPhaseEvents(){
+			if(!phasePending||phaseInFlight)return;
+			phasePending=false;
+			phaseInFlight=true;
+			const readPool=pool;
+			const readGeneration=phaseGeneration;
+			const readFrame=phaseFrame;
+			let fired=false;
+			try{
+				await readPool.phaseEventsRead.mapAsync(GPUMapMode.READ);
+				if(readGeneration===statsGeneration&&phaseEventMod&&phaseEventState){
+					phaseEventRaw.set(new Float32Array(readPool.phaseEventsRead.getMappedRange(),0,phaseEventRaw.length));
+					fired=phaseEventMod.ingest(phaseEventState,phaseEventRaw,readFrame);
+				}
+				readPool.phaseEventsRead.unmap();
+			}catch(e){
+				console.error("phaseEvents readback failed",e);
+			}
+			phaseInFlight=false;
+			if(fired&&phaseChangeCb)phaseChangeCb(phaseEventState.batch);
 		}
 		async function pollBuoy(){
 			if(!buoyPending||buoyInFlight)return;
@@ -628,6 +721,184 @@
 			statsView.ledger=ledger;
 			return statsView;
 		}
+		async function serialize(out,extra){
+			if(destroyed)throw new Error("serialize: solver is destroyed");
+			const saveMod=Fluid.core.save;
+			if(!saveMod)throw new Error("Fluid.core.save module not loaded");
+			const cfgSnap=saveMod.cfgState(cfg);
+			const snapLay=saveMod.layout(cfgSnap.N,cfgSnap.mgCoarsen);
+			const stageLay=saveMod.stagingLayout(cfgSnap.N,cfgSnap.mgCoarsen);
+			const outBuf=saveMod.pack({
+				cfg,
+				cfgSnap,
+				frame:frameCount,
+				time:timeAcc,
+				pSpanSmooth,
+				paintInjM,
+				heatNetKnown,
+				accumulator:(extra&&extra.accumulator)||0,
+				simSubsteps:(extra&&extra.simSubsteps)||cfg.substeps||0,
+				emitInjKnown,
+				emitRemKnown,
+				emitNetKnown,
+				statsCache,
+				phaseCounts,
+				diag,
+				buoy,
+				ledger,
+				probes:probeTable,
+				emitters:emitterTable,
+				colliders:colliderTable,
+				fields:{flagsMirror}
+			},out);
+			const texMap={
+				mass:pool.mass.tex[state.m],
+				therm:pool.therm.tex[state.t],
+				vel:pool.vel.tex[state.v],
+				press:pool.press.tex[0],
+				flags:pool.flags,
+				sfield:pool.sfield,
+				accum:pool.accum,
+				mgPress:pool.mgPress.tex[0]
+			};
+			const staging=device.createBuffer({
+				label:"saveStaging",
+				size:stageLay.totalBytes,
+				usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST
+			});
+			try{
+				const encoder=device.createCommandEncoder({label:"serialize"});
+				for(let i=0;i<stageLay.list.length;i++){
+					const e=stageLay.list[i];
+					encoder.copyTextureToBuffer(
+						{texture:texMap[e.name]},
+						{buffer:staging,offset:e.offset,bytesPerRow:e.bytesPerRow,rowsPerImage:e.h},
+						[e.w,e.h,1]
+					);
+				}
+				encoder.copyBufferToBuffer(pool.emitterLedger,0,staging,stageLay.emitterLedgerOffset,stageLay.emitterLedgerBytes);
+				device.queue.submit([encFinish(encoder)]);
+				await staging.mapAsync(GPUMapMode.READ);
+				const mapped=staging.getMappedRange();
+				saveMod.repackStagingInto(mapped,stageLay,outBuf,snapLay);
+				staging.unmap();
+			}finally{
+				try{staging.destroy();}catch(e){}
+			}
+			return outBuf;
+		}
+		function encFinish(encoder){
+			return encoder.finish();
+		}
+		function deserialize(buf){
+			if(destroyed)throw new Error("deserialize: solver is destroyed");
+			const saveMod=Fluid.core.save;
+			if(!saveMod)throw new Error("Fluid.core.save module not loaded");
+			const snap=saveMod.unpack(buf,cfg);
+			statsGeneration++;
+			if(prof)prof.invalidate();
+			pendingRead=false;
+			buoyPending=false;
+			buoyGeneration=statsGeneration;
+			probePending=false;
+			phasePending=false;
+			phaseGeneration=statsGeneration;
+			phaseSeedNeeded=false;
+			const w=cfg.texW,h=cfg.texH;
+			const f=snap.fields;
+			fields.writeTextureRect(device,pool.mass.tex[0],w,h,"rgba32float",f.mass);
+			fields.writeTextureRect(device,pool.mass.tex[1],w,h,"rgba32float",f.mass);
+			fields.writeTextureRect(device,pool.mass.tex[2],w,h,"rgba32float",f.mass);
+			fields.writeTextureRect(device,pool.therm.tex[0],w,h,"rgba32float",f.therm);
+			fields.writeTextureRect(device,pool.therm.tex[1],w,h,"rgba32float",f.therm);
+			fields.writeTextureRect(device,pool.vel.tex[0],w,h,"rg32float",f.vel);
+			fields.writeTextureRect(device,pool.vel.tex[1],w,h,"rg32float",f.vel);
+			fields.clearTexture(device,pool.macTmp,w,h,"rg32float");
+			fields.writeTextureRect(device,pool.press.tex[0],w,h,"r32float",f.press);
+			fields.writeTextureRect(device,pool.press.tex[1],w,h,"r32float",f.press);
+			fields.writeTextureRect(device,pool.flags,w,h,"rgba8uint",f.flags);
+			fields.writeTextureRect(device,pool.flagsTmp,w,h,"rgba8uint",f.flags);
+			fields.writeTextureRect(device,pool.sfield,w,h,"rgba32float",f.sfield);
+			fields.writeTextureRect(device,pool.sfieldTmp,w,h,"rgba32float",f.sfield);
+			fields.writeTextureRect(device,pool.accum,w,h,"rg32float",f.accum);
+			fields.writeTextureRect(device,pool.accumTmp,w,h,"rg32float",f.accum);
+			fields.clearTexture(device,pool.flux,w,h,"rg32float");
+			fields.clearTexture(device,pool.limiterA,w,h,"rgba32float");
+			fields.clearTexture(device,pool.limiterB,w,h,"rg32float");
+			fields.clearTexture(device,pool.divsrc,w,h,"r32float");
+			fields.writeTextureRect(device,pool.mgPress.tex[0],pool.mgTexW,pool.mgTexH,"r32float",f.mgPress);
+			fields.writeTextureRect(device,pool.mgPress.tex[1],pool.mgTexW,pool.mgTexH,"r32float",f.mgPress);
+			flagsMirror.set(f.flagsMirror);
+			state.m=0;state.t=0;state.v=0;
+			const st=snap.state;
+			frameCount=Math.round(st[saveMod.ST_FRAME])||0;
+			timeAcc=snap.time;
+			cfg.frame=frameCount;
+			cfg.time=timeAcc;
+			cfg.dt=snap.dt;
+			cfg.substeps=Math.round(st[saveMod.ST_SUBSTEPS])||1;
+			cfg.vClamp=st[saveMod.ST_VCLAMP]||cfg.vClamp;
+			cfg.rhoMean=st[saveMod.ST_RHO_MEAN]||0;
+			cfg.rhoBase=st[saveMod.ST_RHO_BASE]||0;
+			cfg.PMin=st[saveMod.ST_PMIN];
+			cfg.PMax=st[saveMod.ST_PMAX];
+			pSpanSmooth=st[saveMod.ST_PSPAN]||100;
+			paintInjM=st[saveMod.ST_PAINT_INJ_M]||0;
+			heatNetKnown=st[saveMod.ST_HEAT_NET]||0;
+			pendingHeatNet=heatNetKnown;
+			cfg.mouseX=st[saveMod.ST_MOUSE_X];
+			cfg.mouseY=st[saveMod.ST_MOUSE_Y];
+			cfg.mouseStrength=st[saveMod.ST_MOUSE_STR];
+			cfg.mouseVX=st[saveMod.ST_MOUSE_VX];
+			cfg.mouseVY=st[saveMod.ST_MOUSE_VY];
+			const keys=["m","dr","dg","db","E"];
+			for(let i=0;i<5;i++){
+				const k=keys[i];
+				emitInjKnown[k]=st[saveMod.ST_EMIT_INJ+i]||0;
+				emitRemKnown[k]=st[saveMod.ST_EMIT_REM+i]||0;
+				emitNetKnown[k]=st[saveMod.ST_EMIT_NET+i]||0;
+				pendingEmitNet[k]=emitNetKnown[k];
+				statsCache.totals[k]=st[saveMod.ST_TOT+i]||0;
+				statsCache.expected[k]=st[saveMod.ST_EXP+i]||0;
+				statsCache.mins[k]=st[saveMod.ST_MIN+i]||0;
+			}
+			statsCache.frame=Math.round(st[saveMod.ST_STATS_FRAME])||0;
+			statsCache.maxM=st[saveMod.ST_MAX_M]||0;
+			statsCache.cntNeg=st[saveMod.ST_CNT_NEG]||0;
+			statsCache.cntOver=st[saveMod.ST_CNT_OVER]||0;
+			statsCache.motion.maxVel=st[saveMod.ST_MOT]||0;
+			statsCache.motion.pMin=st[saveMod.ST_MOT+1]||0;
+			statsCache.motion.pMax=st[saveMod.ST_MOT+2]||0;
+			statsCache.motion.maxDiv=st[saveMod.ST_MOT+3]||0;
+			statsCache.thermal.TMin=st[saveMod.ST_THERM]||0;
+			statsCache.thermal.TMax=st[saveMod.ST_THERM+1]||0;
+			statsCache.thermal.TMean=st[saveMod.ST_THERM+2]||0;
+			statsCache.thermal.kinetic=st[saveMod.ST_THERM+3]||0;
+			statsCache.thermal.heatIn=st[saveMod.ST_THERM+4]||0;
+			statsCache.thermal.heatOut=st[saveMod.ST_THERM+5]||0;
+			for(let k=0;k<6;k++)phaseCounts[k]=Math.round(st[saveMod.ST_PHASE_COUNTS+k])||0;
+			diag.sSaturated=Math.round(st[saveMod.ST_DIAG])||0;
+			diag.poissonRes=st[saveMod.ST_DIAG+1]||0;
+			diag.poissonRhs=st[saveMod.ST_DIAG+2]||0;
+			diag.poissonRel=st[saveMod.ST_DIAG+3]||0;
+			diag.poissonDrift=st[saveMod.ST_DIAG+4]||0;
+			diag.poissonDriftRhs=st[saveMod.ST_DIAG+5]||0;
+			diag.poissonDriftRel=st[saveMod.ST_DIAG+6]||0;
+			Object.assign(ledger,snap.ledger);
+			saveMod.restoreTables(snap,cfg,probeTable,emitterTable,colliderTable,buoy);
+			uploadProbes();
+			if(emitterTable)uploadEmitters();
+			if(colliderTable)uploadColliders();
+			device.queue.writeBuffer(pool.emitterLedger,0,snap.tables.emitLedger);
+			device.queue.writeBuffer(pool.buoy,0,buoy.sample);
+			if(phaseEventMod&&phaseEventState){
+				phaseEventMod.seedFromFlags(phaseEventState,f.flags,w,h);
+				device.queue.writeBuffer(pool.phasePrev,0,phaseEventState.prev);
+			}
+			writeMgParams();
+			writeParams();
+			return snap;
+		}
 		function resize(newN){
 			fields.destroyPool(pool);
 			cfg.N=newN;
@@ -636,6 +907,7 @@
 			pool=fields.createPool(device,newN,cfg.mgCoarsen);
 			groups=passes.makeBindGroups(device,pipes,pool);
 			flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
+			if(phaseEventMod&&phaseEventState)phaseEventMod.resize(phaseEventState,cfg.texW,cfg.texH);
 			canvas.width=newN;
 			canvas.height=newN;
 			api.pool=pool;
@@ -647,14 +919,20 @@
 			renderOnly();
 		}
 		function destroy(){
+			destroyed=true;
+			phaseChangeCb=null;
 			fields.destroyPool(pool);
 			if(prof)prof.destroy();
 		}
 		reset();
 		const api={pool,device,canvas,context,format,cfg,state,reset,frame,renderOnly,paintDye,paintWall,setObstacles,paintObstacle,pollReadback,getStats,getProfile,buoy,resize,destroy,flagsMirror,
+			phaseEvents:phaseEventState,onPhaseChange,serialize,deserialize,
 			probes:probeTable,addProbe,moveProbe,removeProbe,sampleProbe,
 			emitters:emitterTable,addEmitter,moveEmitter,setEmitter,removeEmitter,emitterCount,
 			colliders:colliderTable,addCollider,moveCollider,setCollider,removeCollider,colliderCount};
+		Object.defineProperty(api,"saveSize",{
+			get(){return Fluid.core.save?Fluid.core.save.byteLength(cfg.N,cfg.mgCoarsen):0;}
+		});
 		return api;
 	}
 	Fluid.gpu.solver={create:createSolver};

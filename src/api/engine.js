@@ -303,6 +303,24 @@
 			inputState=null;
 			keyState=null;
 		}
+		async function serialize(out){
+			if(!active())throw new Error("serialize: simulation is destroyed");
+			return solver.serialize(out,{accumulator,simSubsteps:sim.substeps});
+		}
+		function deserialize(buf){
+			if(!active())throw new Error("deserialize: simulation is destroyed");
+			const snap=solver.deserialize(buf);
+			const saveMod=Fluid.core.save;
+			if(snap&&snap.state&&saveMod){
+				accumulator=snap.state[saveMod.ST_ACCUM]||0;
+				sim.substeps=Math.round(snap.state[saveMod.ST_SIM_SUBSTEPS])||cfg.substeps||0;
+			}
+			return true;
+		}
+		function onPhaseChange(cb){
+			if(!active()||!solver.onPhaseChange)return false;
+			return solver.onPhaseChange(cb);
+		}
 		function destroy(){
 			if(destroyed)return;
 			destroyed=true;
@@ -325,11 +343,14 @@
 			substeps:0,
 			createStats:makeStats,
 			makeProbeSample:Fluid.core.probes.makeSample,
+			makePhaseBatch:Fluid.core.phaseEvents?Fluid.core.phaseEvents.makeBatch:null,
 			step,update,render,reset,setGrid,setViewMode,setOverlay,
 			bindViewMode(fn){viewWriter=typeof fn==="function"?fn:null;return !!viewWriter;},
 			setObstacles,paintObstacle,addCollider,moveCollider,setCollider,removeCollider,colliderCount,
 			addEmitter,moveEmitter,setEmitter,removeEmitter,emitterCount,
-			addProbe,moveProbe,removeProbe,sample:sampleProbe,stats,attachInput,detachInput,bindKeys,detachKeys,pollReadback,
+			addProbe,moveProbe,removeProbe,sample:sampleProbe,stats,
+			serialize,deserialize,onPhaseChange,
+			attachInput,detachInput,bindKeys,detachKeys,pollReadback,
 			probeCount(){return active()?solver.probes.live:0;},
 			singleStep(){cfg._stepOnce=true;},
 			pause(){cfg._paused=true;},
@@ -339,6 +360,9 @@
 		Object.defineProperty(sim,"paused",{
 			get(){return !!cfg._paused;},
 			set(v){cfg._paused=!!v;}
+		});
+		Object.defineProperty(sim,"saveSize",{
+			get(){return active()?solver.saveSize:0;}
 		});
 		if(typeof document!=="undefined"&&document.addEventListener){
 			visibilityHandler=()=>{
@@ -350,6 +374,6 @@
 		}
 		return sim;
 	}
-	Fluid.engine={create,copyStats,makeStats,makeProbeSample:Fluid.core.probes.makeSample};
+	Fluid.engine={create,copyStats,makeStats,makeProbeSample:Fluid.core.probes.makeSample,makePhaseBatch:Fluid.core.phaseEvents?Fluid.core.phaseEvents.makeBatch:null};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.engine;
 })(globalThis);

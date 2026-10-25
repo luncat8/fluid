@@ -668,8 +668,82 @@ function runColliderExecCases() {
 		"freezeErr=" + maxFreezeErr.toExponential(2) + " thawErr=" + maxThawErr.toExponential(2));
 }
 
+function runPhaseChangeExecCases() {
+	const peMod = Fluid.core.phaseEvents;
+	const pcfg = Object.assign({}, Fluid.core.config.defaults, { N: 16, texW: 18, texH: 18, scenario: "ice", dt: 1 / 60 });
+	const cs = Fluid.core.solver.create(pcfg);
+	const cw = cs.texW, ch = cs.texH;
+	const rgba = a => ({ texture: [a.buffer], descriptor: { size: [cw, ch], format: "rgba32float" } });
+	const u8x4 = a => ({ texture: [a.buffer], descriptor: { size: [cw, ch], format: "rgba8uint" } });
+	const pa = Fluid.core.config.makeParamsArray();
+	Fluid.core.config.writeParams(pa, pcfg);
+	const uniform = { uniform: pa.buffer.slice(0) };
+
+	const cpuPe = peMod.create(cw, ch);
+	peMod.seedFromFlags(cpuPe, cs.flags, cw, ch);
+	const gpuPrev = Uint32Array.from(cpuPe.prev);
+	const gpuRows = new Float32Array((cw - 2) * peMod.ROW_STRIDE);
+	const gpuOut = new Float32Array(peMod.LEN);
+
+	// Induce melting, freezing, boiling, and condensation across multiple rows
+	cs.addEmitter({ kind: "heat", x: 8, y: 12, radius: 5, value: 8500 });
+	cs.addEmitter({ kind: "freeze", x: 8, y: 4, radius: 4, value: 8500 });
+	for (let s = 0; s < 4; s++) cs.step(pcfg.dt);
+	// Also seed explicit solid->liquid, liquid->solid, liquid->gas, gas->liquid cells
+	cpuPe.prev[3 + 3 * cw] = 1; cs.flags[(3 + 3 * cw) * 4 + 1] = 3;
+	cpuPe.prev[4 + 3 * cw] = 3; cs.flags[(4 + 3 * cw) * 4 + 1] = 1;
+	cpuPe.prev[5 + 3 * cw] = 3; cs.flags[(5 + 3 * cw) * 4 + 1] = 5;
+	cpuPe.prev[6 + 3 * cw] = 5; cs.flags[(6 + 3 * cw) * 4 + 1] = 3;
+	gpuPrev.set(cpuPe.prev);
+
+	const rowAst = WgslParser.Parse(PS + sh.phaseChangeRow);
+	const compactAst = WgslParser.Parse(PS + sh.phaseChangeCompact);
+	new WgslExec(rowAst).dispatchWorkgroups("main", [Math.ceil((cw - 2) / 8)], {
+		0: {
+			0: uniform,
+			1: u8x4(cs.flags),
+			2: rgba(cs.sfield),
+			3: rgba(grid.curBuf(cs.therm)),
+			4: gpuPrev.buffer,
+			5: gpuRows.buffer
+		}
+	});
+	new WgslExec(compactAst).dispatchWorkgroups("main", [1], {
+		0: {
+			0: uniform,
+			1: gpuRows.buffer,
+			2: gpuOut.buffer
+		}
+	});
+	const cpuFired = peMod.scanCpu(cpuPe, cs.flags, cs.sfield, grid.curBuf(cs.therm), cw, ch, pcfg.frame);
+
+	let prevDiffs = 0;
+	for (let i = 0; i < gpuPrev.length; i++) {
+		if (gpuPrev[i] !== cpuPe.prev[i]) prevDiffs++;
+	}
+	let maxRowDiff = 0;
+	for (let i = 0; i < cpuPe.rows.length; i++) {
+		const d = Math.abs(gpuRows[i] - cpuPe.rows[i]);
+		if (d > maxRowDiff) maxRowDiff = d;
+	}
+	let maxOutDiff = 0;
+	for (let i = 0; i < cpuPe.raw.length; i++) {
+		const d = Math.abs(gpuOut[i] - cpuPe.raw[i]);
+		if (d > maxOutDiff) maxOutDiff = d;
+	}
+	check("phaseChangeRow + phaseChangeCompact exec: WGSL matches CPU phase-event scan & compaction with 0 diff",
+		cpuFired && cpuPe.batch.total > 0 &&
+		cpuPe.batch.melted > 0 && cpuPe.batch.froze > 0 && cpuPe.batch.boiled > 0 && cpuPe.batch.condensed > 0 &&
+		prevDiffs === 0 && maxRowDiff < 1e-6 && maxOutDiff < 1e-6,
+		"total=" + cpuPe.batch.total + " count=" + cpuPe.batch.count +
+		" melted=" + cpuPe.batch.melted + " froze=" + cpuPe.batch.froze +
+		" boiled=" + cpuPe.batch.boiled + " condensed=" + cpuPe.batch.condensed +
+		" prevDiffs=" + prevDiffs + " rowDiff=" + maxRowDiff + " outDiff=" + maxOutDiff);
+}
+
 runEmitterExecCases();
 runColliderExecCases();
+runPhaseChangeExecCases();
 
 console.log(failures ? "FAILURES: " + failures : "ALL WGSL-EXEC CHECKS PASSED");
 process.exit(failures ? 1 : 0);

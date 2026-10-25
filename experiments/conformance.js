@@ -815,7 +815,7 @@ function testCollidersAndObstacles() {
 	// raises the far-side water level, and conserves mass & energy to < 1e-6
 	{
 		function makePoolSim() {
-			const cfg = makeCfg({ N: 64, scenario: "still", gravityY: 260, pressureIters: 40, dt: 1 / 240, vorticityEps: 1.5 });
+			const cfg = makeCfg({ N: 64, scenario: "still", gravityY: 260, pressureIters: 40, dt: 1 / 240 });
 			const sim = solverMod.create(cfg);
 			const mc = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
 			const tc = sim.therm.cur === 0 ? sim.therm.a : sim.therm.b;

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fluid 0.7.0 — Engine Lifecycle &amp; Save/Load Device Test (t12)</title>
+<style>
+	:root{color-scheme:dark;--bg:#0b0e13;--panel:#131820;--line:#222b38;--fg:#dbe3ee;--muted:#7e8c9f;--ok:#3bd671;--bad:#ff5c5c;--accent:#58a6ff;}
+	body{margin:0;padding:20px;background:var(--bg);color:var(--fg);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+	h1{font-size:16px;margin:0 0 12px 0;color:#fff;}
+	.bar{display:flex;gap:12px;align-items:center;margin-bottom:14px;}
+	button{background:#1b2430;color:var(--fg);border:1px solid var(--line);padding:6px 12px;border-radius:4px;font:inherit;cursor:pointer;}
+	button:hover{border-color:var(--accent);}
+	.summary{padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:6px;margin-bottom:14px;}
+	.ok{color:var(--ok);font-weight:600;}
+	.bad{color:var(--bad);font-weight:600;}
+	table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);margin-bottom:16px;}
+	th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;}
+	th{color:var(--muted);font-weight:600;background:#0f141b;}
+	canvas{border:1px solid var(--line);border-radius:4px;background:#05070a;}
+</style>
+</head>
+<body>
+<h1>Fluid 0.7.0 — Engine Lifecycle, Leak &amp; Save/Load Device Test (t12)</h1>
+<div class="bar">
+	<button id="btnRun">Run 20-Cycle Suite + 100-Step Replay</button>
+	<span id="status">Idle</span>
+	<canvas id="canvas" width="64" height="64"></canvas>
+</div>
+<div id="summary" class="summary">Waiting to run...</div>
+<table id="checksTable">
+	<thead><tr><th>Status</th><th>Check</th><th>Detail</th></tr></thead>
+	<tbody id="checksBody"></tbody>
+</table>
+<table id="cyclesTable">
+	<thead><tr><th>Cycle</th><th>Live Tex (active)</th><th>Live Buf (pre-save)</th><th>Live Buf (post-save)</th><th>Live Tex (post-destroy)</th><th>Live Buf (post-destroy)</th><th>Phase Batches</th></tr></thead>
+	<tbody id="cyclesBody"></tbody>
+</table>
+
+<script src="../src/core/config.js"></script>
+<script src="../src/core/grid.js"></script>
+<script src="../src/core/stats.js"></script>
+<script src="../src/core/multigrid.js"></script>
+<script src="../src/core/buoy.js"></script>
+<script src="../src/core/probes.js"></script>
+<script src="../src/core/emitters.js"></script>
+<script src="../src/core/colliders.js"></script>
+<script src="../src/core/save.js"></script>
+<script src="../src/core/solver.js"></script>
+<script src="../src/gpu/device.js"></script>
+<script src="../src/gpu/fields.js"></script>
+<script src="../src/gpu/shaders.js"></script>
+<script src="../src/gpu/passes.js"></script>
+<script src="../src/gpu/profiler.js"></script>
+<script src="../src/gpu/solver.js"></script>
+<script src="../src/app/loop.js"></script>
+<script src="../src/app/input.js"></script>
+<script src="../src/api/engine.js"></script>
+<script src="api-test.js"></script>
+<script>
+(function(){
+	"use strict";
+	const $=id=>document.getElementById(id);
+	async function run(){
+		const status=$("status"),summary=$("summary"),checksBody=$("checksBody"),cyclesBody=$("cyclesBody");
+		checksBody.innerHTML="";
+		cyclesBody.innerHTML="";
+		status.textContent="Initializing WebGPU...";
+		try{
+			const canvas=$("canvas");
+			const gpu=await Fluid.gpu.device.init(canvas);
+			status.textContent="Running 20 create/step/serialize/deserialize/destroy cycles...";
+			const res=await Fluid.tests.apiTest.runLifecycleSuite({
+				device:gpu.device,
+				context:gpu.context,
+				format:gpu.format,
+				canvas,
+				cycles:20,
+				N:64,
+				stepFrames:5,
+				replayFrames:100,
+				onProgress(done,total,rec){
+					status.textContent="Cycle "+done+"/"+total+" (texAfter="+rec.texAfterDestroy+", bufAfter="+rec.bufAfterDestroy+")";
+				}
+			});
+			status.textContent=res.ok?"PASS":"FAIL";
+			status.className=res.ok?"ok":"bad";
+			const heapStr=res.totals.heapDelta!==null?((res.totals.heapDelta/1024).toFixed(1)+" KB"):"n/a";
+			summary.innerHTML=(res.ok?"<span class='ok'>ALL CHECKS PASSED</span>":"<span class='bad'>CHECKS FAILED</span>")+
+				" — "+res.passed+"/"+res.total+" checks | "+
+				"texCreated="+res.totals.texCreated+" texAlive="+res.totals.texAlive+" | "+
+				"bufCreated="+res.totals.bufCreated+" bufAlive="+res.totals.bufAlive+" | "+
+				"validationErrors="+res.totals.validationErrors+" uncaptured="+res.totals.uncapturedErrors+" | "+
+				"heapDelta="+heapStr;
+			for(const c of res.checks){
+				const tr=document.createElement("tr");
+				tr.innerHTML="<td class='"+(c.ok?"ok":"bad")+"'>"+(c.ok?"PASS":"FAIL")+"</td><td>"+c.name+"</td><td>"+c.detail+"</td>";
+				checksBody.appendChild(tr);
+			}
+			for(const r of res.cycles){
+				const tr=document.createElement("tr");
+				tr.innerHTML="<td>#"+(r.cycle+1)+"</td><td>"+r.aliveTexDuring+"</td><td>"+r.aliveBufBeforeSave+"</td><td>"+r.aliveBufAfterSave+"</td><td>"+r.texAfterDestroy+"</td><td>"+r.bufAfterDestroy+"</td><td>"+r.phaseBatches+"</td>";
+				cyclesBody.appendChild(tr);
+			}
+		}catch(err){
+			status.textContent="ERROR";
+			status.className="bad";
+			summary.innerHTML="<span class='bad'>"+String(err&&err.message||err)+"</span>";
+		}
+	}
+	$("btnRun").addEventListener("click",run);
+	window.addEventListener("DOMContentLoaded",run);
+})();
+</script>
+</body>
+</html>
