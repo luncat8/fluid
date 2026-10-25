@@ -56,9 +56,10 @@ async function testPlumbing() {
 	const canvas = { width: 64, height: 64 };
 	const solver = Fluid.gpu.solver.create(device, canvas, mock.mockContext(), "bgra8unorm", cfg);
 	const pool = solver.pool;
-	check("gpu pool has the buoy sample buffer and its readback twin",
-		pool.buoy && pool.buoyRead && pool.buoy.size === 128 && pool.buoyRead.usage === (1 | 8),
-		"buoy=" + pool.buoy.size + "B usage=" + pool.buoy.usage + " read usage=" + pool.buoyRead.usage);
+	check("gpu pool has the buoy sample buffer and its slot in the shared readback buffer",
+		pool.buoy && pool.buoy.size === 128 && pool.readback && pool.readback.usage === (1 | 8) &&
+		pool.readSlots.buoy.len === 6 && pool.readSlots.buoy.off % Fluid.gpu.fields.SLOT_ALIGN === 0,
+		"buoy=" + pool.buoy.size + "B readback=" + pool.readback.size + "B slot@" + pool.readSlots.buoy.off);
 	check("the buoySample compute pipeline is compiled with the params struct prefix",
 		sink.modules.some(m => m.label === "buoySample-mod" && /struct Params/.test(m.code) && /@workgroup_size\(64\)/.test(m.code)));
 	const projectCode = sink.modules.find(m => m.label === "project-mod").code;
@@ -89,9 +90,10 @@ async function testPlumbing() {
 		sink.bindings.length === m.counts.dispatches && sink.bindings.includes(4),
 		"dispatches=" + m.counts.dispatches + " bindGroup calls=" + sink.bindings.length);
 	const buoyCopies = sink.copies.filter(c => c[0] === "buoy");
-	check("the buoy sample buffer is copied back 24 bytes (6 floats) at a time",
-		buoyCopies.length > 0 && buoyCopies.every(c => c[1] === "buoyRead" && c[2] === 24),
-		"copies=" + buoyCopies.length + " sizes=" + [...new Set(buoyCopies.map(c => c[2]))].join(","));
+	check("the buoy sample is copied back 24 bytes (6 floats) into its readback slot",
+		buoyCopies.length > 0 && buoyCopies.every(c => c[1] === "readback" && c[2] === 24 &&
+			c[4] === pool.readSlots.buoy.off),
+		"copies=" + buoyCopies.length + " slots=" + [...new Set(buoyCopies.map(c => c[4]))].join(","));
 	check("the field sample runs after the sim steps and before the display pass",
 		(() => {
 			const at = sink.pipeOrder.lastIndexOf("buoySample");
@@ -418,10 +420,11 @@ async function testProbePlumbing() {
 	const m = mock.create({probes: probePattern()});
 	const canvas = {width: N, height: N};
 	const solver = Fluid.gpu.solver.create(m.device, canvas, mock.mockContext(), "bgra8unorm", cfg);
-	check("probe pool: one storage table and its map-read twin, sized by core/probes",
+	check("probe pool: one storage table plus its slot in the shared readback buffer",
 		solver.pool.probes.size === Fluid.core.probes.LEN * 4 &&
-		solver.pool.probesRead.size === Fluid.core.probes.LEN * 4,
-		"bytes=" + solver.pool.probes.size);
+		solver.pool.readSlots.probes.len === Fluid.core.probes.LEN &&
+		solver.pool.readSlots.probes.bytes === Fluid.core.probes.LEN * 4,
+		"bytes=" + solver.pool.probes.size + " slot@" + solver.pool.readSlots.probes.off);
 	const out = Fluid.core.probes.makeSample();
 	const id0 = solver.addProbe(10, 20);
 	const id1 = solver.addProbe(30, 40);
@@ -441,8 +444,9 @@ async function testProbePlumbing() {
 		if (m.sink.copies.slice(before).some(c => c[0] === "probes")) copies++;
 		await solver.pollReadback();
 	}
-	check("probe readback: one copy every cfg.probeEvery frames, 2112 bytes, never per substep",
-		copies === 2 && m.sink.copies.filter(c => c[0] === "probes").every(c => c[2] === Fluid.core.probes.LEN * 4),
+	check("probe readback: one copy every cfg.probeEvery frames into its slot, never per substep",
+		copies === 2 && m.sink.copies.filter(c => c[0] === "probes").every(c =>
+			c[2] === Fluid.core.probes.LEN * 4 && c[1] === "readback" && c[4] === solver.pool.readSlots.probes.off),
 		"copies=" + copies + "/" + (2 * cfg.probeEvery) + " frames");
 	const got = solver.sampleProbe(0, out);
 	check("probe readback reaches the table: values, age, and the derived phase",
@@ -753,11 +757,11 @@ async function testPhaseEventPlumbing() {
 	const solver = Fluid.gpu.solver.create(m.device, { width: 64, height: 64 }, mock.mockContext(), "bgra8unorm", cfg);
 	const pool = solver.pool;
 
-	check("phaseEvents pool: phasePrev, phaseRow, phaseEvents, phaseEventsRead allocated",
+	check("phaseEvents pool: phasePrev, phaseRow, phaseEvents and its readback slot allocated",
 		pool.phasePrev && pool.phasePrev.size === 66 * 66 * 4 &&
 		pool.phaseRow && pool.phaseRow.size === 65 * 72 * 4 &&
 		pool.phaseEvents && pool.phaseEvents.size === 560 * 4 &&
-		pool.phaseEventsRead && pool.phaseEventsRead.size === 560 * 4,
+		pool.readSlots.phaseEvents.bytes === 560 * 4,
 		"phasePrev=" + pool.phasePrev.size + "B phaseRow=" + pool.phaseRow.size + "B phaseEvents=" + pool.phaseEvents.size + "B");
 
 	// With no listener registered, frame() adds 0 phaseChange dispatches and 0 copies
@@ -788,7 +792,8 @@ async function testPhaseEventPlumbing() {
 	check("phaseEvents mid-run registration: seeds before step and compacts once after step",
 		slice.filter(n => n === "phaseChangeRow").length === 2 &&
 		slice.filter(n => n === "phaseChangeCompact").length === 2 &&
-		copies.some(c => c[0] === "phaseEvents" && c[1] === "phaseEventsRead" && c[2] === 2240) &&
+		copies.some(c => c[0] === "phaseEvents" && c[1] === "readback" && c[2] === 2240 &&
+			c[4] === pool.readSlots.phaseEvents.off) &&
 		batches === 0,
 		"batches during submit=" + batches);
 
@@ -843,6 +848,100 @@ async function testSaveLoadPlumbing() {
 		m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0);
 }
 
+
+// ---- 10. one readback staging buffer, one map per frame (0.7.2) ----
+// every async channel used to own a MAP_READ buffer and its own poll() loop: up to
+// four mapAsync round trips per frame. they now share one buffer with a 256-byte
+// aligned slot each, so a frame costs one map and the poll is one code path.
+async function testReadbackStaging() {
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {
+		N: 64, texW: 66, texH: 66, scenario: "dam", statsEvery: 1, probeEvery: 1,
+		buoySampleEvery: 1, substepsAuto: false, substepsFixed: 2
+	});
+	const m = mock.create(PATTERNS);
+	const sink = m.sink;
+	const solver = Fluid.gpu.solver.create(m.device, { width: 64, height: 64 }, mock.mockContext(), "bgra8unorm", cfg);
+	const pool = solver.pool;
+	const fields = Fluid.gpu.fields;
+	const layout = fields.readbackLayout();
+	const names = fields.READ_CHANNELS;
+
+	let ordered = true, aligned = true, disjoint = true;
+	for (let i = 0; i < names.length; i++) {
+		const slot = layout.slots[names[i]];
+		if (!slot || slot.off % fields.SLOT_ALIGN !== 0) aligned = false;
+		if (slot && slot.f + slot.len > layout.totalBytes / 4) disjoint = false;
+		if (i && slot.off < layout.slots[names[i - 1]].off + layout.slots[names[i - 1]].bytes) ordered = false;
+	}
+	check("readback layout: four channels, 256-byte aligned, non-overlapping, total matches the buffer",
+		aligned && ordered && disjoint && pool.readback.size === layout.totalBytes &&
+		pool.readBytes === layout.totalBytes && layout.slots.stats.len === Fluid.core.stats.STATS_LEN,
+		"total=" + layout.totalBytes + "B slots=" + names.map(n => n + "@" + layout.slots[n].off).join(","));
+
+	check("readback layout: one MAP_READ buffer, no per-channel read twins left in the pool",
+		["statsRead", "buoyRead", "probesRead", "phaseEventsRead"].every(k => pool[k] === undefined) &&
+		fields.poolBuffers(pool).filter(b => b.usage === (1 | 8)).length === 1,
+		"map-read buffers=" + fields.poolBuffers(pool).filter(b => b.usage === (1 | 8)).length);
+
+	// every channel due on the same frame: stats (statsEvery 1), buoy (every 1), one
+	// probe (every 1) and a phase listener. four copies into four slots, one map.
+	solver.addProbe(32, 32);
+	let batches = 0;
+	solver.onPhaseChange(() => { batches++; });
+	const mapsBefore = m.counts.maps;
+	const copiesBefore = sink.copies.length;
+	const frameBefore = solver.getStats().frame;
+	solver.frame(cfg.frameDt / 2, 2, true);
+	const copies = sink.copies.slice(copiesBefore).filter(c => c[1] === "readback");
+	await solver.pollReadback();
+	check("one frame that owes every channel copies four slots and takes one map",
+		copies.length === 4 && m.counts.maps - mapsBefore === 1,
+		"copies=" + copies.length + " maps=" + (m.counts.maps - mapsBefore));
+	check("each copy lands in its own slot, at its own length",
+		copies.length === 4 && names.every(n => copies.some(c =>
+			c[4] === layout.slots[n].off && c[2] === layout.slots[n].bytes)),
+		"targets=" + [...new Set(copies.map(c => c[4]))].join(","));
+	check("the frame really advanced and the stats came back through the shared map",
+		solver.getStats().frame === frameBefore + 1 && solver.getStats().statsFrame > 0,
+		"frame=" + solver.getStats().frame + " statsFrame=" + solver.getStats().statsFrame);
+	check("a listener with an empty phaseEvent slot is not called back",
+		batches === 0, "callbacks=" + batches);
+
+	// pollMap takes the in-flight flag before its first await, so a frame submitted
+	// while the map is open must not queue a second map or a second set of copies
+	solver.frame(cfg.frameDt / 2, 2, true);
+	const openBefore = sink.copies.length;
+	const pending = solver.pollReadback();
+	const mapsInFlight = m.counts.maps;
+	solver.frame(cfg.frameDt / 2, 2, true);
+	const skipped = sink.copies.length - openBefore;
+	await pending;
+	check("a frame submitted while a map is in flight copies nothing and maps nothing",
+		skipped === 0 && m.counts.maps === mapsInFlight,
+		"copies during the open map=" + skipped + " maps=" + (m.counts.maps - mapsInFlight));
+	const caughtUp = sink.copies.length;
+	solver.frame(cfg.frameDt / 2, 2, true);
+	await solver.pollReadback();
+	check("the frame after that catches up: its four copies are mapped once",
+		sink.copies.slice(caughtUp).filter(c => c[1] === "readback").length === 4 &&
+		m.counts.maps === mapsInFlight + 1,
+		"copies=" + sink.copies.slice(caughtUp).filter(c => c[1] === "readback").length +
+		" maps=" + (m.counts.maps - mapsInFlight));
+
+	// the mapped view cannot outlive its map: the mock detaches it, exactly like a driver
+	await pool.readback.mapAsync(GPUMapMode.READ);
+	const ab = pool.readback.getMappedRange();
+	const aliveBefore = ab.byteLength;
+	pool.readback.unmap();
+	check("getMappedRange hands out a fresh ArrayBuffer per map and unmap detaches it",
+		aliveBefore === pool.readBytes && ab.byteLength === 0,
+		"mapped=" + aliveBefore + "B after unmap=" + ab.byteLength + "B");
+
+	solver.destroy();
+	check("readback staging destroyed with the pool, zero leaks",
+		m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0);
+}
+
 (async function main() {
 	testParams();
 	testWgsl();
@@ -855,6 +954,7 @@ async function testSaveLoadPlumbing() {
 	await testColliderPlumbing();
 	await testPhaseEventPlumbing();
 	await testSaveLoadPlumbing();
+	await testReadbackStaging();
 	console.log(failures === 0 ? "ALL GPU-MOCK CHECKS PASSED" : failures + " FAILURES");
 	process.exitCode = failures === 0 ? 0 : 1;
 })();

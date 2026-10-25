@@ -837,11 +837,15 @@ async function testPhaseEvents() {
 // note: subarray()/slice() do not run a constructor, so this covers typed arrays and
 // ArrayBuffers (the large allocations), not object literals.
 const ALLOC_CTORS = ["Float32Array", "Float64Array", "Uint8Array", "Uint32Array", "ArrayBuffer"];
-async function auditAllocations(runFrame, warmFrames, frames) {
+// wraps the array constructors and attributes each allocation to its innermost caller
+// outside this file, so a hit reads as "Float32Array @ src/gpu/solver.js". counting is
+// gated: the synchronous audit opens the window per frame, the readback audit keeps it
+// open across await, because a mapAsync continuation is where the view is built.
+function createAllocProbe() {
 	const savedLimit = Error.stackTraceLimit, saved = {};
-	Error.stackTraceLimit = 32;
 	const hits = new Map();
-	let depth = 0, total = 0;
+	let total = 0, active = false;
+	Error.stackTraceLimit = 32;
 	function site() {
 		const lines = String(new Error().stack).split("\n");
 		for (let i = 1; i < lines.length; i++) {
@@ -850,18 +854,17 @@ async function auditAllocations(runFrame, warmFrames, frames) {
 		}
 		return "?";
 	}
-	function record(name) {
-		if (!depth) return;
-		total++;
-		const file = site();
-		if (!file.includes("/src/")) return;
-		const key = name + " @ " + path.relative(root, file);
-		hits.set(key, (hits.get(key) || 0) + 1);
-	}
 	for (const name of ALLOC_CTORS) {
 		const Ctor = globalThis[name];
 		const wrapper = function (...args) {
-			if (depth) record(name);
+			if (active) {
+				total++;
+				const file = site();
+				if (file.includes("/src/")) {
+					const key = name + " @ " + path.relative(root, file);
+					hits.set(key, (hits.get(key) || 0) + 1);
+				}
+			}
 			return new Ctor(...args);
 		};
 		Object.setPrototypeOf(wrapper, Ctor);
@@ -869,12 +872,27 @@ async function auditAllocations(runFrame, warmFrames, frames) {
 		saved[name] = Ctor;
 		globalThis[name] = wrapper;
 	}
+	return {
+		hits,
+		get total() { return total; },
+		on() { active = true; },
+		off() { active = false; },
+		inSrc() { return [...hits.values()].reduce((sum, n) => sum + n, 0); },
+		stop() {
+			active = false;
+			for (const name of ALLOC_CTORS) globalThis[name] = saved[name];
+			Error.stackTraceLimit = savedLimit;
+		}
+	};
+}
+async function auditAllocations(runFrame, warmFrames, frames) {
+	const probe = createAllocProbe();
 	const frame = async () => {
-		depth++;
+		probe.on();
 		try {
 			runFrame();
 		} finally {
-			depth--;
+			probe.off();
 		}
 		await flush(2); // let the in-flight gate clear outside the counted window
 	};
@@ -882,17 +900,34 @@ async function auditAllocations(runFrame, warmFrames, frames) {
 		for (let i = 0; i < warmFrames; i++) await frame();
 		// control: one allocation made by this harness inside the counted window, so a
 		// wrapper that never fires cannot pass as "0 in src/"
-		if (!total) {
-			depth++;
+		if (!probe.total) {
+			probe.on();
 			new Float32Array(1);
-			depth--;
+			probe.off();
 		}
 		for (let i = 0; i < frames; i++) await frame();
 	} finally {
-		for (const name of ALLOC_CTORS) globalThis[name] = saved[name];
-		Error.stackTraceLimit = savedLimit;
+		probe.stop();
 	}
-	return { inSrc: [...hits.values()].reduce((sum, n) => sum + n, 0), total, hits };
+	return { inSrc: probe.inSrc(), total: probe.total, hits: probe.hits };
+}
+
+// the readback path is asynchronous: a6's synchronous window never covered the
+// mapAsync continuation, which is exactly where the mapped view is built. this keeps
+// the window open across the whole step + poll cycle and counts what src/ allocates.
+async function auditReadbackAllocations(sim, cycles) {
+	const probe = createAllocProbe();
+	probe.on();
+	try {
+		for (let i = 0; i < cycles; i++) {
+			sim.step(1 / 60);
+			await sim.pollReadback();
+		}
+	} finally {
+		probe.off();
+		probe.stop();
+	}
+	return { inSrc: probe.inSrc(), total: probe.total, hits: probe.hits };
 }
 
 async function testHotPathAllocations() {
@@ -937,6 +972,33 @@ async function testHotPathAllocations() {
 	sim.destroy();
 }
 
+async function testReadbackAllocations() {
+	// stats every frame, one probe and the dam body, so a cycle maps all three channels
+	const m = mock.create({ buoy: new Float32Array([8, 32, 32, 32, 0, 0.5]) });
+	const sim = await Fluid.engine.create({ width: 0, height: 0 }, {
+		device: m.device, context: mock.mockContext(), format: "bgra8unorm",
+		cfg: { N: 64, scenario: "dam", statsEvery: 1, probeEvery: 1, buoySampleEvery: 1, substepsAuto: false, substepsFixed: 2 }
+	});
+	sim.addProbe(32, 32);
+	for (let i = 0; i < 8; i++) {
+		sim.step(1 / 60);
+		await sim.pollReadback();
+	}
+	const mapsBefore = m.counts.maps;
+	const cycles = 40;
+	const res = await auditReadbackAllocations(sim, cycles);
+	const maps = m.counts.maps - mapsBefore;
+	const sites = [...res.hits];
+	check(res.total > 0 && maps >= cycles - 2,
+		"readback path: every cycle really mapped (the detector saw the harness churn)",
+		"maps=" + maps + " cycles=" + cycles + " harness allocations=" + res.total);
+	check(res.inSrc === maps && sites.every(([k]) => k === "Float32Array @ src/gpu/solver.js"),
+		"readback path: exactly one typed-array view per map, and nothing else in src/",
+		res.inSrc + " allocations in src/ for " + maps + " maps (" +
+		(sites.map(([k, n]) => n + "x " + k).join(", ") || "none") + ")");
+	sim.destroy();
+}
+
 async function testLifecycleSuite() {
 	const m = mock.create();
 	const res = await Fluid.tests.apiTest.runLifecycleSuite({
@@ -969,6 +1031,7 @@ async function testLifecycleSuite() {
 	await testPhaseEvents();
 	await testLifecycleSuite();
 	await testHotPathAllocations();
+	await testReadbackAllocations();
 	console.log("all " + checks + " engine checks pass");
 })().catch(error => {
 	console.error(error);

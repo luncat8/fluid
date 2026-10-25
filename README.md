@@ -61,6 +61,10 @@ browser rAF callbacks/s. Speed is simulated seconds per wall second; CPU encode 
 measures submission work; queue ms is last submission-to-completion latency, including
 driver/scheduling overhead, **not** a GPU timestamp. One application frame is allowed
 in flight; overload slows simulated time rather than building an unbounded GPU queue.
+Every readback shares one map-read buffer with a 256-byte-aligned slot per channel (stats,
+buoy sample, probe table, phase events), so a frame maps at most once: four driver round
+trips and four mapped views per frame became one. `getMappedRange()` detaches its
+`ArrayBuffer` on `unmap`, so one typed-array view per map is the floor, not a leak.
 A clean paused view submits no redraws. Changing substeps from 5 to 6 adds 20% more
 solver work, but display scheduling can make observed rates change nonlinearly.
 
@@ -184,9 +188,10 @@ focus handling, and `node experiments/controls.js` for slider drag ownership and
 configuration synchronization. `node experiments/engine.js` is the engine contract:
 windowed pacing rates, high-refresh pacing, queue backpressure, pause/single-step,
 stats and probe readbacks, the view writer, input attach/detach, resize, teardown, the
-demo page, and the `a6` hot-path audit (200 `update`/`render`/`stats`/`sample` calls and
+demo page, the `a6` hot-path audit (200 `update`/`render`/`stats`/`sample` calls and
 100 CPU reference steps allocate no typed array inside `src/`, checked by wrapping the
-array constructors and attributing each allocation to its caller).
+array constructors and attributing each allocation to its caller) and the same audit
+across the async readback tail (exactly one view per `mapAsync`, nothing else in `src/`).
 `node experiments/pages.js` checks the wiring of every HTML runner: each
 `<script src>` resolves, every `Fluid.*` namespace a loaded script or the page's inline
 script uses is defined by another loaded script, and the scripts survive a load in a stub

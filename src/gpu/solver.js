@@ -20,15 +20,11 @@
 		const buoy=Fluid.core.buoy.create(cfg);
 		const buoyRaw=new Float32Array(Fluid.core.buoy.SAMPLE_LEN);
 		const buoyZero=new Float32Array(Fluid.core.buoy.SAMPLE_LEN);
-		let buoyPending=false;
-		let buoyInFlight=false;
 		let buoyGeneration=0;
 		// point queries (0.7.0 t5): one table for every game probe, sampled on its own
 		// cadence and copied back through the same single-in-flight rule as stats/buoy
 		const probeTable=coreProbes.create();
 		const probeRaw=new Float32Array(coreProbes.LEN);
-		let probePending=false;
-		let probeInFlight=false;
 		let probeGeneration=0;
 		let probeFrame=0;
 		const emitterTable=coreEmitters?coreEmitters.create():null;
@@ -37,8 +33,6 @@
 		const phaseEventState=phaseEventMod?phaseEventMod.create(cfg.texW,cfg.texH):null;
 		const phaseEventRaw=new Float32Array(stats.PHASE_EVENT_LEN||560);
 		let phaseChangeCb=null;
-		let phasePending=false;
-		let phaseInFlight=false;
 		let phaseGeneration=0;
 		let phaseFrame=0;
 		let phaseSeedNeeded=false;
@@ -52,9 +46,16 @@
 		let flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
 		let ledger=null;
 		let destroyed=false;
+		// one staging buffer for every async channel (src/gpu/fields.js owns the slot
+		// layout): a frame copies the channels it owes into their slots, and one map
+		// reads them all back. readMask is the set of slots written since the last map.
+		let readSlots=pool.readSlots;
+		const CH_STATS=1,CH_BUOY=2,CH_PROBES=4,CH_PHASE=8;
 		const readbackArray=new Float32Array(stats.STATS_LEN);
-		let readbackInFlight=false;
-		let pendingRead=false;
+		let readMask=0;
+		let readInFlight=false;
+		let mappedBuffer=null;
+		let mappedView=null;
 		let pendingFrame=0;
 		let pendingGeneration=0;
 		let statsGeneration=0;
@@ -101,11 +102,8 @@
 		function reset(){
 			statsGeneration++;
 			if(prof)prof.invalidate();
-			pendingRead=false;
-			buoyPending=false;
+			readMask=0;
 			buoyGeneration=statsGeneration;
-			probePending=false;
-			phasePending=false;
 			phaseGeneration=statsGeneration;
 			phaseSeedNeeded=false;
 			coreProbes.invalidate(probeTable);
@@ -381,7 +379,7 @@
 			buoy.march(dts*substeps);
 			const needBuoy=buoy.state.active&&(frameCount%Math.max(1,cfg.buoySampleEvery)===0);
 			const needProbe=probeTable.live>0&&(frameCount%Math.max(1,cfg.probeEvery)===0);
-			const needPhase=phaseChangeCb!==null&&!phaseInFlight&&!phasePending;
+			const needPhase=phaseChangeCb!==null;
 			const seedPhasePreStep=needPhase&&phaseSeedNeeded&&phaseEventState!==null;
 			if(seedPhasePreStep){
 				phaseEventState.prev.fill(255);
@@ -461,33 +459,39 @@
 				passes.encodeDisplay(cpass,pool,pipes,groups,state);
 				cpass.end();
 			}
-			if(needStats&&!readbackInFlight){
-				encoder.copyBufferToBuffer(pool.stats,0,pool.statsRead,0,stats.STATS_LEN*4);
-				stats.writeExpectedTotals(pendingExpected,ledger);
-				pendingHeatNet=heatNetKnown;
-				pendingEmitNet.m=emitNetKnown.m;pendingEmitNet.dr=emitNetKnown.dr;
-				pendingEmitNet.dg=emitNetKnown.dg;pendingEmitNet.db=emitNetKnown.db;
-				pendingEmitNet.E=emitNetKnown.E;
-				pendingFrame=frameCount+1;
-				pendingGeneration=statsGeneration;
-				pendingRead=true;
-			}
-			if(needBuoy&&!buoyInFlight){
-				encoder.copyBufferToBuffer(pool.buoy,0,pool.buoyRead,0,buoyZero.byteLength);
-				buoyGeneration=statsGeneration;
-				buoyPending=true;
-			}
-			if(needProbe&&!probeInFlight){
-				encoder.copyBufferToBuffer(pool.probes,0,pool.probesRead,0,probeRaw.byteLength);
-				probeGeneration=statsGeneration;
-				probeFrame=frameCount+1;
-				probePending=true;
-			}
-			if(needPhase){
-				encoder.copyBufferToBuffer(pool.phaseEvents,0,pool.phaseEventsRead,0,phaseEventRaw.byteLength);
-				phaseGeneration=statsGeneration;
-				phaseFrame=frameCount+1;
-				phasePending=true;
+			// every channel copies into its own slot of the one map-read buffer, and one
+			// map reads them all back. a copy is skipped while a map is in flight - the
+			// storage buffer keeps the newest values, so the cost is one frame of
+			// staleness, never a lost sample.
+			if(!readInFlight){
+				if(needStats){
+					encoder.copyBufferToBuffer(pool.stats,0,pool.readback,readSlots.stats.off,stats.STATS_LEN*4);
+					stats.writeExpectedTotals(pendingExpected,ledger);
+					pendingHeatNet=heatNetKnown;
+					pendingEmitNet.m=emitNetKnown.m;pendingEmitNet.dr=emitNetKnown.dr;
+					pendingEmitNet.dg=emitNetKnown.dg;pendingEmitNet.db=emitNetKnown.db;
+					pendingEmitNet.E=emitNetKnown.E;
+					pendingFrame=frameCount+1;
+					pendingGeneration=statsGeneration;
+					readMask|=CH_STATS;
+				}
+				if(needBuoy){
+					encoder.copyBufferToBuffer(pool.buoy,0,pool.readback,readSlots.buoy.off,buoyZero.byteLength);
+					buoyGeneration=statsGeneration;
+					readMask|=CH_BUOY;
+				}
+				if(needProbe){
+					encoder.copyBufferToBuffer(pool.probes,0,pool.readback,readSlots.probes.off,probeRaw.byteLength);
+					probeGeneration=statsGeneration;
+					probeFrame=frameCount+1;
+					readMask|=CH_PROBES;
+				}
+				if(needPhase){
+					encoder.copyBufferToBuffer(pool.phaseEvents,0,pool.readback,readSlots.phaseEvents.off,phaseEventRaw.byteLength);
+					phaseGeneration=statsGeneration;
+					phaseFrame=frameCount+1;
+					readMask|=CH_PHASE;
+				}
 			}
 			const view=context.getCurrentTexture().createView();
 			const rdesc={
@@ -528,10 +532,7 @@
 			device.queue.submit([encoder.finish()]);
 		}
 		async function pollReadback(){
-			await pollStats();
-			await pollBuoy();
-			await pollProbe();
-			await pollPhaseEvents();
+			await pollMap();
 			if(prof)await prof.poll();
 		}
 		function getProfile(){
@@ -540,7 +541,6 @@
 		function onPhaseChange(cb){
 			if(typeof cb!=="function"){
 				phaseChangeCb=null;
-				phasePending=false;
 				return false;
 			}
 			if(!phaseChangeCb&&frameCount>0){
@@ -549,161 +549,135 @@
 			phaseChangeCb=cb;
 			return true;
 		}
-		async function pollPhaseEvents(){
-			if(!phasePending||phaseInFlight)return;
-			phasePending=false;
-			phaseInFlight=true;
-			const readPool=pool;
-			const readGeneration=phaseGeneration;
-			const readFrame=phaseFrame;
-			let fired=false;
-			try{
-				await readPool.phaseEventsRead.mapAsync(GPUMapMode.READ);
-				if(readGeneration===statsGeneration&&phaseEventMod&&phaseEventState){
-					phaseEventRaw.set(new Float32Array(readPool.phaseEventsRead.getMappedRange(),0,phaseEventRaw.length));
-					fired=phaseEventMod.ingest(phaseEventState,phaseEventRaw,readFrame);
-				}
-				readPool.phaseEventsRead.unmap();
-			}catch(e){
-				console.error("phaseEvents readback failed",e);
+		// getMappedRange hands back a fresh ArrayBuffer on every map and detaches it on
+		// unmap, so a view is reusable only within one map. caching by ArrayBuffer
+		// identity costs one typed array per map and can never read a stale range.
+		function mappedFloats(buffer){
+			const ab=buffer.getMappedRange();
+			if(ab!==mappedBuffer){
+				mappedBuffer=ab;
+				mappedView=new Float32Array(ab,0,pool.readBytes/4);
 			}
-			phaseInFlight=false;
-			if(fired&&phaseChangeCb)phaseChangeCb(phaseEventState.batch);
+			return mappedView;
 		}
-		async function pollBuoy(){
-			if(!buoyPending||buoyInFlight)return;
-			buoyPending=false;
-			buoyInFlight=true;
+		function copyFloats(src,off,dst){
+			for(let i=0;i<dst.length;i++)dst[i]=src[off+i];
+		}
+		// one mapping for every channel the frame copied into the staging buffer; the
+		// generations drop a readback that landed after a reset or a resize
+		async function pollMap(){
+			if(!readMask||readInFlight)return;
+			const mask=readMask;
+			readMask=0;
+			readInFlight=true;
 			const readPool=pool;
-			const readGeneration=buoyGeneration;
+			const generation=statsGeneration;
+			let mapped=false,fired=false;
 			try{
-				await readPool.buoyRead.mapAsync(GPUMapMode.READ);
-				if(readGeneration===statsGeneration){
-					buoyRaw.set(new Float32Array(readPool.buoyRead.getMappedRange(),0,buoyRaw.length));
+				await readPool.readback.mapAsync(GPUMapMode.READ);
+				mapped=true;
+				const view=mappedFloats(readPool.readback);
+				if(mask&CH_STATS&&pendingGeneration===generation)ingestStats(view,pendingFrame);
+				if(mask&CH_BUOY&&buoyGeneration===generation){
+					copyFloats(view,readSlots.buoy.f,buoyRaw);
 					buoy.ingest(buoyRaw);
 				}
-				readPool.buoyRead.unmap();
-			}catch(e){
-				console.error("buoy readback failed",e);
-			}
-			buoyInFlight=false;
-		}
-		async function pollProbe(){
-			if(!probePending||probeInFlight)return;
-			probePending=false;
-			probeInFlight=true;
-			const readPool=pool;
-			const readGeneration=probeGeneration;
-			const readFrame=probeFrame;
-			try{
-				await readPool.probesRead.mapAsync(GPUMapMode.READ);
-				if(readGeneration===statsGeneration){
-					probeRaw.set(new Float32Array(readPool.probesRead.getMappedRange(),0,probeRaw.length));
-					coreProbes.ingest(probeTable,probeRaw,readFrame);
+				if(mask&CH_PROBES&&probeGeneration===generation){
+					copyFloats(view,readSlots.probes.f,probeRaw);
+					coreProbes.ingest(probeTable,probeRaw,probeFrame);
 				}
-				readPool.probesRead.unmap();
-			}catch(e){
-				console.error("probe readback failed",e);
-			}
-			probeInFlight=false;
-		}
-		async function pollStats(){
-			if(!pendingRead||readbackInFlight)return;
-			readbackInFlight=true;
-			pendingRead=false;
-			const readPool=pool;
-			const readGeneration=pendingGeneration;
-			const readFrame=pendingFrame;
-			const expM=pendingExpected.m,expDr=pendingExpected.dr,expDg=pendingExpected.dg;
-			const expDb=pendingExpected.db,expE=pendingExpected.E,expHeatNet=pendingHeatNet;
-			const expEmitM=pendingEmitNet.m,expEmitDr=pendingEmitNet.dr,expEmitDg=pendingEmitNet.dg;
-			const expEmitDb=pendingEmitNet.db,expEmitE=pendingEmitNet.E;
-			try{
-				await readPool.statsRead.mapAsync(GPUMapMode.READ);
-				const buf=readPool.statsRead.getMappedRange();
-				if(readGeneration===statsGeneration){
-					readbackArray.set(new Float32Array(buf));
-					statsCache.frame=readFrame;
-					statsCache.totals.m=readbackArray[0];
-					statsCache.totals.dr=readbackArray[1];
-					statsCache.totals.dg=readbackArray[2];
-					statsCache.totals.db=readbackArray[3];
-					statsCache.totals.E=readbackArray[4];
-					const eInjM=readbackArray[stats.IDX_EMIT_INJ_M],eInjDr=readbackArray[stats.IDX_EMIT_INJ_DR];
-					const eInjDg=readbackArray[stats.IDX_EMIT_INJ_DG],eInjDb=readbackArray[stats.IDX_EMIT_INJ_DB];
-					const eInjE=readbackArray[stats.IDX_EMIT_INJ_E];
-					const eRemM=readbackArray[stats.IDX_EMIT_REM_M],eRemDr=readbackArray[stats.IDX_EMIT_REM_DR];
-					const eRemDg=readbackArray[stats.IDX_EMIT_REM_DG],eRemDb=readbackArray[stats.IDX_EMIT_REM_DB];
-					const eRemE=readbackArray[stats.IDX_EMIT_REM_E];
-					const eNetM=eInjM-eRemM,eNetDr=eInjDr-eRemDr,eNetDg=eInjDg-eRemDg;
-					const eNetDb=eInjDb-eRemDb,eNetE=eInjE-eRemE;
-					statsCache.expected.m=expM-expEmitM+eNetM;
-					statsCache.expected.dr=expDr-expEmitDr+eNetDr;
-					statsCache.expected.dg=expDg-expEmitDg+eNetDg;
-					statsCache.expected.db=expDb-expEmitDb+eNetDb;
-					statsCache.mins.m=readbackArray[5];
-					statsCache.mins.dr=readbackArray[6];
-					statsCache.mins.dg=readbackArray[7];
-					statsCache.mins.db=readbackArray[8];
-					statsCache.mins.E=readbackArray[9];
-					statsCache.maxM=readbackArray[10];
-					statsCache.cntNeg=readbackArray[11];
-					statsCache.cntOver=readbackArray[12];
-					statsCache.motion.maxVel=readbackArray[13];
-					const pMin=readbackArray[14],pMax=readbackArray[15];
-					statsCache.motion.pMin=pMin;
-					statsCache.motion.pMax=pMax;
-					statsCache.motion.maxDiv=readbackArray[16];
-					const span=Math.max(Math.abs(pMin),Math.abs(pMax),1);
-					pSpanSmooth=span>pSpanSmooth?span:(pSpanSmooth*0.85+span*0.15);
-					cfg.PMin=-pSpanSmooth;
-					cfg.PMax=pSpanSmooth;
-					const heatIn=readbackArray[17],heatOut=readbackArray[18];
-					statsCache.expected.E=expE-expEmitE+eNetE-expHeatNet+(heatIn-heatOut);
-					heatNetKnown=heatIn-heatOut;
-					ledger.heatInE=heatIn;ledger.heatOutE=heatOut;
-					ledger.injectedM+=eInjM-emitInjKnown.m;emitInjKnown.m=eInjM;
-					ledger.injectedDr+=eInjDr-emitInjKnown.dr;emitInjKnown.dr=eInjDr;
-					ledger.injectedDg+=eInjDg-emitInjKnown.dg;emitInjKnown.dg=eInjDg;
-					ledger.injectedDb+=eInjDb-emitInjKnown.db;emitInjKnown.db=eInjDb;
-					ledger.injectedE+=eInjE-emitInjKnown.E;emitInjKnown.E=eInjE;
-					ledger.removedM+=eRemM-emitRemKnown.m;emitRemKnown.m=eRemM;
-					ledger.removedDr+=eRemDr-emitRemKnown.dr;emitRemKnown.dr=eRemDr;
-					ledger.removedDg+=eRemDg-emitRemKnown.dg;emitRemKnown.dg=eRemDg;
-					ledger.removedDb+=eRemDb-emitRemKnown.db;emitRemKnown.db=eRemDb;
-					ledger.removedE+=eRemE-emitRemKnown.E;emitRemKnown.E=eRemE;
-					emitNetKnown.m=eNetM;emitNetKnown.dr=eNetDr;emitNetKnown.dg=eNetDg;
-					emitNetKnown.db=eNetDb;emitNetKnown.E=eNetE;
-					cfg.rhoMean=(ledger.initialM+ledger.injectedM-ledger.removedM)/(cfg.N*cfg.N);
-					statsCache.thermal.TMin=readbackArray[19];
-					statsCache.thermal.TMax=readbackArray[20];
-					statsCache.thermal.TMean=readbackArray[21];
-					statsCache.thermal.kinetic=readbackArray[22];
-					statsCache.thermal.heatIn=heatIn;
-					statsCache.thermal.heatOut=heatOut;
-					for(let k=0;k<6;k++)phaseCounts[k]=Math.round(readbackArray[23+k]);
-					diag.sSaturated=Math.round(readbackArray[29]);
-					// solve residual is slots 32/33, captured before transport. slots 34/35
-					// are the same pressure after transport and phase: coefficient drift.
-					const poissonRes=readbackArray[stats.IDX_POISSON_RES],poissonRhs=readbackArray[stats.IDX_POISSON_RHS];
-					const poissonDrift=readbackArray[stats.IDX_POISSON_DRIFT];
-					diag.poissonRes=poissonRes;
-					diag.poissonRhs=poissonRhs;
-					diag.poissonRel=poissonRhs>0?poissonRes/poissonRhs:0;
-					diag.poissonDrift=poissonDrift;
-					const poissonDriftRhs=readbackArray[stats.IDX_POISSON_DRIFT_RHS];
-					diag.poissonDriftRhs=poissonDriftRhs;
-					// same formula as the pre-split true column: post-step residual
-					// over the post-step rhs, not the solve rhs.
-					diag.poissonDriftRel=poissonDriftRhs>0?poissonDrift/poissonDriftRhs:0;
-					ledger.latentChargedE=readbackArray[30];
-					ledger.frozenMomentum=readbackArray[31];
+				if(mask&CH_PHASE&&phaseGeneration===generation&&phaseEventMod&&phaseEventState){
+					copyFloats(view,readSlots.phaseEvents.f,phaseEventRaw);
+					fired=phaseEventMod.ingest(phaseEventState,phaseEventRaw,phaseFrame);
 				}
-				readPool.statsRead.unmap();
 			}catch(e){
-				console.error("stats readback failed",e);
+				console.error("readback failed",e);
 			}
-			readbackInFlight=false;
+			if(mapped)readPool.readback.unmap();
+			readInFlight=false;
+			if(fired&&phaseChangeCb)phaseChangeCb(phaseEventState.batch);
+		}
+		function ingestStats(view,readFrame){
+				const expM=pendingExpected.m,expDr=pendingExpected.dr,expDg=pendingExpected.dg;
+				const expDb=pendingExpected.db,expE=pendingExpected.E,expHeatNet=pendingHeatNet;
+				const expEmitM=pendingEmitNet.m,expEmitDr=pendingEmitNet.dr,expEmitDg=pendingEmitNet.dg;
+				const expEmitDb=pendingEmitNet.db,expEmitE=pendingEmitNet.E;
+			copyFloats(view,readSlots.stats.f,readbackArray);
+			statsCache.frame=readFrame;
+			statsCache.totals.m=readbackArray[0];
+			statsCache.totals.dr=readbackArray[1];
+			statsCache.totals.dg=readbackArray[2];
+			statsCache.totals.db=readbackArray[3];
+			statsCache.totals.E=readbackArray[4];
+			const eInjM=readbackArray[stats.IDX_EMIT_INJ_M],eInjDr=readbackArray[stats.IDX_EMIT_INJ_DR];
+			const eInjDg=readbackArray[stats.IDX_EMIT_INJ_DG],eInjDb=readbackArray[stats.IDX_EMIT_INJ_DB];
+			const eInjE=readbackArray[stats.IDX_EMIT_INJ_E];
+			const eRemM=readbackArray[stats.IDX_EMIT_REM_M],eRemDr=readbackArray[stats.IDX_EMIT_REM_DR];
+			const eRemDg=readbackArray[stats.IDX_EMIT_REM_DG],eRemDb=readbackArray[stats.IDX_EMIT_REM_DB];
+			const eRemE=readbackArray[stats.IDX_EMIT_REM_E];
+			const eNetM=eInjM-eRemM,eNetDr=eInjDr-eRemDr,eNetDg=eInjDg-eRemDg;
+			const eNetDb=eInjDb-eRemDb,eNetE=eInjE-eRemE;
+			statsCache.expected.m=expM-expEmitM+eNetM;
+			statsCache.expected.dr=expDr-expEmitDr+eNetDr;
+			statsCache.expected.dg=expDg-expEmitDg+eNetDg;
+			statsCache.expected.db=expDb-expEmitDb+eNetDb;
+			statsCache.mins.m=readbackArray[5];
+			statsCache.mins.dr=readbackArray[6];
+			statsCache.mins.dg=readbackArray[7];
+			statsCache.mins.db=readbackArray[8];
+			statsCache.mins.E=readbackArray[9];
+			statsCache.maxM=readbackArray[10];
+			statsCache.cntNeg=readbackArray[11];
+			statsCache.cntOver=readbackArray[12];
+			statsCache.motion.maxVel=readbackArray[13];
+			const pMin=readbackArray[14],pMax=readbackArray[15];
+			statsCache.motion.pMin=pMin;
+			statsCache.motion.pMax=pMax;
+			statsCache.motion.maxDiv=readbackArray[16];
+			const span=Math.max(Math.abs(pMin),Math.abs(pMax),1);
+			pSpanSmooth=span>pSpanSmooth?span:(pSpanSmooth*0.85+span*0.15);
+			cfg.PMin=-pSpanSmooth;
+			cfg.PMax=pSpanSmooth;
+			const heatIn=readbackArray[17],heatOut=readbackArray[18];
+			statsCache.expected.E=expE-expEmitE+eNetE-expHeatNet+(heatIn-heatOut);
+			heatNetKnown=heatIn-heatOut;
+			ledger.heatInE=heatIn;ledger.heatOutE=heatOut;
+			ledger.injectedM+=eInjM-emitInjKnown.m;emitInjKnown.m=eInjM;
+			ledger.injectedDr+=eInjDr-emitInjKnown.dr;emitInjKnown.dr=eInjDr;
+			ledger.injectedDg+=eInjDg-emitInjKnown.dg;emitInjKnown.dg=eInjDg;
+			ledger.injectedDb+=eInjDb-emitInjKnown.db;emitInjKnown.db=eInjDb;
+			ledger.injectedE+=eInjE-emitInjKnown.E;emitInjKnown.E=eInjE;
+			ledger.removedM+=eRemM-emitRemKnown.m;emitRemKnown.m=eRemM;
+			ledger.removedDr+=eRemDr-emitRemKnown.dr;emitRemKnown.dr=eRemDr;
+			ledger.removedDg+=eRemDg-emitRemKnown.dg;emitRemKnown.dg=eRemDg;
+			ledger.removedDb+=eRemDb-emitRemKnown.db;emitRemKnown.db=eRemDb;
+			ledger.removedE+=eRemE-emitRemKnown.E;emitRemKnown.E=eRemE;
+			emitNetKnown.m=eNetM;emitNetKnown.dr=eNetDr;emitNetKnown.dg=eNetDg;
+			emitNetKnown.db=eNetDb;emitNetKnown.E=eNetE;
+			cfg.rhoMean=(ledger.initialM+ledger.injectedM-ledger.removedM)/(cfg.N*cfg.N);
+			statsCache.thermal.TMin=readbackArray[19];
+			statsCache.thermal.TMax=readbackArray[20];
+			statsCache.thermal.TMean=readbackArray[21];
+			statsCache.thermal.kinetic=readbackArray[22];
+			statsCache.thermal.heatIn=heatIn;
+			statsCache.thermal.heatOut=heatOut;
+			for(let k=0;k<6;k++)phaseCounts[k]=Math.round(readbackArray[23+k]);
+			diag.sSaturated=Math.round(readbackArray[29]);
+			// solve residual is slots 32/33, captured before transport. slots 34/35
+			// are the same pressure after transport and phase: coefficient drift.
+			const poissonRes=readbackArray[stats.IDX_POISSON_RES],poissonRhs=readbackArray[stats.IDX_POISSON_RHS];
+			const poissonDrift=readbackArray[stats.IDX_POISSON_DRIFT];
+			diag.poissonRes=poissonRes;
+			diag.poissonRhs=poissonRhs;
+			diag.poissonRel=poissonRhs>0?poissonRes/poissonRhs:0;
+			diag.poissonDrift=poissonDrift;
+			const poissonDriftRhs=readbackArray[stats.IDX_POISSON_DRIFT_RHS];
+			diag.poissonDriftRhs=poissonDriftRhs;
+			// same formula as the pre-split true column: post-step residual
+			// over the post-step rhs, not the solve rhs.
+			diag.poissonDriftRel=poissonDriftRhs>0?poissonDrift/poissonDriftRhs:0;
+			ledger.latentChargedE=readbackArray[30];
+			ledger.frozenMomentum=readbackArray[31];
 		}
 		function getStats(){
 			statsView.frame=frameCount;
@@ -797,11 +771,8 @@
 			const snap=saveMod.unpack(buf,cfg);
 			statsGeneration++;
 			if(prof)prof.invalidate();
-			pendingRead=false;
-			buoyPending=false;
+			readMask=0;
 			buoyGeneration=statsGeneration;
-			probePending=false;
-			phasePending=false;
 			phaseGeneration=statsGeneration;
 			phaseSeedNeeded=false;
 			const w=cfg.texW,h=cfg.texH;
@@ -906,6 +877,11 @@
 			cfg.texH=newN+2;
 			pool=fields.createPool(device,newN,cfg.mgCoarsen);
 			groups=passes.makeBindGroups(device,pipes,pool);
+			// the slot layout is grid independent, but the buffer and its cached map
+			// belong to the pool that was just destroyed
+			readSlots=pool.readSlots;
+			mappedBuffer=null;
+			mappedView=null;
 			flagsMirror=new Uint8Array(cfg.texW*cfg.texH*4);
 			if(phaseEventMod&&phaseEventState)phaseEventMod.resize(phaseEventState,cfg.texW,cfg.texH);
 			canvas.width=newN;

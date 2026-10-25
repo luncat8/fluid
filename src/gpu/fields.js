@@ -8,6 +8,28 @@
 	const STATS=Fluid.core.stats;
 	// probe table layout (slot count, stride, total floats) is owned by src/core/probes.js
 	const PROBES=Fluid.core.probes;
+	// every async readback channel lands in one map-read buffer, one 256-byte-aligned
+	// slot each: a frame costs one mapAsync and one mapped view, not one per channel.
+	const SLOT_ALIGN=256;
+	// channel order is the layout: stats, buoy sample, probe table, phase events
+	const READ_CHANNELS=["stats","buoy","probes","phaseEvents"];
+	function readbackLayout(){
+		const buoyLen=Fluid.core.buoy?Fluid.core.buoy.SAMPLE_LEN:6;
+		const lens={
+			stats:STATS.STATS_LEN,
+			buoy:buoyLen,
+			probes:PROBES.LEN,
+			phaseEvents:STATS.PHASE_EVENT_LEN
+		};
+		const slots={};
+		let bytes=0;
+		for(const name of READ_CHANNELS){
+			const len=lens[name];
+			slots[name]={name,off:bytes,f:bytes/4,len,bytes:len*4};
+			bytes+=Math.ceil(len*4/SLOT_ALIGN)*SLOT_ALIGN;
+		}
+		return {slots,totalBytes:bytes};
+	}
 	function texUsage(){
 		return GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.STORAGE_BINDING|GPUTextureUsage.COPY_SRC|GPUTextureUsage.COPY_DST;
 	}
@@ -68,18 +90,17 @@
 			params:null,
 			stats:null,
 			statsPart:null,
-			statsRead:null,
 			buoy:null,
-			buoyRead:null,
 			probes:null,
-			probesRead:null,
 			emitters:null,
 			emitterLedger:null,
 			colliders:null,
 			phasePrev:null,
 			phaseRow:null,
 			phaseEvents:null,
-			phaseEventsRead:null,
+			readback:null,
+			readSlots:null,
+			readBytes:0,
 			dims:null,
 			numWorkgroups:0,
 			workgroupX:0,workgroupY:0
@@ -136,12 +157,9 @@
 		pool.statsPart=device.createBuffer({label:"statsPart",size:statsPartSize,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
 		const statsBytes=STATS.STATS_LEN*4;
 		pool.stats=device.createBuffer({label:"stats",size:statsBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
-		pool.statsRead=device.createBuffer({label:"statsRead",size:statsBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		pool.buoy=device.createBuffer({label:"buoy",size:128,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
-		pool.buoyRead=device.createBuffer({label:"buoyRead",size:128,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		const probeBytes=PROBES.LEN*4;
 		pool.probes=device.createBuffer({label:"probes",size:probeBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
-		pool.probesRead=device.createBuffer({label:"probesRead",size:probeBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		const emitBytes=(Fluid.core.emitters?Fluid.core.emitters.LEN:528)*4;
 		pool.emitters=device.createBuffer({label:"emitters",size:emitBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
 		const emitLedgerBytes=(STATS.EMIT_LEDGER_LEN||20)*4;
@@ -153,7 +171,10 @@
 		pool.phaseRow=device.createBuffer({label:"phaseRow",size:phaseRowBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
 		const phaseEventBytes=(STATS.PHASE_EVENT_LEN||560)*4;
 		pool.phaseEvents=device.createBuffer({label:"phaseEvents",size:phaseEventBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
-		pool.phaseEventsRead=device.createBuffer({label:"phaseEventsRead",size:phaseEventBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+		const readLayout=readbackLayout();
+		pool.readSlots=readLayout.slots;
+		pool.readBytes=readLayout.totalBytes;
+		pool.readback=device.createBuffer({label:"readback",size:pool.readBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
 		pool.dims=device.createBuffer({label:"dims",size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
 		const dimsArr=new Uint32Array([pool.numWorkgroups*PARTIAL_STRIDE,0,0,0]);
 		device.queue.writeBuffer(pool.dims,0,dimsArr);
@@ -170,7 +191,7 @@
 			pool.mgMass,pool.mgFlags,pool.mgDiv,pool.mgPress.tex[0],pool.mgPress.tex[1]];
 	}
 	function poolBuffers(pool){
-		return [pool.params,pool.stats,pool.statsPart,pool.statsRead,pool.buoy,pool.buoyRead,pool.probes,pool.probesRead,pool.emitters,pool.emitterLedger,pool.colliders,pool.phasePrev,pool.phaseRow,pool.phaseEvents,pool.phaseEventsRead,pool.dims,pool.mgParams];
+		return [pool.params,pool.stats,pool.statsPart,pool.buoy,pool.probes,pool.emitters,pool.emitterLedger,pool.colliders,pool.phasePrev,pool.phaseRow,pool.phaseEvents,pool.readback,pool.dims,pool.mgParams];
 	}
 	function textureBytes(t){
 		if(!t||!t.fluidSize)return 0;
@@ -229,6 +250,6 @@
 		else data=new Float32Array(size*4);
 		writeTextureRect(device,texture,texW,texH,format,data);
 	}
-	Fluid.gpu.fields={createPool,destroyPool,swap,curTex,writeTextureRect,writePatch,clearTexture,memoryReport,poolTextures,poolBuffers,texBpp,PATCH};
+	Fluid.gpu.fields={createPool,destroyPool,swap,curTex,writeTextureRect,writePatch,clearTexture,memoryReport,poolTextures,poolBuffers,texBpp,PATCH,readbackLayout,SLOT_ALIGN,READ_CHANNELS};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.gpu.fields;
 })(globalThis);

@@ -8,6 +8,11 @@ globalThis.GPUTextureUsage = globalThis.GPUTextureUsage || { COPY_SRC: 1, COPY_D
 globalThis.GPUShaderStage = globalThis.GPUShaderStage || { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 };
 globalThis.GPUMapMode = globalThis.GPUMapMode || { READ: 1, WRITE: 2 };
 
+// structuredClone with transfer is the portable way to detach an ArrayBuffer
+function detach(buffer) {
+	if (!buffer || buffer.byteLength === 0) return;
+	structuredClone(buffer, { transfer: [buffer] });
+}
 function newSink() {
 	return { modules: [], writes: [], pipeOrder: [], bindings: [], copies: [], destroyed: [] };
 }
@@ -23,21 +28,44 @@ function texBpp(fmt) {
 function create(patterns) {
 	const sink = newSink();
 	const pat = patterns || {};
-	const counts = { buffers: 0, textures: 0, dispatches: 0, copies: 0, buffersAlive: 0, texturesAlive: 0 };
+	const counts = { buffers: 0, textures: 0, dispatches: 0, copies: 0, maps: 0, buffersAlive: 0, texturesAlive: 0 };
 	function makeBuffer(desc) {
 		counts.buffers++;
 		counts.buffersAlive++;
 		const buf = new ArrayBuffer(desc.size);
+		// map semantics follow the spec closely enough to catch a cached view: every
+		// mapAsync takes a snapshot of the requested range, getMappedRange hands out
+		// one ArrayBuffer per (offset,size) pair for that map, and unmap detaches them
+		// all. a view kept across frames therefore throws or reads zeros here exactly
+		// as it would on a driver, instead of silently appearing to work.
+		let mappedBytes = null, mappedOff = 0, mappedSize = 0, mappedRanges = new Map();
 		const b = {
 			label: desc.label, size: desc.size, usage: desc.usage, _buf: buf, destroyed: false,
-			getMappedRange(offset, size) {
-				if (!offset && size === undefined) return buf;
-				const off = offset || 0;
-				const len = size !== undefined ? size : (buf.byteLength - off);
-				return buf.slice(off, off + len);
+			mapAsync(mode, offset, size) {
+				counts.maps++;
+				mappedOff = offset || 0;
+				mappedSize = size !== undefined ? size : buf.byteLength - mappedOff;
+				mappedBytes = buf.slice(mappedOff, mappedOff + mappedSize);
+				mappedRanges.clear();
+				return Promise.resolve();
 			},
-			mapAsync() { return Promise.resolve(); },
-			unmap() {},
+			getMappedRange(offset, size) {
+				if (!mappedBytes) throw new Error("getMappedRange before mapAsync: " + desc.label);
+				const off = (offset || 0) - mappedOff;
+				const len = size !== undefined ? size : mappedBytes.byteLength - off;
+				const key = off + ":" + len;
+				let range = mappedRanges.get(key);
+				if (!range) {
+					range = mappedBytes.slice(off, off + len);
+					mappedRanges.set(key, range);
+				}
+				return range;
+			},
+			unmap() {
+				for (const range of mappedRanges.values()) detach(range);
+				mappedRanges.clear();
+				mappedBytes = null;
+			},
 			destroy() {
 				if (this.destroyed) return;
 				this.destroyed = true;
@@ -59,7 +87,7 @@ function create(patterns) {
 			beginRenderPass: () => ({ setPipeline() {}, setBindGroup() {}, draw() {}, end() {} }),
 			copyBufferToBuffer(src, so, dst, doff, size) {
 				counts.copies++;
-				sink.copies.push([labelOf(src), labelOf(dst), size]);
+				sink.copies.push([labelOf(src), labelOf(dst), size, so || 0, doff || 0]);
 				const pattern = pat[labelOf(src)];
 				if (pattern) {
 					new Float32Array(dst._buf, doff || 0, pattern.length).set(pattern);

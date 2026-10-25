@@ -1036,3 +1036,34 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   steps allocate `0` typed arrays or ArrayBuffers in `src/`. The remaining allocations in the
   frame's async tail are one view per `mapAsync` (`new Float32Array(getMappedRange())`),
   which is a mapped-range lifetime question rather than a hot-path one.
+
+## 2026-10-25 one readback buffer, and what getMappedRange really hands back
+
+- pitfall (WebGPU mapping): `GPUBuffer.getMappedRange()` returns an `ArrayBuffer`, repeated
+  calls within one map return the same one per (offset,size), and `unmap()` **detaches** it.
+  A typed-array view over it is therefore valid only until the next `unmap()`; caching
+  `new Float32Array(getMappedRange())` across frames does not save the allocation, it keeps a
+  detached view that throws on first read. The per-map floor is one driver `ArrayBuffer` plus
+  one view. Saving the allocation means not reading the bytes at all, so the only real lever
+  is the **number of maps**. Consolidating the stats, buoy, probe and phase-event readbacks
+  into one buffer with a 256-byte-aligned slot each cut a step+poll cycle from 3 maps and 3
+  views to 1 and 1. Copy offsets must stay 4-byte aligned (`copyBufferToBuffer`) and map
+  offsets 8-byte aligned (`mapAsync`); 256-byte slots satisfy both with room to spare.
+- pitfall (a mock kinder than the spec is a test that cannot fail): the recording mock device
+  returned its backing `ArrayBuffer` from `getMappedRange()` and never detached it, so a
+  cross-frame cached view would have passed every headless suite and broken on the first real
+  driver. Make a readback mock hand out a snapshot per `mapAsync`, one `ArrayBuffer` per
+  (offset,size), and detach them all on `unmap` (`structuredClone(ab,{transfer:[ab]})` is the
+  portable detach in node). Then an illegal view fails in the same place a driver would.
+- skill (counting an async path): the `a6` probe counts only a synchronous window, which by
+  construction excludes the `mapAsync` continuation where the view is built. The same probe
+  works across awaits if the flag is simply left on for the whole step+poll cycle; on the
+  mock, 40 cycles then report `40 maps, 40x Float32Array @ src/gpu/solver.js`. Keep the
+  positive control (`maps` must be ≥ cycles) so a poll that stops mapping cannot pass as
+  "0 allocations".
+- finding (one in-flight flag is enough): storage buffers keep their newest values, so
+  skipping a copy while a map is open costs one frame of staleness, never a sample. That is
+  why four per-channel pending/in-flight pairs could collapse into one `readMask` bitmask and
+  one `readInFlight` flag without weakening any staleness guarantee - but capture the
+  expected totals at *encode* time, next to the copy, or stats can be paired with another
+  frame's ledger.
