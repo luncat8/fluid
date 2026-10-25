@@ -17,7 +17,8 @@ const QUICK_SUITES = [
 	"input.js",
 	"controls.js",
 	"ui.js",
-	"engine.js"
+	"engine.js",
+	"pages.js"
 ];
 const FULL_SUITES = [
 	"conformance.js",
@@ -39,7 +40,8 @@ const FULL_SUITES = [
 	"input.js",
 	"controls.js",
 	"ui.js",
-	"engine.js"
+	"engine.js",
+	"pages.js"
 ];
 const args = process.argv.slice(2);
 const withGpu = args.includes("--gpu");

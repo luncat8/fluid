@@ -122,13 +122,15 @@ function frame(now) {
 `examples/demo.html` is the reference integration; `experiments/engine.js` is the headless
 contract for the same calls, and `experiments/api-test.html` (`experiments/api-test.js`) runs
 20 instrumented `create`/`step`/`serialize`/`deserialize`/`destroy` cycles plus a 100-step
-deterministic replay test on a WebGPU device.
+deterministic replay test on a WebGPU device. The same suite function runs headlessly on the
+recording mock device from `experiments/engine.js`, so the page's JavaScript is covered even
+though the device run needs a browser.
 
 ## Validation
 
 Run the portable CPU, UI-contract and recording-GPU-mock suites together with
 `node experiments/run-all.js`. This is the full profile; `--quick` runs the fast
-numerical/UI/plumbing checks without the longer numerical histories (~7 s here versus
+numerical/UI/plumbing checks without the longer numerical histories (~10 s here versus
 about 10.5 min for the full run). The runner continues
 after a suite fails, reports per-suite/total durations, and exits nonzero if any
 suite fails. To keep a single, timestamped transcript under `experiments/logs/`,
@@ -179,8 +181,14 @@ single writer, click, keyboard, hover gating and radio state). Run
 focus handling, and `node experiments/controls.js` for slider drag ownership and
 configuration synchronization. `node experiments/engine.js` is the engine contract:
 windowed pacing rates, high-refresh pacing, queue backpressure, pause/single-step,
-stats and probe readbacks, the view writer, input attach/detach, resize, teardown and
-the demo page. `node experiments/transport-roundoff.js` reproduces f32
+stats and probe readbacks, the view writer, input attach/detach, resize, teardown, the
+demo page, and the `a6` hot-path audit (200 `update`/`render`/`stats`/`sample` calls and
+100 CPU reference steps allocate no typed array inside `src/`, checked by wrapping the
+array constructors and attributing each allocation to its caller).
+`node experiments/pages.js` checks the wiring of every HTML runner: each
+`<script src>` resolves, every `Fluid.*` namespace a loaded script or the page's inline
+script uses is defined by another loaded script, and the scripts survive a load in a stub
+browser in document order. `node experiments/transport-roundoff.js` reproduces f32
 unit-outflow overshoot and checks the positive-weight transport (CPU numeric and
 WGSL structure, not GPU execution). `node experiments/hud.js` checks snapshot
 context, minima, rates and warnings. The mock runs no shader,

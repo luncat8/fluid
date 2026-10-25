@@ -828,6 +828,115 @@ async function testPhaseEvents() {
 	sim.destroy();
 }
 
+// ---- a6: the engine's synchronous per-frame path must not allocate ----
+// patches the array constructors while frames run, attributes every allocation to
+// its innermost caller outside this harness, and counts only the synchronous
+// update/step/render/stats/sample window (async readbacks land outside it). the mock
+// device allocates in its own file, so harness churn is excluded and only src/ counts;
+// "total" is the positive control that the detector is alive.
+// note: subarray()/slice() do not run a constructor, so this covers typed arrays and
+// ArrayBuffers (the large allocations), not object literals.
+const ALLOC_CTORS = ["Float32Array", "Float64Array", "Uint8Array", "Uint32Array", "ArrayBuffer"];
+async function auditAllocations(runFrame, warmFrames, frames) {
+	const savedLimit = Error.stackTraceLimit, saved = {};
+	Error.stackTraceLimit = 32;
+	const hits = new Map();
+	let depth = 0, total = 0;
+	function site() {
+		const lines = String(new Error().stack).split("\n");
+		for (let i = 1; i < lines.length; i++) {
+			const m = /(?:\(|at\s+)([^()\s]+):\d+:\d+\)?$/.exec(lines[i].trim());
+			if (m && m[1] !== __filename) return m[1];
+		}
+		return "?";
+	}
+	function record(name) {
+		if (!depth) return;
+		total++;
+		const file = site();
+		if (!file.includes("/src/")) return;
+		const key = name + " @ " + path.relative(root, file);
+		hits.set(key, (hits.get(key) || 0) + 1);
+	}
+	for (const name of ALLOC_CTORS) {
+		const Ctor = globalThis[name];
+		const wrapper = function (...args) {
+			if (depth) record(name);
+			return new Ctor(...args);
+		};
+		Object.setPrototypeOf(wrapper, Ctor);
+		wrapper.prototype = Ctor.prototype;
+		saved[name] = Ctor;
+		globalThis[name] = wrapper;
+	}
+	const frame = async () => {
+		depth++;
+		try {
+			runFrame();
+		} finally {
+			depth--;
+		}
+		await flush(2); // let the in-flight gate clear outside the counted window
+	};
+	try {
+		for (let i = 0; i < warmFrames; i++) await frame();
+		// control: one allocation made by this harness inside the counted window, so a
+		// wrapper that never fires cannot pass as "0 in src/"
+		if (!total) {
+			depth++;
+			new Float32Array(1);
+			depth--;
+		}
+		for (let i = 0; i < frames; i++) await frame();
+	} finally {
+		for (const name of ALLOC_CTORS) globalThis[name] = saved[name];
+		Error.stackTraceLimit = savedLimit;
+	}
+	return { inSrc: [...hits.values()].reduce((sum, n) => sum + n, 0), total, hits };
+}
+
+async function testHotPathAllocations() {
+	// the engine over a plain mock queue: update() steps and renders, and the
+	// completion resolves immediately so every callback can advance
+	const m = mock.create();
+	const sim = await Fluid.engine.create({ width: 0, height: 0 }, {
+		device: m.device, context: mock.mockContext(), format: "bgra8unorm",
+		cfg: { N: 64, scenario: "dam", substepsAuto: false, substepsFixed: 2, statsEvery: 1, probeEvery: 1 }
+	});
+	sim.addProbe(32, 32);
+	const probe = sim.makeProbeSample();
+	const stats = sim.createStats();
+	const startFrame = sim.stats().frame;
+	const warmFrames = 10, auditFrames = 200;
+	const gpu = await auditAllocations(() => {
+		sim.update(1 / 60);
+		sim.render();
+		sim.stats(stats);
+		sim.sample(0, probe);
+	}, warmFrames, auditFrames);
+	const stepped = sim.stats().frame - startFrame;
+	check(stepped === warmFrames + auditFrames, "a6 hot path: the audited frames really advanced the simulation",
+		"frames=" + stepped);
+	check(gpu.total > 0, "a6 hot path: the allocation detector is live (harness allocations seen)",
+		"seen=" + gpu.total);
+	check(gpu.inSrc === 0, "a6 hot path: update()/render()/stats()/sample() allocate no typed arrays in src/",
+		gpu.inSrc ? [...gpu.hits].map(([k, n]) => n + "x " + k).join(", ") : "0 over " + auditFrames + " frames");
+
+	// the cpu reference takes the same contract over its own step
+	const cpuCfg = Object.assign({}, Fluid.core.config.defaults, { N: 32, texW: 34, texH: 34, scenario: "ice" });
+	const cpu = Fluid.core.solver.create(cpuCfg);
+	const cpuStart = cpu.stats().frame;
+	const cpuRes = await auditAllocations(() => {
+		cpu.step(1 / 120);
+		cpu.stats();
+	}, 5, 100);
+	check(cpuRes.total > 0 && cpu.stats().frame - cpuStart === 105,
+		"a6 hot path: the cpu audit ran 105 steps with a live detector", "steps=" + (cpu.stats().frame - cpuStart));
+	check(cpuRes.inSrc === 0, "a6 hot path: Fluid.core.solver.step() allocates no typed arrays in src/",
+		cpuRes.inSrc ? [...cpuRes.hits].map(([k, n]) => n + "x " + k).join(", ") : "0 over 100 steps");
+	sim.destroy();
+}
+
 async function testLifecycleSuite() {
 	const m = mock.create();
 	const res = await Fluid.tests.apiTest.runLifecycleSuite({
@@ -859,6 +968,7 @@ async function testLifecycleSuite() {
 	await testSaveAndLoad();
 	await testPhaseEvents();
 	await testLifecycleSuite();
+	await testHotPathAllocations();
 	console.log("all " + checks + " engine checks pass");
 })().catch(error => {
 	console.error(error);

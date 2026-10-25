@@ -1009,3 +1009,30 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   `pollReadback()` only when `batch.total > 0`.
 
 
+## 2026-10-25 page script graphs and attributing allocations to a file
+
+- pitfall (page wiring): an HTML runner's `<script src>` list is a dependency list, and
+  nothing else validates it. When `src/app/loop.js` became `Fluid.engine.update()` and
+  `src/core/pacing.js`, `experiments/api-test.html` kept the dead tag and lost the new
+  module; the page loaded without an error until `Fluid.engine.create` reached
+  `Fluid.core.pacing.create`, so the only browser-side lifecycle/leak suite was dead and
+  every headless suite stayed green. Node suites `require()` the modules in their own order,
+  so they cannot see the page's graph. Check it headlessly: resolve every `src`, then require
+  that each `Fluid.<ns>.<name>` used by a loaded script is *defined* by another loaded script
+  (`definers` scanned over `src/**/*.js`), and load the scripts in document order inside a
+  `vm` sandbox to catch load-time throws. Do not check "definer before user": classic scripts
+  defer their bodies, so `solver.js` may reference `Fluid.core.emitters` from a function
+  before `emitters.js` runs. `experiments/pages.js` is 17 checks over 4 runners in 0.05 s.
+- skill (allocation audit without a profiler): wrap the array constructors, count while a
+  flag is set, and attribute each hit through `new Error().stack` by taking the first frame
+  outside the harness file. That separates `src/` from the mock device without instrumenting
+  either. Two positive controls matter more than the number itself: the audited window must
+  advance the simulation (or a pacing gate silently skips the frames and "0 allocations" is
+  vacuous), and the harness allocations must still be counted (`1260` here), or a broken
+  wrapper passes. Scope the flag to the synchronous call: async readback continuations run
+  after the `await`, so they are excluded automatically. `subarray`/`slice` and object
+  literals never run a constructor and are outside this technique.
+- finding: 200 engine frames of `update`/`render`/`stats`/`sample` plus 100 CPU reference
+  steps allocate `0` typed arrays or ArrayBuffers in `src/`. The remaining allocations in the
+  frame's async tail are one view per `mapAsync` (`new Float32Array(getMappedRange())`),
+  which is a mapped-range lifetime question rather than a hot-path one.
