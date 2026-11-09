@@ -20,12 +20,11 @@
 		const buoy=Fluid.core.buoy.create(cfg);
 		const buoyRaw=new Float32Array(Fluid.core.buoy.SAMPLE_LEN);
 		const buoyZero=new Float32Array(Fluid.core.buoy.SAMPLE_LEN);
-		let buoyGeneration=0;
+		let buoyFrame=0;
 		// point queries (0.7.0 t5): one table for every game probe, sampled on its own
 		// cadence and copied back through the same single-in-flight rule as stats/buoy
 		const probeTable=coreProbes.create();
 		const probeRaw=new Float32Array(coreProbes.LEN);
-		let probeGeneration=0;
 		let probeFrame=0;
 		const emitterTable=coreEmitters?coreEmitters.create():null;
 		const colliderTable=coreColliders?coreColliders.create():null;
@@ -33,7 +32,6 @@
 		const phaseEventState=phaseEventMod?phaseEventMod.create(cfg.texW,cfg.texH):null;
 		const phaseEventRaw=new Float32Array(stats.PHASE_EVENT_LEN||560);
 		let phaseChangeCb=null;
-		let phaseGeneration=0;
 		let phaseFrame=0;
 		let phaseSeedNeeded=false;
 		const emitLedgerZero=new Float32Array(stats.EMIT_LEDGER_LEN||20);
@@ -57,7 +55,6 @@
 		let mappedBuffer=null;
 		let mappedView=null;
 		let pendingFrame=0;
-		let pendingGeneration=0;
 		let statsGeneration=0;
 		const pendingExpected={m:0,dr:0,dg:0,db:0,E:0};
 		let heatNetKnown=0;
@@ -103,8 +100,6 @@
 			statsGeneration++;
 			if(prof)prof.invalidate();
 			readMask=0;
-			buoyGeneration=statsGeneration;
-			phaseGeneration=statsGeneration;
 			phaseSeedNeeded=false;
 			coreProbes.invalidate(probeTable);
 			device.queue.writeBuffer(pool.buoy,0,buoyZero);
@@ -472,23 +467,20 @@
 					pendingEmitNet.dg=emitNetKnown.dg;pendingEmitNet.db=emitNetKnown.db;
 					pendingEmitNet.E=emitNetKnown.E;
 					pendingFrame=frameCount+1;
-					pendingGeneration=statsGeneration;
 					readMask|=CH_STATS;
 				}
 				if(needBuoy){
 					encoder.copyBufferToBuffer(pool.buoy,0,pool.readback,readSlots.buoy.off,buoyZero.byteLength);
-					buoyGeneration=statsGeneration;
+					buoyFrame=frameCount+1;
 					readMask|=CH_BUOY;
 				}
 				if(needProbe){
 					encoder.copyBufferToBuffer(pool.probes,0,pool.readback,readSlots.probes.off,probeRaw.byteLength);
-					probeGeneration=statsGeneration;
 					probeFrame=frameCount+1;
 					readMask|=CH_PROBES;
 				}
 				if(needPhase){
 					encoder.copyBufferToBuffer(pool.phaseEvents,0,pool.readback,readSlots.phaseEvents.off,phaseEventRaw.byteLength);
-					phaseGeneration=statsGeneration;
 					phaseFrame=frameCount+1;
 					readMask|=CH_PHASE;
 				}
@@ -563,8 +555,10 @@
 		function copyFloats(src,off,dst){
 			for(let i=0;i<dst.length;i++)dst[i]=src[off+i];
 		}
-		// one mapping for every channel the frame copied into the staging buffer; the
-		// generations drop a readback that landed after a reset or a resize
+		// one mapping for every channel the frame copied into the staging buffer. a
+		// reset, resize or load while the map was open bumps statsGeneration, which
+		// makes the whole snapshot belong to the previous field: every channel is
+		// dropped as one, never ingested half-stale.
 		async function pollMap(){
 			if(!readMask||readInFlight)return;
 			const mask=readMask;
@@ -577,18 +571,22 @@
 				await readPool.readback.mapAsync(GPUMapMode.READ);
 				mapped=true;
 				const view=mappedFloats(readPool.readback);
-				if(mask&CH_STATS&&pendingGeneration===generation)ingestStats(view,pendingFrame);
-				if(mask&CH_BUOY&&buoyGeneration===generation){
-					copyFloats(view,readSlots.buoy.f,buoyRaw);
-					buoy.ingest(buoyRaw);
-				}
-				if(mask&CH_PROBES&&probeGeneration===generation){
-					copyFloats(view,readSlots.probes.f,probeRaw);
-					coreProbes.ingest(probeTable,probeRaw,probeFrame);
-				}
-				if(mask&CH_PHASE&&phaseGeneration===generation&&phaseEventMod&&phaseEventState){
-					copyFloats(view,readSlots.phaseEvents.f,phaseEventRaw);
-					fired=phaseEventMod.ingest(phaseEventState,phaseEventRaw,phaseFrame);
+				if(generation!==statsGeneration){
+					// stale snapshot: the field was rebuilt while the map was open
+				}else{
+					if(mask&CH_STATS)ingestStats(view,pendingFrame);
+					if(mask&CH_BUOY){
+						copyFloats(view,readSlots.buoy.f,buoyRaw);
+						buoy.ingest(buoyRaw,buoyFrame);
+					}
+					if(mask&CH_PROBES){
+						copyFloats(view,readSlots.probes.f,probeRaw);
+						coreProbes.ingest(probeTable,probeRaw,probeFrame);
+					}
+					if(mask&CH_PHASE&&phaseEventMod&&phaseEventState){
+						copyFloats(view,readSlots.phaseEvents.f,phaseEventRaw);
+						fired=phaseEventMod.ingest(phaseEventState,phaseEventRaw,phaseFrame);
+					}
 				}
 			}catch(e){
 				console.error("readback failed",e);
@@ -772,8 +770,6 @@
 			statsGeneration++;
 			if(prof)prof.invalidate();
 			readMask=0;
-			buoyGeneration=statsGeneration;
-			phaseGeneration=statsGeneration;
 			phaseSeedNeeded=false;
 			const w=cfg.texW,h=cfg.texH;
 			const f=snap.fields;

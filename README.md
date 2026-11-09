@@ -54,7 +54,9 @@ Dye FCT sharpens RGB tracer fronts, not mass, temperature, or velocity. Compare
 separate reset runs in color view: enabling it cannot recover edges already smeared
 by donor-cell transport. Gravity changes forces, not pass count; a uniform-density,
 uniform-temperature closed box has no density-driven motion. The **Dam float**
-control is a read-only floating marker in the dam scenario, not thermal buoyancy.
+control is a read-only floating marker in the dam scenario, not thermal buoyancy; its
+HUD line also reports the fluid momentum inside the footprint and dP/dt between samples
+(the scale of force a displacing hull would feel), applying nothing to the flow.
 
 Performance readouts distinguish simulation frames/s (target 60), renders/s, and
 browser rAF callbacks/s. Speed is simulated seconds per wall second; CPU encode ms

@@ -772,6 +772,39 @@ async function testSaveAndLoad() {
 		"save/load: destroyed cleanly with 0 live resources");
 }
 
+async function testSaveLoadBuoyMomentum() {
+	// the dam body carries its field sample through save/load: the restore re-derives
+	// the momentum fields from the captured sample and re-anchors dP/dt, so the first
+	// framed sample after a load measures the real change instead of spiking from zeros
+	const buoyPattern = new Float32Array([8, 32, 32, 32, 0, 0.5, 48, 6]);
+	const { sim, m } = await makeSim({
+		N: 64, scenario: "dam", statsEvery: 1, buoySampleEvery: 1,
+		substepsAuto: false, substepsFixed: 2
+	}, { buoy: buoyPattern });
+	const buoyState = () => sim.solver.buoy.state;
+	sim.step(1 / 60);
+	await sim.pollReadback();
+	check(Math.abs(buoyState().momX - 48) < 1e-6 && Math.abs(buoyState().momY - 6) < 1e-6 &&
+		Math.abs(buoyState().uMass - 1.5) < 1e-6 && Math.abs(buoyState().vMass - 0.1875) < 1e-6,
+		"save/load buoy: the momentum sums reach the body through the readback",
+		"mom=(" + buoyState().momX + "," + buoyState().momY + ") uMass=" + buoyState().uMass.toFixed(4));
+	const outBuf = await sim.serialize();
+	sim.reset();
+	check(buoyState().momX === 0 && buoyState().samples === 0,
+		"save/load buoy: reset zeroes the momentum state before restore",
+		"momX=" + buoyState().momX + " samples=" + buoyState().samples);
+	sim.deserialize(outBuf);
+	check(Math.abs(buoyState().momX - 48) < 1e-6 && Math.abs(buoyState().momY - 6) < 1e-6 &&
+		Math.abs(buoyState().uMass - 1.5) < 1e-6 && Math.abs(buoyState().vMass - 0.1875) < 1e-6 &&
+		buoyState().forceX === 0 && buoyState().forceY === 0 && buoyState().samples === 1,
+		"save/load buoy: restore re-derives momentum from the capture and re-anchors dP/dt",
+		"mom=(" + buoyState().momX + "," + buoyState().momY + ") uMass=" + buoyState().uMass.toFixed(4) +
+		" F=(" + buoyState().forceX + "," + buoyState().forceY + ") samples=" + buoyState().samples);
+	sim.destroy();
+	check(m.counts.buffersAlive === 0 && m.counts.texturesAlive === 0,
+		"save/load buoy: destroyed cleanly with 0 live resources");
+}
+
 async function testPhaseEvents() {
 	const phasePattern = new Float32Array(Fluid.core.stats.PHASE_EVENT_LEN);
 	phasePattern[0] = 3; // total transitions
@@ -974,7 +1007,7 @@ async function testHotPathAllocations() {
 
 async function testReadbackAllocations() {
 	// stats every frame, one probe and the dam body, so a cycle maps all three channels
-	const m = mock.create({ buoy: new Float32Array([8, 32, 32, 32, 0, 0.5]) });
+	const m = mock.create({ buoy: new Float32Array([8, 32, 32, 32, 0, 0.5, 32, 0]) });
 	const sim = await Fluid.engine.create({ width: 0, height: 0 }, {
 		device: m.device, context: mock.mockContext(), format: "bgra8unorm",
 		cfg: { N: 64, scenario: "dam", statsEvery: 1, probeEvery: 1, buoySampleEvery: 1, substepsAuto: false, substepsFixed: 2 }
@@ -1028,6 +1061,7 @@ async function testLifecycleSuite() {
 	await testLabWiring();
 	await testDemoPage();
 	await testSaveAndLoad();
+	await testSaveLoadBuoyMomentum();
 	await testPhaseEvents();
 	await testLifecycleSuite();
 	await testHotPathAllocations();

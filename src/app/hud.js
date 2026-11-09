@@ -26,7 +26,8 @@
 			if(!b)return "buoy: no solver";
 			if(!b.active)return cfg.scenario==="dam"?"dam float: disabled (y to enable)":"dam float: inactive (dam scenario only)";
 			return "buoy  y="+b.cy.toFixed(1)+"  vy="+b.vy.toFixed(2)+"  submerged="+(b.sub*100).toFixed(0)+
-				"%  blue/cell="+b.blue.toFixed(3)+"  sample#"+b.samples;
+				"%  blue/cell="+b.blue.toFixed(3)+"  sample#"+b.samples+
+				"  mom=("+b.momX.toFixed(2)+","+b.momY.toFixed(2)+")  F=("+b.forceX.toFixed(2)+","+b.forceY.toFixed(2)+")";
 		}
 		function fmt(v){
 			if(!isFinite(v))return String(v);

@@ -80,7 +80,7 @@ function makeBuoyRunner(cfg, buoy) {
 	const pending = new Float32Array(buoyMod.SAMPLE_LEN);
 	let ready = false;
 	return function step(sim, f) {
-		if (ready) { buoy.ingest(pending); ready = false; }
+		if (ready) { buoy.ingest(pending, f + 1); ready = false; }
 		buoy.march(cfg.frameDt);
 		if (!buoy.state.active || f % Math.max(1, cfg.buoySampleEvery) !== 0) return;
 		const mass = sim.mass.cur === 0 ? sim.mass.a : sim.mass.b;
@@ -406,6 +406,56 @@ function testBuoyModel() {
 	check("buoy model: one frame of full lift moves it by well under a cell",
 		Math.abs(buoy.state.cy - y0) < 0.1 && Math.abs(buoy.state.vy) < 5,
 		"dy=" + (buoy.state.cy - y0).toExponential(2) + " vy=" + buoy.state.vy.toFixed(2));
+}
+
+// 7e. the buoy momentum diagnostic (0.7.3): mass-weighted sums, the mass-weighted
+// mean, and dP/dt between framed ingests. the body reports, never applies.
+function testBuoyMomentum() {
+	const cfg = makeCfg({ N: 512, scenario: "dam", buoySampleEvery: 1 });
+	const buoy = buoyMod.create(cfg);
+	const s = new Float32Array(buoyMod.SAMPLE_LEN);
+	const area = buoy.state.w * buoy.state.h;
+	// count-weighted and mass-weighted means differ when spray carries little mass:
+	// 2 cells with u = 1 and 4 and masses 1 and 3 -> ux=2.5, uMass=(1+12)/4=3.25
+	s.fill(0);
+	s[0] = area; s[1] = 4; s[2] = 2; s[3] = 5; s[4] = 0; s[5] = 1; s[6] = 13; s[7] = 2;
+	buoy.ingest(s, 10);
+	const st = buoy.state;
+	check("buoy momentum: mass-weighted sums and mean, not the count-weighted mean",
+		st.momX === 13 && st.momY === 2 && Math.abs(st.uMass - 3.25) < 1e-6 &&
+		Math.abs(st.vMass - 0.5) < 1e-6 && Math.abs(st.ux - 2.5) < 1e-6,
+		"mom=(" + st.momX + "," + st.momY + ") uMass=" + st.uMass.toFixed(3) + " ux=" + st.ux.toFixed(3));
+	check("buoy momentum: the first framed sample reports zero force",
+		st.forceX === 0 && st.forceY === 0,
+		"F=(" + st.forceX + "," + st.forceY + ")");
+	s[6] = 23; s[7] = 12;
+	buoy.ingest(s, 20);
+	const expectF = 10 / (10 * cfg.frameDt);
+	check("buoy momentum: dP/dt between framed ingests is (P2-P1)/(dt*frames)",
+		Math.abs(st.forceX - expectF) < 1e-3 && Math.abs(st.forceY - expectF) < 1e-3,
+		"F=(" + st.forceX.toFixed(4) + "," + st.forceY.toFixed(4) + ") expected " + expectF.toFixed(4));
+	// a reset re-bases the derivative: the next framed sample reports zero, not a spike
+	buoy.reset();
+	buoy.ingest(s, 30);
+	check("buoy momentum: reset re-bases the derivative baseline",
+		buoy.state.forceX === 0 && buoy.state.forceY === 0 && buoy.state.samples === 1,
+		"F=(" + buoy.state.forceX + "," + buoy.state.forceY + ") samples=" + buoy.state.samples);
+	// syncDerived (the save/load path): the derived fields come from the sample, the
+	// baseline re-anchors to cfg.frame, so the next ingest measures the real change
+	s[6] = 42; s[7] = 8;
+	buoy.sample.set(s);
+	cfg.frame = 30;
+	buoy.syncDerived();
+	check("buoy momentum: syncDerived recomputes from the sample and re-bases the baseline",
+		Math.abs(buoy.state.momX - 42) < 1e-6 && Math.abs(buoy.state.uMass - 10.5) < 1e-6 &&
+		buoy.state.forceX === 0 && buoy.state.forceY === 0 && buoy.state.momY === 8,
+		"mom=(" + buoy.state.momX + "," + buoy.state.momY + ") uMass=" + buoy.state.uMass.toFixed(3));
+	s[6] = 48;
+	buoy.ingest(s, 31);
+	const expectF1 = 6 / cfg.frameDt;
+	check("buoy momentum: the sample after syncDerived measures from the synced point",
+		Math.abs(buoy.state.forceX - expectF1) < 1e-2,
+		"F=" + buoy.state.forceX.toFixed(2) + " expected " + expectF1.toFixed(2));
 }
 
 // 8. wall integrity (a8): a one cell wall column holds against a pushed dye blob
@@ -907,6 +957,7 @@ testDam();
 testSubstepPolicy();
 testBuoy();
 testBuoyModel();
+testBuoyMomentum();
 testWall();
 testEmitter();
 testDraw();

@@ -1877,6 +1877,8 @@ var<workgroup> shU: array<f32,64>;
 var<workgroup> shV: array<f32,64>;
 var<workgroup> shMax: array<f32,64>;
 var<workgroup> shCnt: array<f32,64>;
+var<workgroup> shMomX: array<f32,64>;
+var<workgroup> shMomY: array<f32,64>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(local_invocation_index) lid: u32) {
@@ -1888,13 +1890,14 @@ fn main(@builtin(local_invocation_index) lid: u32) {
 	let bh = i32(params.values[91]);
 	if (bw <= 0 || bh <= 0) {
 		if (lid == 0u) {
-			for (var i = 0u; i < 6u; i++) { buoySample[i] = 0.0; }
+			for (var i = 0u; i < 8u; i++) { buoySample[i] = 0.0; }
 		}
 		return;
 	}
 	let wu = u32(bw);
 	let n = u32(bw * bh);
 	var blue = 0.0; var mass = 0.0; var su = 0.0; var sv = 0.0; var mx = 0.0; var cnt = 0.0;
+	var momX = 0.0; var momY = 0.0;
 	var k = lid;
 	loop {
 		if (k >= n) { break; }
@@ -1908,12 +1911,15 @@ fn main(@builtin(local_invocation_index) lid: u32) {
 			let v = textureLoad(velTex, vec2<i32>(cx, cy), 0);
 			su = su + v.r;
 			sv = sv + v.g;
+			momX = momX + v.r * m.a;
+			momY = momY + v.g * m.a;
 			cnt = cnt + 1.0;
 		}
 		k = k + 64u;
 	}
 	shBlue[lid] = blue; shMass[lid] = mass; shU[lid] = su;
 	shV[lid] = sv; shMax[lid] = mx; shCnt[lid] = cnt;
+	shMomX[lid] = momX; shMomY[lid] = momY;
 	workgroupBarrier();
 	var stride = 32u;
 	loop {
@@ -1925,6 +1931,8 @@ fn main(@builtin(local_invocation_index) lid: u32) {
 			shV[lid] = shV[lid] + shV[lid + stride];
 			shMax[lid] = max(shMax[lid], shMax[lid + stride]);
 			shCnt[lid] = shCnt[lid] + shCnt[lid + stride];
+			shMomX[lid] = shMomX[lid] + shMomX[lid + stride];
+			shMomY[lid] = shMomY[lid] + shMomY[lid + stride];
 		}
 		workgroupBarrier();
 		stride = stride >> 1u;
@@ -1936,6 +1944,8 @@ fn main(@builtin(local_invocation_index) lid: u32) {
 		buoySample[3u] = shU[0];
 		buoySample[4u] = shV[0];
 		buoySample[5u] = shMax[0];
+		buoySample[6u] = shMomX[0];
+		buoySample[7u] = shMomY[0];
 	}
 }
 `;

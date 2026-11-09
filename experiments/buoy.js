@@ -63,7 +63,7 @@ function measure(cfgOver, specs) {
 
 function update(r, mass, vel, f, frames) {
 	const b = r.buoy;
-	if (r.ready) { b.ingest(r.pending); r.ready = false; }
+	if (r.ready) { b.ingest(r.pending, f + 1); r.ready = false; }
 	b.march(r.cfg.frameDt);
 	if (b.state.active && f % Math.max(1, r.cfg.buoySampleEvery) === 0) {
 		b.sampleCpu(mass, vel, r.cfg.texW, r.cfg.texH, r.pending);

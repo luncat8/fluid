@@ -14,7 +14,7 @@
 	// channel order is the layout: stats, buoy sample, probe table, phase events
 	const READ_CHANNELS=["stats","buoy","probes","phaseEvents"];
 	function readbackLayout(){
-		const buoyLen=Fluid.core.buoy?Fluid.core.buoy.SAMPLE_LEN:6;
+		const buoyLen=Fluid.core.buoy?Fluid.core.buoy.SAMPLE_LEN:8;
 		const lens={
 			stats:STATS.STATS_LEN,
 			buoy:buoyLen,

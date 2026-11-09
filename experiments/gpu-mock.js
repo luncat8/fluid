@@ -31,8 +31,9 @@ function check(name, ok, detail) {
 // ---- mock device: shared recording mock, never executes shaders ----
 const mock = require("./mock-device.js");
 // what the mock "kernel" leaves in the sample buffer: half a footprint of blue,
-// a rightward flow. the body must read this back as sub=0.5 and neutral lift.
-const BUOY_PATTERN = new Float32Array([8, 32, 32, 32, 0, 0.5]);
+// a rightward flow (u = 1 everywhere, so the mass-weighted momentum equals the mass).
+// the body must read this back as sub=0.5 and neutral lift.
+const BUOY_PATTERN = new Float32Array([8, 32, 32, 32, 0, 0.5, 32, 0]);
 const PATTERNS = { buoy: BUOY_PATTERN };
 
 // one app frame, the shared substep policy the app loop calls
@@ -58,7 +59,7 @@ async function testPlumbing() {
 	const pool = solver.pool;
 	check("gpu pool has the buoy sample buffer and its slot in the shared readback buffer",
 		pool.buoy && pool.buoy.size === 128 && pool.readback && pool.readback.usage === (1 | 8) &&
-		pool.readSlots.buoy.len === 6 && pool.readSlots.buoy.off % Fluid.gpu.fields.SLOT_ALIGN === 0,
+		pool.readSlots.buoy.len === 8 && pool.readSlots.buoy.off % Fluid.gpu.fields.SLOT_ALIGN === 0,
 		"buoy=" + pool.buoy.size + "B readback=" + pool.readback.size + "B slot@" + pool.readSlots.buoy.off);
 	check("the buoySample compute pipeline is compiled with the params struct prefix",
 		sink.modules.some(m => m.label === "buoySample-mod" && /struct Params/.test(m.code) && /@workgroup_size\(64\)/.test(m.code)));
@@ -86,12 +87,19 @@ async function testPlumbing() {
 		Math.abs(solver.buoy.state.ux - 1) < 1e-6 && solver.buoy.state.aY === 0,
 		"sub=" + solver.buoy.state.sub.toFixed(3) + " blue=" + solver.buoy.state.blue.toFixed(3) +
 		" ux=" + solver.buoy.state.ux.toFixed(3) + " aY=" + solver.buoy.state.aY);
+	check("the momentum sums ride the same readback: mom = mass-weighted momentum of the block",
+		Math.abs(solver.buoy.state.momX - 32) < 1e-6 && Math.abs(solver.buoy.state.momY) < 1e-6 &&
+		Math.abs(solver.buoy.state.uMass - 1) < 1e-6 && solver.buoy.state.forceX === 0 &&
+		solver.buoy.state.forceY === 0,
+		"mom=(" + solver.buoy.state.momX.toFixed(2) + "," + solver.buoy.state.momY.toFixed(2) +
+		") uMass=" + solver.buoy.state.uMass.toFixed(3) +
+		" F=(" + solver.buoy.state.forceX.toFixed(2) + "," + solver.buoy.state.forceY.toFixed(2) + ")");
 	check("every dispatch set a bind group, and the sample pass binds four resources",
 		sink.bindings.length === m.counts.dispatches && sink.bindings.includes(4),
 		"dispatches=" + m.counts.dispatches + " bindGroup calls=" + sink.bindings.length);
 	const buoyCopies = sink.copies.filter(c => c[0] === "buoy");
-	check("the buoy sample is copied back 24 bytes (6 floats) into its readback slot",
-		buoyCopies.length > 0 && buoyCopies.every(c => c[1] === "readback" && c[2] === 24 &&
+	check("the buoy sample is copied back 32 bytes (8 floats) into its readback slot",
+		buoyCopies.length > 0 && buoyCopies.every(c => c[1] === "readback" && c[2] === 32 &&
 			c[4] === pool.readSlots.buoy.off),
 		"copies=" + buoyCopies.length + " slots=" + [...new Set(buoyCopies.map(c => c[4]))].join(","));
 	check("the field sample runs after the sim steps and before the display pass",
@@ -291,6 +299,11 @@ function testWgsl() {
 	check("wgsl: buoy_sample is a single workgroup with a workgroup reduction",
 		/@workgroup_size\(64\)/.test(buoy) && /workgroupBarrier\(\)/.test(buoy) && /dispatchWorkgroups\(1\)/.test(
 			Fluid.gpu.passes.encodeBuoySample.toString()));
+	check("wgsl: buoy_sample reduces the mass-weighted momentum sums and writes eight floats",
+		/shMomX: array<f32,64>/.test(buoy) && /shMomY: array<f32,64>/.test(buoy) &&
+		/momX = momX \+ v\.r \* m\.a/.test(buoy) && /momY = momY \+ v\.g \* m\.a/.test(buoy) &&
+		/buoySample\[6u\] = shMomX\[0\]/.test(buoy) && /buoySample\[7u\] = shMomY\[0\]/.test(buoy) &&
+		/for \(var i = 0u; i < 8u; i\+\+\)/.test(buoy));
 	check("wgsl: the display overlay reads the body rectangle through the same slots",
 		/values\[88\]/.test(sh.toDisplay) && /values\[93\]/.test(sh.toDisplay) && /buoyOverlay\(/.test(sh.toDisplay));
 	check("wgsl: solve residual writes slots 32/33, post-step drift writes 34/35",
@@ -324,6 +337,10 @@ function testSampler() {
 	check("cpu sampler: sums the rectangle the gpu kernel walks, half of it blue",
 		raw[0] === 0.5 * cells / 2 && raw[2] === cells && raw[3] === 2 * cells,
 		"blue=" + raw[0] + " count=" + raw[2] + " uSum=" + raw[3]);
+	check("cpu sampler: the mass-weighted momentum sums are raw, and the derived means split clean",
+		raw[6] === 2 * cells && raw[7] === 0 && Math.abs(st.momX - 2 * cells) < 1e-6 &&
+		Math.abs(st.uMass - 2) < 1e-6 && Math.abs(st.vMass) < 1e-6 && st.forceX === 0,
+		"momX=" + raw[6] + " uMass=" + st.uMass.toFixed(3) + " ux=" + st.ux.toFixed(3));
 	check("cpu sampler: half a footprint of blue gives half submersion and neutral lift",
 		Math.abs(st.sub - 0.5) < 1e-6 && Math.abs(st.blue - 0.25) < 1e-6 && Math.abs(st.aY) < 1e-9,
 		"sub=" + st.sub.toFixed(3) + " blue=" + st.blue.toFixed(3) + " aY=" + st.aY);
@@ -927,6 +944,18 @@ async function testReadbackStaging() {
 		m.counts.maps === mapsInFlight + 1,
 		"copies=" + sink.copies.slice(caughtUp).filter(c => c[1] === "readback").length +
 		" maps=" + (m.counts.maps - mapsInFlight));
+
+	// a reset while the map is open: the snapshot describes the previous field and
+	// must be dropped whole, never ingested half-stale
+	solver.frame(cfg.frameDt / 2, 2, true);
+	const stale = solver.pollReadback();
+	solver.reset();
+	await stale;
+	check("a reset while a map is in flight drops the whole readback",
+		solver.getStats().statsFrame === 0 && solver.getStats().frame === 0 &&
+		solver.buoy.state.samples === 0,
+		"statsFrame=" + solver.getStats().statsFrame + " frame=" + solver.getStats().frame +
+		" buoySamples=" + solver.buoy.state.samples);
 
 	// the mapped view cannot outlive its map: the mock detaches it, exactly like a driver
 	await pool.readback.mapAsync(GPUMapMode.READ);

@@ -1067,3 +1067,30 @@ legend: [verified] measured or read in a spec. [to verify] reasoned, needs a pro
   one `readInFlight` flag without weakening any staleness guarantee - but capture the
   expected totals at *encode* time, next to the copy, or stats can be paired with another
   frame's ledger.
+
+## 2026-11-09 one generation, checked at the right moment
+
+- pitfall (the guard that cannot fire): a readback that landed after a reset/load was meant
+  to be dropped by the generation guard, but the stats and probes legs compared two values
+  both captured *before* the reset (`pendingGeneration === generation`,
+  `probeGeneration === generation`), so the compare was tautologically true and pre-reset
+  numbers were ingested into the fresh field. a guard has to compare the value captured
+  when the map was taken against the value that is current *now* (`generation !==
+  statsGeneration` after the await). one shared check at the top of the ingest block covers
+  every channel, because every reset/load path re-bases the same master counter; per-channel
+  guards that nobody re-bases are the ones that rot. regression: `experiments/gpu-mock.js`
+  "a reset while a map is in flight drops the whole readback" (failing test before the fix
+  is one line).
+- skill (extending a sample contract beats adding a channel): when a small extra sum is
+  needed from a pass that already walks the data, grow the contract in place (6 -> 8
+  floats), don't add a second CODEPATH. the capture format had exactly this headroom
+  (`BUOY_SAMPLE_PAD`=8 vs 6 used floats), the slot table is length-derived so the total
+  stays 5120 B, and the copy size follows the zero buffer - nothing else moves. a separate
+  two-float slot would have cost a second bind point and a second generation story for two
+  floats. check the format's declared pad before allocating a new channel.
+- skill (derived state stays out of captures): dP/dt between samples needs a baseline, but
+  the capture has no room and shouldn't grow for a diagnostic. keep the baseline in the
+  closure (`prevMom*`, `prevFrame=-1` = "none"), zero it on reset, and after a restore
+  recompute the derived fields from the restored sample and re-anchor the baseline to the
+  restored frame (`syncDerived()`) - otherwise the first sample after every load reports a
+  spike measured from construction-time zeros.

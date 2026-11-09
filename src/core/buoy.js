@@ -10,12 +10,15 @@
 	// displaced volume on purpose, and it stays outside the physics solver: the body
 	// only reads the field, so no conserved quantity and no ledger entry changes.
 	//
-	// the six floats below are the whole contract between the field and the body:
+	// the eight floats below are the whole contract between the field and the body:
 	// raw sums over the cell block. src/gpu/shaders.js (buoy_sample) and sampleCpu
 	// here produce the same layout; the integration is shared and runs on the cpu.
+	// S_MOMX/S_MOMY are mass-weighted momentum sums, so the body can report the
+	// momentum of the fluid it displaces (the scale of force a hull would feel)
+	// without anything applying it to the flow.
 
-	const S_BLUE=0,S_MASS=1,S_COUNT=2,S_UX=3,S_UY=4,S_MAXBLUE=5;
-	const SAMPLE_LEN=6;
+	const S_BLUE=0,S_MASS=1,S_COUNT=2,S_UX=3,S_UY=4,S_MAXBLUE=5,S_MOMX=6,S_MOMY=7;
+	const SAMPLE_LEN=8;
 
 	// the draft's 16x64 is the reference rectangle on the reference grid (N=512);
 	// the body keeps that fraction of the view at any N
@@ -35,8 +38,12 @@
 	}
 	function create(cfg){
 		const state={active:false,cx:0,cy:0,x0:0,y0:0,w:0,h:0,vx:0,vy:0,
-			aY:0,sub:0,blue:0,fluid:0,peak:0,ux:0,uy:0,frames:0,samples:0};
+			aY:0,sub:0,blue:0,fluid:0,peak:0,ux:0,uy:0,frames:0,samples:0,
+			momX:0,momY:0,uMass:0,vMass:0,forceX:0,forceY:0};
 		const sample=new Float32Array(SAMPLE_LEN);
+		// the momentum derivative baseline is a runtime concern, not capture state:
+		// prevFrame=-1 means "no baseline yet", so the first framed ingest reports no force
+		let prevMomX=0,prevMomY=0,prevFrame=-1;
 		function commit(){
 			// the rectangle is a block of whole cells: the params block, the gpu sample
 			// kernel and the overlay all work from this rounded origin, so they agree
@@ -54,6 +61,8 @@
 			state.frames=0;state.samples=0;
 			state.vx=0;state.vy=0;state.aY=0;
 			state.sub=0;state.blue=0;state.fluid=0;state.peak=0;state.ux=0;state.uy=0;
+			state.momX=0;state.momY=0;state.uMass=0;state.vMass=0;state.forceX=0;state.forceY=0;
+			prevMomX=0;prevMomY=0;prevFrame=-1;
 			if(!state.active){cfg.buoyW=0;cfg.buoyH=0;cfg.buoyX0=0;cfg.buoyY0=0;return;}
 			const size=scaledSize(cfg);
 			state.w=size.w;state.h=size.h;
@@ -61,19 +70,40 @@
 			state.cy=cfg.buoyV*cfg.N;
 			commit();
 		}
+		// recompute the fields derived from the sample and re-base the derivative.
+		// the save/restore path calls this: the restored sample is the baseline, so
+		// the first framed ingest after a load measures the real change, not the jump
+		// from construction-time zeros.
+		function syncDerived(){
+			const msum=sample[S_MASS];
+			state.momX=sample[S_MOMX];state.momY=sample[S_MOMY];
+			state.uMass=msum>0?state.momX/msum:0;
+			state.vMass=msum>0?state.momY/msum:0;
+			state.forceX=0;state.forceY=0;
+			prevMomX=state.momX;prevMomY=state.momY;prevFrame=cfg.frame||0;
+		}
 		// one field sample. called every cfg.buoySampleEvery frames, never in the
 		// substep loop: the force is held between refreshes and the body inertia
-		// (march) is what makes the motion smooth.
-		function ingest(fresh){
+		// (march) is what makes the motion smooth. frame is the framed-ingest stamp
+		// (same convention as the probe/stats readbacks); without one, the momentum
+		// sums are refreshed but the dP/dt estimate is left alone.
+		function ingest(fresh,frame){
 			if(fresh)for(let i=0;i<SAMPLE_LEN;i++)sample[i]=fresh[i];
 			state.samples++;
 			const area=Math.max(state.w*state.h,1);
 			const cnt=sample[S_COUNT];
+			const msum=sample[S_MASS];
 			state.blue=sample[S_BLUE]/area;
-			state.fluid=sample[S_MASS]/area;
+			state.fluid=msum/area;
 			state.peak=sample[S_MAXBLUE];
 			state.ux=cnt>0?sample[S_UX]/cnt:0;
 			state.uy=cnt>0?sample[S_UY]/cnt:0;
+			// mass-weighted mean velocity: unlike the count-weighted mean this is not
+			// diluted by spray cells carrying almost no mass
+			state.momX=sample[S_MOMX];
+			state.momY=sample[S_MOMY];
+			state.uMass=msum>0?state.momX/msum:0;
+			state.vMass=msum>0?state.momY/msum:0;
 			// submerged fraction of the footprint, read off the local peak so it does
 			// not depend on how much dye the scenario happens to carry
 			state.sub=state.peak>1e-6?Math.min(1,state.blue/state.peak):0;
@@ -81,6 +111,16 @@
 			// +y is up in this grid, gravityY is a positive down magnitude.
 			state.aY=cfg.buoyGain*Math.abs(cfg.gravityY)*(state.blue-cfg.buoyRho);
 			cfg.buoySub=state.sub;
+			const fr=(typeof frame==="number"&&isFinite(frame))?frame:-1;
+			if(fr<0)return;
+			if(prevFrame<0){state.forceX=0;state.forceY=0;prevMomX=state.momX;prevMomY=state.momY;prevFrame=fr;return;}
+			// stale or duplicate stamp: the sums were refreshed, but there is no new
+			// interval, so the baseline is left alone
+			if(fr<=prevFrame)return;
+			const dt=(fr-prevFrame)*Math.max(cfg.frameDt,1e-9);
+			state.forceX=(state.momX-prevMomX)/dt;
+			state.forceY=(state.momY-prevMomY)/dt;
+			prevMomX=state.momX;prevMomY=state.momY;prevFrame=fr;
 		}
 		function march(dt){
 			if(!state.active)return;
@@ -116,7 +156,7 @@
 			out.fill(0);
 			const w=state.w,h=state.h,x0=state.x0,y0=state.y0;
 			if(!state.active||w<=0||h<=0)return;
-			let blue=0,m=0,su=0,sv=0,peak=0,cnt=0;
+			let blue=0,m=0,su=0,sv=0,peak=0,cnt=0,momX=0,momY=0;
 			for(let row=0;row<h;row++){
 				const cy=y0+row;
 				if(cy<1||cy>=texH-1)continue;
@@ -125,18 +165,22 @@
 					if(cx<1||cx>=texW-1)continue;
 					const i4=(cx+cy*texW)*4;
 					const db=mass[i4+2];
-					blue+=db;m+=mass[i4+3];
+					const ma=mass[i4+3];
+					blue+=db;m+=ma;
 					if(db>peak)peak=db;
 					const i2=(cx+cy*texW)*2;
-					su+=vel[i2];sv+=vel[i2+1];
+					const u=vel[i2],v=vel[i2+1];
+					su+=u;sv+=v;
+					momX+=u*ma;momY+=v*ma;
 					cnt++;
 				}
 			}
 			out[S_BLUE]=blue;out[S_MASS]=m;out[S_COUNT]=cnt;
 			out[S_UX]=su;out[S_UY]=sv;out[S_MAXBLUE]=peak;
+			out[S_MOMX]=momX;out[S_MOMY]=momY;
 		}
 		reset();
-		return {state,sample,SAMPLE_LEN,reset,ingest,march,sampleCpu};
+		return {state,sample,SAMPLE_LEN,reset,ingest,march,sampleCpu,syncDerived};
 	}
 	Fluid.core.buoy={create,scaledSize,scenarioHasBody,SAMPLE_LEN};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.buoy;

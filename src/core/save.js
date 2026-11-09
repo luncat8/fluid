@@ -391,6 +391,10 @@
 			bs.frames=Math.round(st[ST_BUOY+16])||0;
 			bs.samples=Math.round(st[ST_BUOY+17])||0;
 			for(let i=0;i<buoy.SAMPLE_LEN;i++)buoy.sample[i]=snap.tables.buoySample[i];
+			// recompute the momentum fields from the restored sample and re-base the
+			// dP/dt baseline, so the first framed ingest after a load measures the
+			// real change instead of spiking against construction-time zeros
+			if(buoy.syncDerived)buoy.syncDerived();
 			cfg.buoyShow=bs.active?1:0;
 			cfg.buoyW=bs.w;cfg.buoyH=bs.h;
 			cfg.buoyX0=bs.x0;cfg.buoyY0=bs.y0;
