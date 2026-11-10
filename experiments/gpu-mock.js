@@ -562,6 +562,84 @@ async function testPhasePlumbing() {
 	solver.destroy();
 }
 
+
+// ---- 0.7.4: the non-finite counter survives the reduction and reaches stats() ----
+async function testNonFiniteReadback() {
+	const S = Fluid.core.stats;
+	// one bad cell: a NaN velocity, a finite everything else, exactly the shape the
+	// 0.7.3 device capture showed ("m=0.302 liquid, u,v,p = -" with maxVel=0).
+	const statsSnap = new Float32Array(S.STATS_LEN);
+	statsSnap[S.IDX_NONFINITE] = 3;
+	statsSnap[S.IDX_NF_VEL] = 3;
+	statsSnap[S.IDX_NF_MASS] = 0;
+	statsSnap[S.IDX_NF_THERM] = 0;
+	statsSnap[S.IDX_NF_PRESS] = 2;
+	const m = mock.create({ stats: statsSnap });
+	const sink = m.sink;
+	const N = 64;
+	const cfg = Object.assign({}, Fluid.core.config.defaults, {
+		N, texW: N + 2, texH: N + 2, scenario: "dam", buoyEnabled: 0, statsEvery: 1
+	});
+	const canvas = { width: N, height: N };
+	const solver = Fluid.gpu.solver.create(m.device, canvas, mock.mockContext(), "bgra8unorm", cfg);
+
+	// the reduce pass still ships in the same 40-float partial stride, the same one
+	// stats dispatch, and slots 35..38 are the free tail of that stride.
+	const aCode = sink.modules.find(mod => mod.label === "statsA-mod").code;
+	const bCode = sink.modules.find(mod => mod.label === "statsB-mod").code;
+	check("non-finite WGSL: the cell kernel tests all four mass slots, E/T, both velocity components and p",
+		/mass\.a != mass\.a/.test(aCode) && /mass\.b != mass\.b/.test(aCode) &&
+		/therm\.r != therm\.r/.test(aCode) && /therm\.g != therm\.g/.test(aCode) &&
+		/uL != uL/.test(aCode) && /vT != vT/.test(aCode) && /p != p/.test(aCode),
+		"mass/E/T/u,v/p present");
+	const strideSum = /for \(var k = 35u; k < 39u; k\+\+\) \{ sh\[k \* 64u \+ lid\] = sh\[k \* 64u \+ lid\] \+ sh\[k \* 64u \+ lid \+ stride\]; \}/;
+	check("non-finite WGSL: the four groups are summed, not maxed, in both reduce stages",
+		strideSum.test(aCode) && /nfVel = nfVel \+ partials\[base \+ 37u\]/.test(bCode) &&
+		!/sh\[37u \* 64u \+ lid\] = max\(/.test(aCode),
+		"strideSum=" + strideSum.test(aCode) + " reduceB nfVel sum=" + /nfVel = nfVel \+ partials\[base \+ 37u\]/.test(bCode));
+	check("non-finite WGSL: partial slots stay inside the existing 40-float stride and the 2560B shared array",
+		/partials\[base \+ 35u \+ k\]/.test(aCode) && /array<f32,2560>/.test(aCode) &&
+		solver.pool.statsPart.size === solver.pool.numWorkgroups * S.PARTIAL_STRIDE * 4,
+		"statsPart=" + solver.pool.statsPart.size + "B stride=" + S.PARTIAL_STRIDE);
+	check("non-finite WGSL: the stats output writes slots 46..50 in the same dispatch",
+		/stats\[46u\]/.test(bCode) && /stats\[50u\]/.test(bCode) &&
+		solver.pool.stats.size === S.STATS_LEN * 4,
+		"stats=" + solver.pool.stats.size + "B len=" + S.STATS_LEN);
+
+	const clean = solver.getStats();
+	check("non-finite readback: a fresh solver reports zero and no first frame",
+		clean.cntNonFinite === 0 && clean.firstNonFiniteFrame === -1 &&
+		clean.nonFinite && clean.nonFinite.vel === 0,
+		"cnt=" + clean.cntNonFinite + " first=" + clean.firstNonFiniteFrame);
+
+	solver.frame(cfg.frameDt, 1, true);
+	await solver.pollReadback();
+	// getStats hands back the live view, so copy what this check needs before stepping
+	const st = solver.getStats();
+	const badCount = st.cntNonFinite, badVel = st.nonFinite.vel, badPress = st.nonFinite.press;
+	const badMass = st.nonFinite.mass, badTherm = st.nonFinite.therm;
+	const firstFrame = st.firstNonFiniteFrame, firstStatsFrame = st.statsFrame;
+	check("non-finite readback: the canned dead cells reach stats() with their group split",
+		badCount === 3 && badVel === 3 && badPress === 2 && badMass === 0 && badTherm === 0,
+		"cnt=" + badCount + " v=" + badVel + " p=" + badPress);
+	for (let i = 0; i < 3; i++) {
+		appFrame(cfg, solver, 20);
+		await solver.pollReadback();
+	}
+	const later = solver.getStats();
+	check("non-finite readback: the first-seen frame latches and never moves forward",
+		firstFrame === firstStatsFrame && later.firstNonFiniteFrame === firstFrame && later.statsFrame > firstFrame,
+		"first=" + later.firstNonFiniteFrame + " latched=" + firstFrame + " at#" + firstStatsFrame + " now#" + later.statsFrame);
+
+	// a reset clears the latch with the field it described
+	solver.reset();
+	await solver.pollReadback();
+	check("non-finite readback: reset clears the counter and the latch",
+		solver.getStats().firstNonFiniteFrame === -1,
+		"first=" + solver.getStats().firstNonFiniteFrame);
+	solver.destroy();
+}
+
 async function testEmitterPlumbing() {
 	const S = Fluid.core.stats;
 	const E = Fluid.core.emitters;
@@ -984,6 +1062,7 @@ async function testReadbackStaging() {
 	await testPhaseEventPlumbing();
 	await testSaveLoadPlumbing();
 	await testReadbackStaging();
+	await testNonFiniteReadback();
 	console.log(failures === 0 ? "ALL GPU-MOCK CHECKS PASSED" : failures + " FAILURES");
 	process.exitCode = failures === 0 ? 0 : 1;
 })();

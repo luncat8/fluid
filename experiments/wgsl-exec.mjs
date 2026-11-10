@@ -459,6 +459,29 @@ function runEmitterExecCases() {
 	check("statsReduceB exec: copies emitterLedger[0..9] into stats[36..45] intact",
 		statsCopyExact && statsOut[36] > 0 && statsOut[41] > 0,
 		"injM=" + statsOut[36].toFixed(4) + " remM=" + statsOut[41].toFixed(4));
+	// 5b2. the 0.7.4 non-finite slots. slots 35..38 of each partial carry the group
+	// counts (summed, never maxed); slot 46 is the worst group, 47..50 the split.
+	const nfPart = new Float32Array(4 * 40);
+	// partial 0: 3 cells with a dead velocity, 1 with a dead pressure
+	nfPart[0 * 40 + 35] = 1; nfPart[0 * 40 + 36] = 0; nfPart[0 * 40 + 37] = 3; nfPart[0 * 40 + 38] = 1;
+	// partial 1: 2 cells with a dead mass, 4 with a dead velocity, 2 with a dead pressure
+	nfPart[1 * 40 + 35] = 2; nfPart[1 * 40 + 36] = 0; nfPart[1 * 40 + 37] = 4; nfPart[1 * 40 + 38] = 2;
+	const nfOut = new Float32Array(Fluid.core.stats.STATS_LEN);
+	new WgslExec(WgslParser.Parse(sh.statsReduceB))
+		.dispatchWorkgroups("main", [1], {
+			0: { 0: nfPart.buffer, 1: nfOut.buffer, 2: dimsU, 3: gpuEmitLedger.buffer }
+		});
+	check("statsReduceB exec: the non-finite groups land in slots 47..50 and the worst cell group in 46",
+		nfOut[46] === 7 && nfOut[47] === 3 && nfOut[48] === 0 && nfOut[49] === 7 && nfOut[50] === 3,
+		"46..50=" + [46, 47, 48, 49, 50].map(i => nfOut[i]).join(","));
+	const nfClean = new Float32Array(Fluid.core.stats.STATS_LEN);
+	new WgslExec(WgslParser.Parse(sh.statsReduceB))
+		.dispatchWorkgroups("main", [1], {
+			0: { 0: new Float32Array(4 * 40).buffer, 1: nfClean.buffer, 2: dimsU, 3: gpuEmitLedger.buffer }
+		});
+	check("statsReduceB exec: a clean field reports zero in every non-finite slot",
+		nfClean[46] === 0 && nfClean[47] === 0 && nfClean[48] === 0 && nfClean[49] === 0 && nfClean[50] === 0,
+		"46..50=" + [46, 47, 48, 49, 50].map(i => nfClean[i]).join(","));
 
 	// 5c. forces vs cpu.forces with momentum emitter + live emitterLedger rhoMean offset
 	const emitLedger = new Float32Array(Fluid.core.stats.EMIT_LEDGER_LEN);

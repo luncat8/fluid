@@ -24,3 +24,23 @@ cfg.scenario="dam";
 snapshot=hud.buildSnapshot();
 assert.ok(snapshot.includes("dam float: disabled (y to enable)"));
 console.log("PASS snapshot: exact minima, toggle context, honest rates, CFL/compression warnings, float applicability");
+
+// 0.7.4: a non-finite field used to be the one failure every meter here was blind to
+// (max/min drop NaN, and so does every `<`/`>`), so the banner has to lead the health
+// line and the snapshot has to carry the count even with the health line stripped.
+assert.ok(!hud.buildSnapshot().includes("NON-FINITE"), "a clean field prints no banner");
+sample.cntNonFinite=0;
+sample.nonFinite={mass:0,therm:0,vel:0,press:0};
+sample.firstNonFiniteFrame=-1;
+assert.ok(!hud.buildSnapshot().includes("NON-FINITE"), "explicit zero prints no banner");
+sample.cntNonFinite=7;
+sample.nonFinite={mass:0,therm:0,vel:7,press:2};
+sample.firstNonFiniteFrame=691;
+snapshot=hud.buildSnapshot();
+assert.ok(snapshot.includes("NON-FINITE FIELD: 7 cells (m=0 T=0 u,v=7 p=2) first seen frame#691"),
+	"the banner names the count, the field split and the frame it started");
+assert.ok(snapshot.indexOf("NON-FINITE")<snapshot.indexOf("CFL bound="),
+	"the banner leads the health line");
+assert.ok(snapshot.includes("nonFinite=7 (m=0 T=0 u,v=7 p=2) firstNonFiniteFrame#691"),
+	"the snapshot carries the count with the health line stripped");
+console.log("PASS snapshot: a non-finite field leads the health line and is never silent");

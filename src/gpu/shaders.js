@@ -1673,7 +1673,7 @@ fn main() {
 @group(0) @binding(7) var<storage,read_write> partials: array<f32>;
 @group(0) @binding(8) var divsrcTex: texture_2d<f32>;
 ${POISSON_HELPERS}
-var<workgroup> sh: array<f32,2240>;
+var<workgroup> sh: array<f32,2560>;
 
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
@@ -1690,6 +1690,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 	var heatIn = 0.0; var heatOut = 0.0; var tMin = 1e30; var tMax = -1e30; var tSum = 0.0; var tCnt = 0.0; var kin = 0.0;
 	var ph: u32 = 0u; var sSat = 0.0; var latE = 0.0; var fMom = 0.0;
 	var maxRes = 0.0; var maxRhs = 0.0;
+	// 0.7.4: non-finite flags. max/min drop NaN (max(x, NaN) = x) so the extrema
+	// below cannot see a dead cell; these are summed instead, and never mixed with
+	// the max-reduced set.
+	var nfMass = 0.0; var nfTherm = 0.0; var nfVel = 0.0; var nfPress = 0.0;
 	if (inside) {
 		let mass = textureLoad(massTex, vec2<i32>(x, y), 0);
 		let therm = textureLoad(thermTex, vec2<i32>(x, y), 0);
@@ -1727,6 +1731,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 			let vc = 0.5 * (vB + vT);
 			kin = 0.5 * mass.a * (uc * uc + vc * vc);
 		}
+		// x != x is true only for NaN, for every f32 including the infinities the
+		// spec calls non-finite: an inf reads as finite here, a NaN does not. the
+		// inf case is already loud through maxVel/pMax.
+		if (mass.a != mass.a || mass.r != mass.r || mass.g != mass.g || mass.b != mass.b) { nfMass = 1.0; }
+		if (therm.r != therm.r || therm.g != therm.g) { nfTherm = 1.0; }
+		if (uL != uL || uR != uR || vB != vB || vT != vT) { nfVel = 1.0; }
+		if (p != p) { nfPress = 1.0; }
 		ph = fl.g;
 		if (fl.a > 0u) { sSat = 1.0; }
 		let ac = textureLoad(accumTex, vec2<i32>(x, y), 0);
@@ -1752,6 +1763,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 	sh[31u * 64u + lid] = latE;
 	sh[32u * 64u + lid] = fMom;
 	sh[33u * 64u + lid] = maxRes; sh[34u * 64u + lid] = maxRhs;
+	sh[35u * 64u + lid] = nfMass; sh[36u * 64u + lid] = nfTherm;
+	sh[37u * 64u + lid] = nfVel; sh[38u * 64u + lid] = nfPress;
 	workgroupBarrier();
 	var stride = 32u;
 	loop {
@@ -1773,6 +1786,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 			sh[19u * 64u + lid] = min(sh[19u * 64u + lid], sh[19u * 64u + lid + stride]);
 			sh[20u * 64u + lid] = max(sh[20u * 64u + lid], sh[20u * 64u + lid + stride]);
 			for (var k = 21u; k < 33u; k++) { sh[k * 64u + lid] = sh[k * 64u + lid] + sh[k * 64u + lid + stride]; }
+			for (var k = 35u; k < 39u; k++) { sh[k * 64u + lid] = sh[k * 64u + lid] + sh[k * 64u + lid + stride]; }
 		}
 		workgroupBarrier();
 		stride = stride >> 1u;
@@ -1780,6 +1794,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 	if (lid == 0u) {
 		let base = (wid.y * nwg.x + wid.x) * 40u;
 		for (var k = 0u; k < 35u; k++) { partials[base + k] = sh[k * 64u]; }
+		// 35..38 are the free tail of the 40-float partial stride: same buffer, same
+		// dispatch, no layout change for statsReduceB's kahan walk.
+		for (var k = 0u; k < 4u; k++) { partials[base + 35u + k] = sh[(35u + k) * 64u]; }
 	}
 }
 `;
@@ -1820,6 +1837,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	var minM = 1e30; var minDr = 1e30; var minDg = 1e30; var minDb = 1e30; var minE = 1e30;
 	var maxM = -1e30; var maxVel = 0.0; var pMin = 1e30; var pMax = -1e30; var maxDiv = 0.0;
 	var maxRes = 0.0; var maxRhs = 0.0;
+	var nfMass = 0.0; var nfTherm = 0.0; var nfVel = 0.0; var nfPress = 0.0;
 	var tMin = 1e30; var tMax = -1e30;
 	for (var i = 0u; i < num; i++) {
 		let base = i * 40u;
@@ -1839,6 +1857,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 		maxDiv = max(maxDiv, partials[base + 16u]);
 		maxRes = max(maxRes, partials[base + 33u]);
 		maxRhs = max(maxRhs, partials[base + 34u]);
+		nfMass = nfMass + partials[base + 35u];
+		nfTherm = nfTherm + partials[base + 36u];
+		nfVel = nfVel + partials[base + 37u];
+		nfPress = nfPress + partials[base + 38u];
 	}
 	if (minM == 1e30) { minM = 0.0; }
 	if (minDr == 1e30) { minDr = 0.0; }
@@ -1862,6 +1884,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 	stats[22u] = sKin;
 	for (var k = 0u; k < 9u; k++) { stats[23u + k] = kahanSlot(num, 24u + k); }
 	for (var k = 0u; k < 10u; k++) { stats[36u + k] = emitterLedger[k]; }
+	// 0.7.4, slots 46..50: a per-cell group flag is 0/1 and each group is summed
+	// with '+', so each value is an exact cell count. a dead cell usually sets
+	// several groups at once, so the header is the cell that is worst, not the sum:
+	// "how many cells are gone" is the question, not "how many fields are gone".
+	stats[46u] = max(max(nfMass, nfTherm), max(nfVel, nfPress));
+	stats[47u] = nfMass; stats[48u] = nfTherm; stats[49u] = nfVel; stats[50u] = nfPress;
 }
 `;
 	// ---------- buoy field sample: one workgroup over the body footprint ----------

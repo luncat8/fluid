@@ -353,7 +353,7 @@
 		meter.m.textContent="mass "+(m>=0?"+":"")+m.toExponential(2);
 		meter.e.textContent="energy "+(e>=0?"+":"")+e.toExponential(2);
 		meter.cells.textContent="neg="+stats.cntNeg+" over="+stats.cntOver+
-			" maxM="+fmt(stats.maxM,3);
+			" maxM="+fmt(stats.maxM,3)+" nonFinite="+(stats.cntNonFinite||0);
 		meter.phase.textContent="cells liq="+stats.phaseCounts[3]+" gas="+stats.phaseCounts[5];
 		meter.motion.textContent="maxVel="+fmt(stats.motion.maxVel,0)+" maxDiv="+fmt(stats.motion.maxDiv,2);
 		meter.perf.textContent="sim/s="+sim.perf.simHz.toFixed(0)+" · substeps="+sim.substeps+

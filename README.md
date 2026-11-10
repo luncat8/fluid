@@ -58,6 +58,12 @@ control is a read-only floating marker in the dam scenario, not thermal buoyancy
 HUD line also reports the fluid momentum inside the footprint and dP/dt between samples
 (the scale of force a displacing hull would feel), applying nothing to the flow.
 
+A field that has gone non-finite is the one failure the usual meters cannot see: `max`/`min`
+drop NaN, and so does every `<`/`>`, so a dead cell leaves `maxVel=0 maxDiv=0` and a small
+`maxM` behind. The stats pass therefore counts non-finite cells separately
+(`nonFinite=N`, split into mass, temperature, velocity and pressure, plus the first frame it
+appeared in) and the HUD leads its health line with `NON-FINITE FIELD: N cells`.
+
 Performance readouts distinguish simulation frames/s (target 60), renders/s, and
 browser rAF callbacks/s. Speed is simulated seconds per wall second; CPU encode ms
 measures submission work; queue ms is last submission-to-completion latency, including

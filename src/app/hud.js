@@ -84,6 +84,17 @@
 			if(cfg.pressureIters<want)return want;
 			return 0;
 		}
+		// 0.7.4: a non-finite cell is the one failure every other meter here is blind
+		// to (max/min drop NaN, and so does every `<`/`>`), so it leads the line.
+		function nonFiniteTag(s){
+			const n=s.cntNonFinite||0;
+			if(!(n>0))return "";
+			const b=s.nonFinite||{};
+			let tag="NON-FINITE FIELD: "+n+" cells (m="+(b.mass||0)+" T="+(b.therm||0)+
+				" u,v="+(b.vel||0)+" p="+(b.press||0)+")";
+			if(s.firstNonFiniteFrame>=0)tag+=" first seen frame#"+s.firstNonFiniteFrame;
+			return tag;
+		}
 		function healthLine(s){
 			const cfl=cflBound(s);
 			const recK=recommendedK();
@@ -94,7 +105,8 @@
 			const severe=s.maxM>1.5||s.maxM>2;
 			const capped=cfg.substepMax&&s.motion&&cfl>1&&substepsShown>=cfg.substepMax;
 			const velCapped=cfg.vClamp>0&&s.motion.maxVel>=0.98*cfg.vClamp;
-			let line="CFL bound="+fmt(cfl)+(cfl>1?" [transport limiting likely · try more substeps"+(capped?" (capped at "+cfg.substepMax+")":"")+"]":"");
+			const nf=nonFiniteTag(s);
+			let line=(nf?nf+" | ":"")+"CFL bound="+fmt(cfl)+(cfl>1?" [transport limiting likely · try more substeps"+(capped?" (capped at "+cfg.substepMax+")":"")+"]":"");
 			if(velCapped)line+=" | velocity capped at "+Math.round(cfg.vClamp)+" (substep budget)";
 			if(hasNeg)line+=" | NEGATIVE VALUES: inspect minima (threshold 1e-9)";
 			if(s.diag&&s.diag.sSaturated>0)line+=" | S saturated "+s.diag.sSaturated+" cells";
@@ -135,7 +147,9 @@
 				lines.push(kinds[i]+": total="+totals[i]+" exp="+expects[i]+" drift="+drift+" ["+driftClass(drift)+"]");
 			}
 			lines.push("min m="+s.mins.m+" dr="+s.mins.dr+" dg="+s.mins.dg+" db="+s.mins.db+" E="+s.mins.E);
-			lines.push("maxM="+s.maxM+" neg="+s.cntNeg+" over="+s.cntOver+" maxDiv="+s.motion.maxDiv+" p["+s.motion.pMin+".."+s.motion.pMax+"] maxVel="+s.motion.maxVel);
+			lines.push("maxM="+s.maxM+" neg="+s.cntNeg+" over="+s.cntOver+" maxDiv="+s.motion.maxDiv+" p["+s.motion.pMin+".."+s.motion.pMax+"] maxVel="+s.motion.maxVel+
+				" nonFinite="+(s.cntNonFinite||0)+(s.cntNonFinite>0?" (m="+(s.nonFinite.mass||0)+" T="+(s.nonFinite.therm||0)+" u,v="+(s.nonFinite.vel||0)+" p="+(s.nonFinite.press||0)+")":"")+
+				(s.firstNonFiniteFrame>=0?" firstNonFiniteFrame#"+s.firstNonFiniteFrame:""));
 			lines.push(poissonLine(s));
 			lines.push(phaseLine(s));
 			const solverTag=cfg.useMultigrid?"mgS"+cfg.mgCoarsen+"x"+cfg.mgCycles+"(pre"+cfg.mgPre+"/post"+cfg.mgPost+")":

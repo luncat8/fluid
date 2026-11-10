@@ -458,6 +458,60 @@ function testBuoyMomentum() {
 		"F=" + buoy.state.forceX.toFixed(2) + " expected " + expectF1.toFixed(2));
 }
 
+
+// 7f. the non-finite counters (0.7.4). every extremum in stats.js compares with
+// `<`/`>`, and every comparison against NaN is false, so a dead cell used to leave a
+// perfectly calm report behind. these are counted, never compared.
+function testNonFiniteCounters() {
+	const S = Fluid.core.stats;
+	check("non-finite: the stats slot grew by five floats and still fits one 256 B slot",
+		S.STATS_LEN === 51 && S.STATS_LEN * 4 <= 64 * 4 && S.IDX_NONFINITE === 46 &&
+		S.IDX_NF_MASS === 47 && S.IDX_NF_THERM === 48 && S.IDX_NF_VEL === 49 && S.IDX_NF_PRESS === 50,
+		"STATS_LEN=" + S.STATS_LEN + " bytes=" + (S.STATS_LEN * 4));
+	const W = 6, H = 6;
+	const mass = new Float32Array(W * H * 4), therm = new Float32Array(W * H * 4);
+	const vel = new Float32Array(W * H * 2), press = new Float32Array(W * H);
+	for (let i = 0; i < W * H; i++) { mass[i * 4 + 3] = 1; therm[i * 4] = 100; therm[i * 4 + 1] = 293; }
+	const clean = S.totalsFromFields(mass, therm, W, H);
+	const cleanMot = S.motionTotals(vel, press, W, H, 1 / 60, null);
+	check("non-finite: a clean field counts zero in every group",
+		clean.cntNonFinite === 0 && cleanMot.cntNfVel === 0 && cleanMot.cntNfPress === 0,
+		"m=" + clean.cntNfMass + " T=" + clean.cntNfTherm + " v=" + cleanMot.cntNfVel + " p=" + cleanMot.cntNfPress);
+	// one NaN mass cell, one NaN energy cell: counted, and the extremum still reads clean
+	const m2 = mass.slice(), t2 = therm.slice();
+	m2[(2 + 2 * W) * 4 + 3] = NaN;
+	t2[(4 + 1 * W) * 4] = NaN;
+	const nfTot = S.totalsFromFields(m2, t2, W, H);
+	check("non-finite: a NaN mass cell and a NaN energy cell are counted, not silently skipped",
+		nfTot.cntNfMass === 1 && nfTot.cntNfTherm === 1,
+		"m=" + nfTot.cntNfMass + " T=" + nfTot.cntNfTherm);
+	check("non-finite: the same NaN cells leave maxM and the minima exactly as they were",
+		nfTot.maxM === clean.maxM && nfTot.minM === clean.minM,
+		"maxM=" + nfTot.maxM + " minM=" + nfTot.minM);
+	// the case the device capture shows: finite mass, NaN velocity. maxVel must not move.
+	const v2 = vel.slice(), p2 = press.slice();
+	v2[(3 + 3 * W) * 2] = NaN;
+	p2[(1 + 1 * W)] = NaN;
+	const nfMot = S.motionTotals(v2, p2, W, H, 1 / 60, null);
+	check("non-finite: a NaN velocity and a NaN pressure are counted while maxVel stays 0",
+		nfMot.cntNfVel > 0 && nfMot.cntNfPress === 1 && nfMot.maxVel === 0 && nfMot.maxDiv === 0,
+		"v=" + nfMot.cntNfVel + " p=" + nfMot.cntNfPress + " maxVel=" + nfMot.maxVel);
+	const arr = new Float32Array(S.STATS_LEN);
+	S.packStatsArray(arr, nfTot, nfMot, null);
+	// a NaN face is shared by the two cells that read it, so one bad velocity face
+	// counts two cells; slot 46 is the worst group (cells gone), not the group sum.
+	check("non-finite: packStatsArray carries the total and the four groups in slots 46..50",
+		arr[46] === Math.max(1, nfMot.cntNfVel) && arr[47] === 1 && arr[48] === 1 &&
+		arr[49] === nfMot.cntNfVel && arr[50] === 1,
+		[...arr.slice(46, 51)].join(","));
+	// the sum of a poisoned totality: the kahan path the gpu uses must not report a clean
+	// total when a cell is NaN, and driftRel must not call NaN a pass
+	const drift = S.driftRel(NaN, 100);
+	check("non-finite: a NaN totality is reported as a failed drift, never as [ok]",
+		!isFinite(drift) && S.formatDrift(drift) === "bad",
+		"drift=" + drift + " class=" + S.formatDrift(drift));
+}
+
 // 8. wall integrity (a8): a one cell wall column holds against a pushed dye blob
 function testWall() {
 	const cfg = makeCfg({ N: 64, scenario: "blobs", pressureIters: 20 });
@@ -958,6 +1012,7 @@ testSubstepPolicy();
 testBuoy();
 testBuoyModel();
 testBuoyMomentum();
+testNonFiniteCounters();
 testWall();
 testEmitter();
 testDraw();

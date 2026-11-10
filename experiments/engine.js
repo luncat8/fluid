@@ -24,6 +24,7 @@ require(path.join(root, "src/gpu/fields.js"));
 require(path.join(root, "src/gpu/passes.js"));
 require(path.join(root, "src/gpu/solver.js"));
 require(path.join(root, "src/api/engine.js"));
+require(path.join(root, "src/app/hud.js"));
 require("./api-test.js");
 const mock = require("./mock-device.js");
 
@@ -1032,6 +1033,42 @@ async function testReadbackAllocations() {
 	sim.destroy();
 }
 
+
+// 0.7.4: the non-finite counter has to survive the engine wrapper, because the app's
+// hud and the demo page read it from sim.stats() and nothing else.
+async function testNonFiniteThroughEngine() {
+	const S = Fluid.core.stats;
+	const snap = new Float32Array(S.STATS_LEN);
+	snap[S.IDX_NONFINITE] = 5;
+	snap[S.IDX_NF_VEL] = 5;
+	snap[S.IDX_NF_PRESS] = 4;
+	const { sim, m } = await makeSim(
+		{ N: 64, scenario: "dam", statsEvery: 1, substepsAuto: false, substepsFixed: 1 },
+		{ stats: snap });
+	const before = sim.stats();
+	check(before.cntNonFinite === 0 && before.firstNonFiniteFrame === -1,
+		"non-finite: the engine reports a clean field before the first readback",
+		"cnt=" + before.cntNonFinite);
+	sim.step(1 / 60);
+	await sim.pollReadback();
+	const st = sim.stats();
+	check(st.cntNonFinite === 5 && st.nonFinite.vel === 5 && st.nonFinite.press === 4 &&
+		st.firstNonFiniteFrame === st.statsFrame,
+		"non-finite: the count, the field split and the first-seen frame reach sim.stats()",
+		"cnt=" + st.cntNonFinite + " first=" + st.firstNonFiniteFrame);
+	// the app hud reads the same object; the banner must fire through it
+	// hud.create caches DOM nodes at construction, so give it the minimal stub the
+	// other hud checks use for the duration of this one
+	const origDoc = globalThis.document;
+	globalThis.document = { getElementById: () => null };
+	const hud = Fluid.app.hud.create(sim.solver, sim.params, sim.perf);
+	const text = hud.buildSnapshot();
+	globalThis.document = origDoc;
+	check(text.includes("NON-FINITE FIELD: 5 cells") && text.includes("nonFinite=5"),
+		"non-finite: the hud snapshot built from sim.stats() carries the banner", text.split("\n")[1]);
+	sim.destroy();
+}
+
 async function testLifecycleSuite() {
 	const m = mock.create();
 	const res = await Fluid.tests.apiTest.runLifecycleSuite({
@@ -1063,6 +1100,7 @@ async function testLifecycleSuite() {
 	await testSaveAndLoad();
 	await testSaveLoadBuoyMomentum();
 	await testPhaseEvents();
+	await testNonFiniteThroughEngine();
 	await testLifecycleSuite();
 	await testHotPathAllocations();
 	await testReadbackAllocations();

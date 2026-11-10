@@ -25,7 +25,12 @@
 	// by statsReduceB alongside totals 0..4 so pollStats pairs them exactly.
 	const IDX_EMIT_INJ_M=36,IDX_EMIT_INJ_DR=37,IDX_EMIT_INJ_DG=38,IDX_EMIT_INJ_DB=39,IDX_EMIT_INJ_E=40;
 	const IDX_EMIT_REM_M=41,IDX_EMIT_REM_DR=42,IDX_EMIT_REM_DG=43,IDX_EMIT_REM_DB=44,IDX_EMIT_REM_E=45;
-	const STATS_LEN=46;
+	// 0.7.4: per-cell non-finite counts. `max`/`min` cannot see NaN (WGSL max(x,NaN)=x,
+	// and every `<`/`>` against NaN is false), so both the gpu and the cpu reductions
+	// reported a calm field while the probes held NaN. these are + summed, never maxed:
+	// 46 is the total, 47..50 name the field.
+	const IDX_NONFINITE=46,IDX_NF_MASS=47,IDX_NF_THERM=48,IDX_NF_VEL=49,IDX_NF_PRESS=50;
+	const STATS_LEN=51;
 	const PARTIAL_STRIDE=40;
 	const EMIT_LEDGER_LEN=20;
 	// negatives below -1e-9 are real; smaller is f32/FCT roundoff (≈1e-28 seen at N=512).
@@ -36,7 +41,7 @@
 		let sumM=0,sumDr=0,sumDg=0,sumDb=0,sumE=0;
 		let minM=Infinity,minDr=Infinity,minDg=Infinity,minDb=Infinity,minE=Infinity;
 		let maxM=-Infinity;
-		let cntNeg=0,cntOver=0;
+		let cntNeg=0,cntOver=0,cntNfMass=0,cntNfTherm=0;
 		for(let y=1;y<texH-1;y++){
 			for(let x=1;x<texW-1;x++){
 				let i=(x+y*texW)*4;
@@ -51,6 +56,10 @@
 				if(m>maxM)maxM=m;
 				if(m<-NEG_EPS||dr<-NEG_EPS||dg<-NEG_EPS||db<-NEG_EPS||E<-NEG_EPS)cntNeg++;
 				if(m>OVER_EPS)cntOver++;
+				// 0.7.4: the one test a comparison cannot express. a NaN here would
+				// otherwise update no extremum and no counter above.
+				if(!(m===m)||!(dr===dr)||!(dg===dg)||!(db===db))cntNfMass++;
+				if(!(E===E)||!(therm[i+1]===therm[i+1]))cntNfTherm++;
 			}
 		}
 		if(minM===Infinity)minM=0;
@@ -59,11 +68,13 @@
 		if(minDb===Infinity)minDb=0;
 		if(minE===Infinity)minE=0;
 		if(maxM===-Infinity)maxM=0;
-		return {sumM,sumDr,sumDg,sumDb,sumE,minM,minDr,minDg,minDb,minE,maxM,cntNeg,cntOver};
+		return {sumM,sumDr,sumDg,sumDb,sumE,minM,minDr,minDg,minDb,minE,maxM,cntNeg,cntOver,
+			cntNfMass,cntNfTherm,cntNonFinite:cntNfMass+cntNfTherm};
 	}
 	function motionTotals(vel,press,texW,texH,dt,flags){
 		// vel: rg per texel, r = u left face, g = v bottom face; press: r per texel
 		let maxVel=0,pMin=Infinity,pMax=-Infinity,maxDiv=0;
+		let cntNfVel=0,cntNfPress=0;
 		let invDt=1/Math.max(dt,1e-9);
 		for(let y=1;y<texH-1;y++){
 			for(let x=1;x<texW-1;x++){
@@ -85,11 +96,25 @@
 				let p=press[x+y*texW];
 				if(p<pMin)pMin=p;
 				if(p>pMax)pMax=p;
+				// 0.7.4: same blind spot as totalsFromFields; Math.abs(NaN)=NaN and
+				// NaN never wins a comparison, so maxVel stays a calm 0.
+				if(!(uL===uL)||!(uR===uR)||!(vB===vB)||!(vT===vT))cntNfVel++;
+				if(!(p===p))cntNfPress++;
 			}
 		}
 		if(pMin===Infinity)pMin=0;
 		if(pMax===-Infinity)pMax=0;
-		return {maxVel,pMin,pMax,maxDiv};
+		return {maxVel,pMin,pMax,maxDiv,cntNfVel,cntNfPress};
+	}
+	// 0.7.4: one cell counted in more than one field group lands in the total once, so
+	// the headline is "cells that are not finite", not the sum of the four groups.
+	function nonFiniteTotal(tot,motion){
+		const mass=tot.cntNfMass||0,therm=tot.cntNfTherm||0;
+		const vel=motion.cntNfVel||0,press=motion.cntNfPress||0;
+		// the cpu oracle stores no per-cell mask, so the total is bounded by the
+		// largest group, never above the sum: exact when one field dies (the case the
+		// captures show), a lower bound when several do at once.
+		return {mass,therm,vel,press,total:Math.max(mass,therm,vel,press)};
 	}
 	function packStatsArray(arr,tot,motion,poisson){
 		arr[IDX_TOT_M]=tot.sumM;
@@ -114,6 +139,14 @@
 		if(poisson){
 			arr[IDX_POISSON_RES]=poisson.resMax;
 			arr[IDX_POISSON_RHS]=poisson.rhsMax;
+		}
+		if(tot&&motion){
+			const nf=nonFiniteTotal(tot,motion);
+			arr[IDX_NONFINITE]=nf.total;
+			arr[IDX_NF_MASS]=nf.mass;
+			arr[IDX_NF_THERM]=nf.therm;
+			arr[IDX_NF_VEL]=nf.vel;
+			arr[IDX_NF_PRESS]=nf.press;
 		}
 	}
 	function driftRel(actual,expected){
@@ -353,6 +386,6 @@
 		seedFromFlags:seedPhaseFromFlags,ingest:ingestPhaseEvents,scanCpu:scanPhaseEventsCpu
 	};
 	Fluid.core.phaseEvents=phaseEvents;
-	Fluid.core.stats={STATS_LEN,PARTIAL_STRIDE,EMIT_LEDGER_LEN,PHASE_EVENT_LEN,PHASE_ROW_STRIDE,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,IDX_HEAT_IN,IDX_HEAT_OUT,IDX_T_MIN,IDX_T_MAX,IDX_T_MEAN,IDX_KINETIC,IDX_PH_VAC,IDX_PH_SOL,IDX_PH_MELT,IDX_PH_LIQ,IDX_PH_BOIL,IDX_PH_GAS,IDX_S_SAT,IDX_LATENT,IDX_FROZEN_MOM,IDX_POISSON_RES,IDX_POISSON_RHS,IDX_POISSON_DRIFT,IDX_POISSON_DRIFT_RHS,IDX_EMIT_INJ_M,IDX_EMIT_INJ_DR,IDX_EMIT_INJ_DG,IDX_EMIT_INJ_DB,IDX_EMIT_INJ_E,IDX_EMIT_REM_M,IDX_EMIT_REM_DR,IDX_EMIT_REM_DG,IDX_EMIT_REM_DB,IDX_EMIT_REM_E,STATS_FIELDS,totalsFromFields,motionTotals,thermalTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift,phaseEvents};
+	Fluid.core.stats={STATS_LEN,PARTIAL_STRIDE,EMIT_LEDGER_LEN,PHASE_EVENT_LEN,PHASE_ROW_STRIDE,IDX_TOT_M,IDX_TOT_DR,IDX_TOT_DG,IDX_TOT_DB,IDX_TOT_E,IDX_MIN_M,IDX_MIN_DR,IDX_MIN_DG,IDX_MIN_DB,IDX_MIN_E,IDX_MAX_M,IDX_CNT_NEG,IDX_CNT_OVER,IDX_MAX_VEL,IDX_P_MIN,IDX_P_MAX,IDX_MAX_DIV,IDX_HEAT_IN,IDX_HEAT_OUT,IDX_T_MIN,IDX_T_MAX,IDX_T_MEAN,IDX_KINETIC,IDX_PH_VAC,IDX_PH_SOL,IDX_PH_MELT,IDX_PH_LIQ,IDX_PH_BOIL,IDX_PH_GAS,IDX_S_SAT,IDX_LATENT,IDX_FROZEN_MOM,IDX_POISSON_RES,IDX_POISSON_RHS,IDX_POISSON_DRIFT,IDX_POISSON_DRIFT_RHS,IDX_EMIT_INJ_M,IDX_EMIT_INJ_DR,IDX_EMIT_INJ_DG,IDX_EMIT_INJ_DB,IDX_EMIT_INJ_E,IDX_EMIT_REM_M,IDX_EMIT_REM_DR,IDX_EMIT_REM_DG,IDX_EMIT_REM_DB,IDX_EMIT_REM_E,IDX_NONFINITE,IDX_NF_MASS,IDX_NF_THERM,IDX_NF_VEL,IDX_NF_PRESS,nonFiniteTotal,STATS_FIELDS,totalsFromFields,motionTotals,thermalTotals,packStatsArray,driftRel,createLedger,expectedTotal,writeExpectedTotals,formatDrift,phaseEvents};
 	if(typeof module!=="undefined"&&module.exports)module.exports=Fluid.core.stats;
 })(globalThis);

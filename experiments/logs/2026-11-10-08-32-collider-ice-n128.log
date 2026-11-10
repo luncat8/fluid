@@ -1,0 +1,23 @@
+collider-ice: N=128 scenario=ice speed=480 u/s, six-emitter rig, disc r=7
+
+FIRST NON-FINITE VALUE: frame 218 substep 13/24 after pass 'project'
+  velocity before pass: max 480.0 at 2,1  (vClamp 480.0)
+  velocity after  pass: max 4.800e+2
+  pressure before pass: -1.3663449321246585e+37 .. 1.8115003425092248e+37
+  pressure after  pass: 0 .. 0
+  cell 1,1: m=0.24298059940338135 E=272.9847106933594 T=330.9722900390625 flags=0,3,0,0
+  neighbourhood (m / pressure / T / flags.r|frozen):
+         ---        ---        ---        ---        ---   
+         ---     m0.00 p0 T0 fl0/0  m0.00 p0 T0 fl0/0  m0.00 p0 T0 fl0/0  m0.00 p0 T0 fl0/0
+         ---     m0.00 p0 T0 fl0/0  m0.24 pNaN T331 fl0/0  m0.14 pNaN T342 fl0/0  m0.17 pNaN T349 fl0/0
+         ---     m0.00 p0 T0 fl0/0  m1.03 pNaN T326 fl0/0  m0.83 pNaN T331 fl0/0  m0.49 pNaN T343 fl0/0
+         ---     m0.00 p0 T0 fl0/0  m5.96 pNaN T316 fl0/0  m1.25 pNaN T324 fl0/0  m1.35 pNaN T330 fl0/0
+  disc at 101,21 moving 180,0 u/s
+  last pre-failure velocity spike: frame 218 pass 'updateColliderMask' max=2.46e+36 cap=480 pressure -1.3663449321246585e+37..1.8115003425092248e+37 res=9.32e+38
+PASS collider-ice: the fast-disc-across-ice failure is reproduced headlessly  frame 218 after project
+PASS collider-ice: the field dies in the pressure solve, not in transport or an emitter  first bad after project
+  ANOMALY: solve residual 0.00e+0 vs rhs 2.76e+6  (residual/source 0.0e+0)
+  ANOMALY: open-cell density spans 7.30e-32 .. 2.72e+1  (max at 87,9)  - the 1/rho face weight is what the operator amplifies
+PASS collider-ice: the open-cell density range is recorded for the worklog  rho 7.30e-32..2.72e+1
+
+COLLIDER-ICE REPRODUCED

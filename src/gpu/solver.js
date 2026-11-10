@@ -65,7 +65,11 @@
 		const phaseCounts=[0,0,0,0,0,0];
 		const diag={sSaturated:0,poissonRes:0,poissonRhs:0,poissonRel:0,poissonDrift:0,poissonDriftRhs:0,poissonDriftRel:0};
 		let statsCache=null;
-		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,thermal:null,phaseCounts,diag,ledger:null};
+		// 0.7.4: first stats frame whose non-finite count left zero. runtime state, like
+		// the buoy dP/dt baseline: never serialized, cleared by reset()/resize().
+		let firstNonFiniteFrame=-1;
+		const statsView={frame:0,statsFrame:0,totals:null,expected:null,mins:null,maxM:0,cntNeg:0,cntOver:0,motion:null,thermal:null,phaseCounts,diag,ledger:null,
+			cntNonFinite:0,nonFinite:null,firstNonFiniteFrame:-1};
 		function writeParams(){
 			Fluid.core.config.writeParams(paramsArray,cfg);
 			paramsArray[Fluid.core.config.paramsOff.mgS]=pool.mgS;
@@ -98,6 +102,7 @@
 		}
 		function reset(){
 			statsGeneration++;
+			firstNonFiniteFrame=-1;
 			if(prof)prof.invalidate();
 			readMask=0;
 			phaseSeedNeeded=false;
@@ -180,7 +185,8 @@
 				mins:{m:init.minM,dr:init.minDr,dg:init.minDg,db:init.minDb,E:init.minE},
 				maxM:init.maxM,cntNeg:init.cntNeg,cntOver:init.cntOver,
 				motion:{maxVel:0,pMin:0,pMax:0,maxDiv:0},
-				thermal:{TMin:cfg.TAmb,TMax:cfg.TAmb,TMean:cfg.TAmb,kinetic:0,heatIn:0,heatOut:0}
+				thermal:{TMin:cfg.TAmb,TMax:cfg.TAmb,TMean:cfg.TAmb,kinetic:0,heatIn:0,heatOut:0},
+				cntNonFinite:0,nonFinite:{mass:0,therm:0,vel:0,press:0}
 			};
 			writeMgParams();
 			// a resize rebuilds the pool: the new probe/emitter/collider buffers start zeroed,
@@ -676,6 +682,15 @@
 			diag.poissonDriftRel=poissonDriftRhs>0?poissonDrift/poissonDriftRhs:0;
 			ledger.latentChargedE=readbackArray[30];
 			ledger.frozenMomentum=readbackArray[31];
+			// 0.7.4: max/min cannot see NaN, so without this a dead field reads as a
+			// perfectly calm one (maxVel=0, maxDiv=0, p[0..0]) while the probes hold NaN.
+			const nf=statsCache.nonFinite;
+			nf.mass=readbackArray[stats.IDX_NF_MASS]||0;
+			nf.therm=readbackArray[stats.IDX_NF_THERM]||0;
+			nf.vel=readbackArray[stats.IDX_NF_VEL]||0;
+			nf.press=readbackArray[stats.IDX_NF_PRESS]||0;
+			statsCache.cntNonFinite=readbackArray[stats.IDX_NONFINITE]||0;
+			if(statsCache.cntNonFinite>0&&firstNonFiniteFrame<0)firstNonFiniteFrame=readFrame;
 		}
 		function getStats(){
 			statsView.frame=frameCount;
@@ -691,6 +706,9 @@
 			statsView.phaseCounts=phaseCounts;
 			statsView.diag=diag;
 			statsView.ledger=ledger;
+			statsView.cntNonFinite=statsCache.cntNonFinite||0;
+			statsView.nonFinite=statsCache.nonFinite;
+			statsView.firstNonFiniteFrame=firstNonFiniteFrame;
 			return statsView;
 		}
 		async function serialize(out,extra){

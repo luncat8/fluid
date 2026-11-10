@@ -20,6 +20,9 @@
 			thermal:{TMin:0,TMax:0,TMean:0,kinetic:0,heatIn:0,heatOut:0},
 			phaseCounts:[0,0,0,0,0,0],
 			diag:{sSaturated:0,poissonRes:0,poissonRhs:0,poissonRel:0,poissonDrift:0,poissonDriftRhs:0,poissonDriftRel:0},
+			// 0.7.4: the one signal that survives a NaN field. a game (and the demo page)
+			// reads it from here, so copyStats must carry it like any other counter.
+			cntNonFinite:0,nonFinite:{mass:0,therm:0,vel:0,press:0},firstNonFiniteFrame:-1,
 			ledger:null
 		};
 	}
@@ -47,6 +50,13 @@
 		for(let i=0;i<K_DIAG.length;i++)out.diag[K_DIAG[i]]=(dg&&dg[K_DIAG[i]])||0;
 		const pc=st.phaseCounts;
 		for(let i=0;i<6;i++)out.phaseCounts[i]=(pc&&pc[i])||0;
+		out.cntNonFinite=st.cntNonFinite||0;
+		const nf=st.nonFinite;
+		out.nonFinite.mass=(nf&&nf.mass)||0;
+		out.nonFinite.therm=(nf&&nf.therm)||0;
+		out.nonFinite.vel=(nf&&nf.vel)||0;
+		out.nonFinite.press=(nf&&nf.press)||0;
+		out.firstNonFiniteFrame=(st.firstNonFiniteFrame===undefined?-1:st.firstNonFiniteFrame);
 		out.ledger=st.ledger||null;
 		return out;
 	}
